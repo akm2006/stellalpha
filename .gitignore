@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+/lib/agentkit-core
 
 # next.js
 /.next/
