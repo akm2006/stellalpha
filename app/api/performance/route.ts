@@ -5,32 +5,55 @@ import { NextResponse } from 'next/server';
 
 const redis = Redis.fromEnv();
 
-// A simplified P&L calculation for the hackathon
-// This assumes every 'buy' is a potential win and 'sell' is a break-even for demonstration
+// This function now also calculates the best performing star
 const calculateMetrics = (trades: any[]) => {
     let totalPnl = 0;
     let winCount = 0;
+    const starPerformance: { [star: string]: number } = {};
 
     trades.forEach(trade => {
         const tradeValue = parseFloat(trade.amountInAVAX);
+        let pnl = 0;
+
         if (trade.type === 'buy') {
-            // Assume a random P&L for demonstration purposes (e.g., between -10% and +20%)
+            // Using the same simplified P&L logic for the hackathon
             const pnlPercentage = Math.random() * 0.30 - 0.10; // -10% to +20%
-            const pnl = tradeValue * pnlPercentage;
+            pnl = tradeValue * pnlPercentage;
             
             if (pnl > 0) {
                 winCount++;
             }
             totalPnl += pnl;
         }
-        // 'sell' trades are considered neutral in this simplified model
+        
+        // Aggregate P&L for each star
+        if (starPerformance[trade.star]) {
+            starPerformance[trade.star] += pnl;
+        } else {
+            starPerformance[trade.star] = pnl;
+        }
     });
 
     const winRate = trades.length > 0 ? (winCount / trades.length) * 100 : 0;
 
+    // Find the best performing star
+    let bestStar = 'N/A';
+    let maxPnl = -Infinity;
+    if (Object.keys(starPerformance).length > 0) {
+        const bestStarEntry = Object.entries(starPerformance).reduce((prev, current) => {
+            return prev[1] > current[1] ? prev : current;
+        });
+        
+        // Only show the best star if their performance is positive
+        if (bestStarEntry[1] > 0) {
+            bestStar = bestStarEntry[0];
+        }
+    }
+
     return {
         totalPnl: totalPnl.toFixed(4),
         winRate: winRate.toFixed(0),
+        bestStar: bestStar, // Add the new metric to the response
     };
 };
 
