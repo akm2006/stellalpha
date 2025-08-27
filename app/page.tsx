@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -12,76 +12,62 @@ import {
 import WalletHeader from "@/components/wallet-header"
 import { useWallet } from "@/contexts/WalletContext";
 import { showToast } from "@/components/toast";
+import { Skeleton } from "@/components/ui/skeleton"
+import { formatDistanceToNow } from 'date-fns';
+
+interface Signal {
+  id: string;
+  type: 'buy' | 'sell' | 'swap';
+  action: string;
+  wallet: string;
+  timestamp: string;
+  txHash: string;
+}
 
 export default function StellaphaaDashboard() {
   const [address, setAddress] = useState("")
-  const { isConnected, connectedWallet: userSmartAccount } = useWallet();
+  // Get isConnected and the followStar function from the context
+  const { isConnected, followStar } = useWallet();
+  const [signalLog, setSignalLog] = useState<Signal[]>([]);
+  const [isLogLoading, setIsLogLoading] = useState(true);
 
-  const signalLogData = [
-    {
-      id: 1,
-      type: "buy",
-      action: "Bought 500 $PEPE",
-      wallet: "0x742d35Cc6634C0532925a3b8D404d3aaBf5b9884",
-      timestamp: "3m ago",
-    },
-    {
-      id: 2,
-      type: "sell",
-      action: "Sold 1000 $DOGE",
-      wallet: "0x8ba1f109551bD432803012645Hac136c22C501e",
-      timestamp: "7m ago",
-    },
-    {
-      id: 3,
-      type: "buy",
-      action: "Bought 250 $SHIB",
-      wallet: "0x742d35Cc6634C0532925a3b8D404d3aaBf5b9884",
-      timestamp: "12m ago",
-    },
-    {
-      id: 4,
-      type: "sell",
-      action: "Sold 750 $LINK",
-      wallet: "0x8ba1f109551bD432803012645Hac136c22C501e",
-      timestamp: "25m ago",
-    },
-  ]
+  useEffect(() => {
+    const fetchSignals = async () => {
+      // Don't set loading to true on refetch to avoid flashing
+      if (isLogLoading) {
+        try {
+          const response = await fetch('/api/signals');
+          const data = await response.json();
+          if (data.success) {
+            setSignalLog(data.signals);
+          } else {
+            throw new Error("Failed to fetch signals");
+          }
+        } catch (error) {
+          console.error("Failed to fetch signal log", error);
+          showToast("Could not load signal log.", "error");
+        } finally {
+          setIsLogLoading(false);
+        }
+      }
+    };
+
+    fetchSignals();
+    // Poll for new signals every 30 seconds
+    const interval = setInterval(fetchSignals, 30000);
+    return () => clearInterval(interval);
+  }, [isLogLoading]); // Rerunning the effect is not needed on every render
+
 
   const handleActivateAgent = async () => {
-    if (!address || !userSmartAccount) {
-      showToast("Please connect your wallet and enter an address to follow.", "error");
-      return;
+    if (!address) {
+        showToast("Please enter a valid address to follow.", "error");
+        return;
     }
-
-    // Capture the loading toast ID
-    const loadingToastId = showToast("Activating agent...", "loading");
-
-    try {
-      const response = await fetch('/api/follow', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userSmartAccount: userSmartAccount,
-          targetWallet: address,
-        }),
-      });
-
-      const result = await response.json();
-
-      if (response.ok) {
-        // Replace loading toast with success
-        showToast(result.message || "Agent activated!", "success", loadingToastId);
-        setAddress(""); // Clear input on success
-      } else {
-        // Replace loading toast with error
-        showToast(result.error || "Failed to activate agent.", "error", loadingToastId);
-      }
-    } catch (error) {
-      console.error("Activation Error:", error);
-      // Replace loading toast with error
-      showToast((error as Error).message, "error", loadingToastId);
-    }
+    // Directly call the followStar function from the context.
+    // It already handles loading toasts and state updates.
+    await followStar(address);
+    setAddress(""); // Clear input after submission
   };
 
   return (
@@ -91,9 +77,7 @@ export default function StellaphaaDashboard() {
         <WalletHeader />
       </header>
 
-      {/* Main Content */}
       <main className="max-w-4xl mx-auto p-6 space-y-8">
-        {/* Control Panel Card */}
         <Card className="glassmorphism-card">
           <CardHeader>
             <CardTitle className="text-2xl font-[family-name:var(--font-space-grotesk)] text-white">
@@ -104,7 +88,7 @@ export default function StellaphaaDashboard() {
             <div className="space-y-2">
               <Input
                 type="text"
-                placeholder="Paste Ethereum address (0x...)"
+                placeholder="Paste Avalanche C-Chain address (0x...)"
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
                 className="bg-gray-900/50 border-gray-600 text-white placeholder-gray-400 focus:electric-cyan-border focus:ring-1 focus:ring-[#00F6FF] transition-all duration-300"
@@ -120,7 +104,6 @@ export default function StellaphaaDashboard() {
           </CardContent>
         </Card>
 
-        {/* Signal Log Card */}
         <Card className="glassmorphism-card">
           <CardHeader>
             <CardTitle className="text-2xl font-[family-name:var(--font-space-grotesk)] text-white">
@@ -129,35 +112,51 @@ export default function StellaphaaDashboard() {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {signalLogData.map((signal) => (
-                <div
-                  key={signal.id}
-                  className={`flex items-center justify-between p-4 rounded-lg bg-gray-900/30 border border-gray-800/50 hover:border-gray-700/50 transition-colors duration-200 ${
-                    signal.type === "buy" ? "transaction-buy" : "transaction-sell"
-                  }`}
-                >
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center justify-center">
-                      {signal.type === "buy" ? (
-                        <ArrowUpRightCircle className="w-6 h-6 text-green-400" />
-                      ) : (
-                        <ArrowDownLeftCircle className="w-6 h-6 text-red-400" />
-                      )}
-                    </div>
-                    <div className="w-8 h-8 rounded-full bg-gray-700/50 border border-gray-600/50"></div>
-                    <div className="space-y-1">
-                      <p className="text-white font-medium">{signal.action}</p>
-                      <p className="text-gray-400 text-sm">
-                        From wallet {signal.wallet.slice(0, 6)}...{signal.wallet.slice(-4)}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-500 text-sm">{signal.timestamp}</span>
-                    <ExternalLink className="w-4 h-4 text-gray-500" />
-                  </div>
+              {isLogLoading ? (
+                Array.from({ length: 4 }).map((_, index) => (
+                  <Skeleton key={index} className="h-20 w-full rounded-lg bg-gray-900/50" />
+                ))
+              ) : signalLog.length === 0 ? (
+                <div className="text-center py-10 text-gray-400">
+                  <p>No recent signals from followed stars.</p>
+                  <p className="text-xs mt-1">The log will update automatically when a followed star makes a trade.</p>
                 </div>
-              ))}
+              ) : (
+                signalLog.map((signal) => (
+                  <div
+                    key={signal.id}
+                    className={`flex items-center justify-between p-4 rounded-lg bg-gray-900/30 border border-gray-800/50 hover:border-gray-700/50 transition-colors duration-200 ${
+                      signal.type === "buy" ? "transaction-buy" : "transaction-sell"
+                    }`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center justify-center">
+                        {signal.type === "buy" ? (
+                          <ArrowUpRightCircle className="w-6 h-6 text-green-400" />
+                        ) : (
+                          <ArrowDownLeftCircle className="w-6 h-6 text-red-400" />
+                        )}
+                      </div>
+                      <div className="w-8 h-8 rounded-full bg-gray-700/50 border border-gray-600/50"></div>
+                      <div className="space-y-1">
+                        <p className="text-white font-medium">{signal.action}</p>
+                        <p className="text-gray-400 text-sm">
+                          From wallet {signal.wallet.slice(0, 6)}...{signal.wallet.slice(-4)}
+                        </p>
+                      </div>
+                    </div>
+                    <a 
+                      href={`https://snowtrace.io/tx/${signal.txHash}`} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 text-gray-500 hover:text-electric-cyan transition-colors"
+                    >
+                      <span className="text-sm hidden sm:inline">{formatDistanceToNow(new Date(signal.timestamp), { addSuffix: true })}</span>
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  </div>
+                ))
+              )}
             </div>
           </CardContent>
         </Card>
