@@ -14,13 +14,13 @@ import {
 import { useWallet } from "@/contexts/WalletContext";
 import { showToast } from "@/components/toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Rss, ExternalLink, X, Loader2, Power, AlertTriangle } from "lucide-react";
+import { Rss, ExternalLink, X, Loader2, Power, AlertTriangle, PowerOff } from "lucide-react";
 import ParticlesBackground from "@/components/particles-background";
 
 interface Signal {
   id: string;
   action: string;
-  starWallet: string; // The backend agent provides this key
+  starWallet: string;
   timestamp: string;
   txHash: string;
 }
@@ -30,9 +30,8 @@ export default function DashboardPage() {
   const [privateKey, setPrivateKey] = useState("");
   const [isActivating, setIsActivating] = useState(false);
   const [signals, setSignals] = useState<Signal[]>([]);
-  const [isLoadingSignals, setIsLoadingSignals] = useState(true);
+  const [isLoadingSignals, setIsLoadingSignals] = useState(false); // Fix: Initialize to false
 
-  // Get all the live state and functions from our working WalletContext
   const {
     isConnected,
     connectedWallet,
@@ -42,13 +41,14 @@ export default function DashboardPage() {
     unfollowStar,
     followStar,
     activateAgent,
+    deactivateAgent
   } = useWallet();
 
   const fetchSignals = useCallback(async () => {
     if (!isConnected || !connectedWallet) {
-        setIsLoadingSignals(false);
         return;
     };
+    setIsLoadingSignals(true); // Set loading to true only when we start fetching
     try {
       const response = await fetch(`/api/signals?userWallet=${connectedWallet}`);
       const data = await response.json();
@@ -62,17 +62,16 @@ export default function DashboardPage() {
     }
   }, [isConnected, connectedWallet]);
 
-  // This hook polls for new signals every 10 seconds
   useEffect(() => {
-    if (isAgentActive) {
-      // Only start polling when the agent is active
+    if (isAgentActive && isConnected) {
       fetchSignals();
       const interval = setInterval(fetchSignals, 10000);
       return () => clearInterval(interval);
+    } else {
+        setSignals([]);
     }
-  }, [isAgentActive, fetchSignals]);
+  }, [isAgentActive, isConnected, fetchSignals]);
 
-  // Handler to connect the "Follow" button to our context
   const handleFollow = () => {
     if (!starToFollow) {
       showToast("Please enter a wallet address.", "error");
@@ -82,7 +81,6 @@ export default function DashboardPage() {
     setStarToFollow("");
   };
 
-  // Handler to connect the "Activate Agent" button to our context
   const handleActivateAgent = async () => {
     if (!privateKey) {
       showToast("Please enter your private key to activate.", "error");
@@ -100,12 +98,8 @@ export default function DashboardPage() {
     <>
       <ParticlesBackground />
       <div className="relative z-10 min-h-screen flex flex-col">
-        
-        
         <main className="flex-grow max-w-7xl w-full mx-auto p-6 mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            {/* Left Column */}
             <div className="lg:col-span-1 space-y-6">
               <Card  className="glass-card border-0 text-white floating-animation">
                 <CardHeader>
@@ -119,9 +113,9 @@ export default function DashboardPage() {
                       value={starToFollow}
                       onChange={(e) => setStarToFollow(e.target.value)}
                       disabled={!isConnected}
-                      className="input-base"
+                      className="glass-input border-0 text-white placeholder-gray-400"
                     />
-                    <Button onClick={handleFollow} disabled={!isConnected || !starToFollow} className="button-primary electric-cyan-bg text-black font-bold hover:electric-cyan-glow transition-all duration-300">Follow</Button>
+                    <Button onClick={handleFollow} disabled={!isConnected || !starToFollow} className="electric-cyan-bg text-black font-bold hover:electric-cyan-glow transition-all duration-300">Follow</Button>
                   </div>
                 </CardContent>
               </Card>
@@ -153,7 +147,7 @@ export default function DashboardPage() {
                 </CardHeader>
                 <CardContent>
                     {isAgentActive ? (
-                        <div className="text-center text-green-400 font-bold p-4">Agent Status: Active</div>
+                        <div className="text-center text-green-400 font-bold p-4 status-active pl-3">Agent Status: Active</div>
                     ) : !isConnected ? (
                         <p className="text-center text-gray-400">Connect wallet to activate.</p>
                     ) : (
@@ -168,15 +162,27 @@ export default function DashboardPage() {
                                 value={privateKey}
                                 onChange={(e) => setPrivateKey(e.target.value)}
                                 disabled={!isConnected}
+                                className="glass-input border-0 text-white placeholder-gray-400"
                             />
                         </div>
                     )}
                 </CardContent>
-                {isConnected && !isAgentActive && (
+                 {isConnected && !isAgentActive && (
                     <CardFooter>
-                        <Button onClick={handleActivateAgent} disabled={isActivating || !privateKey} className="w-full button-primary electric-cyan-bg text-black font-bold hover:electric-cyan-glow transition-all duration-300">
+                        <Button onClick={handleActivateAgent} disabled={isActivating || !privateKey} className="w-full electric-cyan-bg text-black font-bold hover:electric-cyan-glow transition-all duration-300">
                             {isActivating ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : <Power className="w-4 h-4 mr-2"/>}
                             Verify & Activate
+                        </Button>
+                    </CardFooter>
+                )}
+                {isAgentActive && (
+                    <CardFooter>
+                        <Button
+                          onClick={deactivateAgent}
+                          className="w-full glass-button bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 flex items-center gap-2 hover:electric-cyan-glow transition-all duration-300"
+                        >
+                            <PowerOff className="w-4 h-4 mr-2"/>
+                            Deactivate Agent
                         </Button>
                     </CardFooter>
                 )}
@@ -193,15 +199,16 @@ export default function DashboardPage() {
                 <CardContent className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
                   {isLoadingSignals ? Array.from({length: 5}).map((_, i) => <Skeleton key={i} className="h-16 w-full bg-white/5"/>)
                    : !isConnected ? <p className="text-gray-400 text-center py-8">Connect your wallet to see agent activity.</p>
-                   : signals.length === 0 ? <p className="text-gray-400 text-center py-8">No signals yet. Activate your agent and wait for a followed star to make a swap.</p>
+                   : !isAgentActive ? <p className="text-gray-400 text-center py-8">Activate your agent to see live signals.</p>
+                   : signals.length === 0 ? <p className="text-gray-400 text-center py-8">No signals yet. Waiting for a followed star to make a swap.</p>
                    : signals.map(signal => (
                       <div key={signal.id} className="p-4 bg-white/5 rounded-lg border border-white/10 animate-fade-in">
                           <p className="font-semibold text-white">{signal.action}</p>
                           <div className="text-xs text-gray-400 mt-1 flex justify-between items-center">
                               <span>Star: <span className="font-mono">{signal.starWallet.slice(0,10)}...</span></span>
-                              <a 
-                                  href={`https://testnet.snowtrace.io/tx/${signal.txHash}`} 
-                                  target="_blank" 
+                              <a
+                                  href={`https://testnet.snowtrace.io/tx/${signal.txHash}`}
+                                  target="_blank"
                                   rel="noopener noreferrer"
                                   className="flex items-center gap-1 hover:text-electric-cyan transition-colors"
                               >

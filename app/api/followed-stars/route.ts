@@ -1,31 +1,33 @@
 // In app/api/followed-stars/route.ts
-
 import { Redis } from '@upstash/redis';
 import { NextResponse } from 'next/server';
 
 const redis = Redis.fromEnv();
 
-export async function POST(request: Request) {
+// Changed from POST to GET to match the frontend request method.
+export async function GET(request: Request) {
   try {
-    const { userSmartAccount } = await request.json();
+    const { searchParams } = new URL(request.url);
+    // Reading 'userWallet' from query parameters instead of request body.
+    const userWallet = searchParams.get('userWallet');
 
-    if (!userSmartAccount) {
-      return NextResponse.json({ error: 'Missing userSmartAccount' }, { status: 400 });
+    if (!userWallet) {
+      return NextResponse.json({ error: 'Missing userWallet query parameter' }, { status: 400 });
     }
 
-    console.log(`--- DATABASE READ for user: ${userSmartAccount} ---`);
+    console.log(`--- DATABASE READ for user: ${userWallet} ---`);
     
     const allStarKeys = await redis.keys('follows:*');
     const followedWallets: string[] = [];
 
     for (const key of allStarKeys) {
-        const isMember = await redis.sismember(key, userSmartAccount);
+        // userWallet is already lowercase from the context, but ensuring it here is good practice.
+        const isMember = await redis.sismember(key, userWallet.toLowerCase());
         if (isMember) {
             followedWallets.push(key.split(':')[1]);
         }
     }
 
-    // --- LOG 2: Confirm what was read from the database ---
     console.log(`✅ DATABASE READ CONFIRMED. Found followed wallets:`, followedWallets);
 
     return NextResponse.json({ success: true, followedWallets });

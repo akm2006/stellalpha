@@ -11,20 +11,21 @@ interface WalletContextType {
   // Wallet State
   isConnected: boolean
   connectedWallet: string | null
-  
+
   // Agent State
   isAgentActive: boolean
   agentBalance: string
-  
+
   // Data State
   followedStars: string[]
   isFollowedLoading: boolean
-  
+
   // Functions
   handleConnectMetaMask: () => Promise<void>
   handleDisconnectWallet: () => void;
   handleChangeWallet: () => Promise<void>;
   activateAgent: (privateKey: string) => Promise<boolean>
+  deactivateAgent: () => void; // Added deactivate function
   followStar: (address: string) => Promise<void>
   unfollowStar: (address: string) => Promise<void>
 }
@@ -72,7 +73,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         setAgentBalance("0.00");
     }
   }, []);
-  
+
   const fetchFollowedStars = useCallback(async (walletAddress: string) => {
     if (!walletAddress) return;
     setIsFollowedLoading(true);
@@ -104,7 +105,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setFollowedStars([]);
     }
   }, [fetchBalance, fetchFollowedStars]);
-  
+
   const switchToFuji = async (): Promise<boolean> => {
     if (!window.ethereum) return false;
     try {
@@ -142,7 +143,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       showToast("Failed to connect wallet.", "error");
     }
   };
-  
+
   const handleDisconnectWallet = useCallback(() => {
     updateWalletState([]); // Calling with an empty array triggers the disconnect logic
     showToast("Wallet disconnected", "success");
@@ -195,7 +196,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         return false;
     }
   };
-  
+
+  const deactivateAgent = useCallback(() => {
+    setIsAgentActive(false);
+    showToast("Agent deactivated.", "success");
+  }, []);
+
+
   const followStar = async (address: string) => {
     if (!connectedWallet) {
         showToast("Please connect wallet to follow.", "error");
@@ -265,6 +272,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     handleDisconnectWallet,
     handleChangeWallet,
     activateAgent,
+    deactivateAgent, // Export the new function
     followStar,
     unfollowStar,
   };

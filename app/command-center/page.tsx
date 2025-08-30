@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardFooter, CardDescription } from "@/components/ui/card"
-import { X, Loader2, Save, Power, AlertTriangle } from "lucide-react"
+import { X, Loader2, Save, Power, AlertTriangle, PowerOff } from "lucide-react"
 import { useWallet } from "@/contexts/WalletContext"
 import { showToast } from "@/components/toast"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 interface Holding {
   token: string;
   amount: string;
-  value?: string; 
+  value?: string;
 }
 
 interface PerformanceMetrics {
@@ -26,16 +26,17 @@ export default function CommandCenter() {
   const [isSaving, setIsSaving] = useState(false);
   const [privateKey, setPrivateKey] = useState("");
   const [isActivating, setIsActivating] = useState(false);
-  
-  const { 
-    isConnected, 
+
+  const {
+    isConnected,
     connectedWallet,
     agentBalance,
     isAgentActive,
-    followedStars, 
-    isFollowedLoading, 
+    followedStars,
+    isFollowedLoading,
     unfollowStar,
-    activateAgent
+    activateAgent,
+    deactivateAgent // Import the new function
   } = useWallet();
 
   const [holdings, setHoldings] = useState<Holding[]>([]);
@@ -92,13 +93,13 @@ export default function CommandCenter() {
     };
     fetchPortfolio();
   }, [isConnected, connectedWallet]);
-  
+
   useEffect(() => {
     const fetchMetrics = async () => {
         if (isConnected && connectedWallet) {
             setIsMetricsLoading(true);
             try {
-                const response = await fetch(`/api/performance?userWallet=${connectedWallet}`);
+                const response = await fetch(`/api/performance?userSmartAccount=${connectedWallet}`);
                 const data = await response.json();
                 if (data.success) {
                     setMetrics(data.metrics);
@@ -121,11 +122,12 @@ export default function CommandCenter() {
     if (!isConnected || !connectedWallet) return;
     setIsSaving(true);
     try {
-        await fetch('/api/settings', {
+        const response = await fetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userWallet: connectedWallet, tradeSize }),
         });
+        if (!response.ok) throw new Error("Server responded with an error.");
         showToast("Trade size saved!", "success");
     } catch (error) {
         showToast("Failed to save settings.", "error");
@@ -142,7 +144,7 @@ export default function CommandCenter() {
       setIsActivating(true);
       const success = await activateAgent(privateKey);
       if (success) {
-          showToast("Agent activated successfully! Monitoring blockchain...", "success");
+          showToast("Agent activated! Monitoring blockchain...", "success");
       }
       setIsActivating(false);
   };
@@ -161,64 +163,6 @@ export default function CommandCenter() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-1 space-y-6">
-            
-            <Card className="glass-card border-0 text-white floating-animation">
-              <CardHeader>
-                <CardTitle className="electric-cyan">Followed Stars</CardTitle>
-                <CardDescription className="text-gray-300">Wallets you're copying trades from</CardDescription>
-              </CardHeader>
-              <CardContent>
-                 <div className="space-y-3">
-                   {isFollowedLoading ? <div className="h-12 w-full glass-card shimmer rounded-lg" />
-                   : !isConnected ? <p className="text-center text-gray-400 py-4">Connect wallet to see stars.</p>
-                   : followedStars.length === 0 ? <p className="text-center text-gray-400 py-4">Not following any stars.</p>
-                   : followedStars.map((address) => (
-                       <div key={address} className="flex items-center justify-between p-3 rounded-lg glass-card hover:electric-cyan-glow transition-all duration-300">
-                         <span className="font-mono text-sm">{address.slice(0, 6)}...{address.slice(-4)}</span>
-                         <Button 
-                           variant="ghost" 
-                           size="sm" 
-                           onClick={() => unfollowStar(address)}
-                           className="glass-button hover:bg-red-500/20 hover:text-red-400"
-                         >
-                           <X className="w-4 h-4" />
-                         </Button>
-                       </div>
-                     ))
-                   }
-                 </div>
-              </CardContent>
-            </Card>
-
-            <Card className="glass-card border-0 text-white slide-in-up">
-              <CardHeader>
-                <CardTitle className="electric-cyan">Set Trade Size</CardTitle>
-                <CardDescription className="text-gray-300">Amount of AVAX to use per trade</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  <label className="text-sm text-gray-400">AVAX per trade</label>
-                  <Input 
-                    type="number" 
-                    value={tradeSize} 
-                    onChange={(e) => setTradeSize(e.target.value)} 
-                    disabled={!isConnected} 
-                    className="glass-input border-0 text-white placeholder-gray-400"
-                  />
-                </div>
-              </CardContent>
-              <CardFooter>
-                <Button 
-                  onClick={handleSaveSettings} 
-                  disabled={!isConnected || isSaving} 
-                  className="w-full electric-cyan-bg text-black font-bold hover:electric-cyan-glow transition-all duration-300"
-                >
-                  {isSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
-                  Save Trade Size
-                </Button>
-              </CardFooter>
-            </Card>
-
             <Card className="glass-card border-0 text-white pulse-glow">
                 <CardHeader>
                     <CardTitle className="electric-cyan">Agent Control & Wallet Balance</CardTitle>
@@ -252,9 +196,9 @@ export default function CommandCenter() {
                 </CardContent>
                 {isConnected && !isAgentActive && (
                     <CardFooter>
-                        <Button 
-                          onClick={handleActivateAgent} 
-                          disabled={isActivating || !privateKey} 
+                        <Button
+                          onClick={handleActivateAgent}
+                          disabled={isActivating || !privateKey}
                           className="w-full electric-cyan-bg text-black font-bold hover:electric-cyan-glow transition-all duration-300"
                         >
                             {isActivating ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : <Power className="w-4 h-4 mr-2"/>}
@@ -262,7 +206,76 @@ export default function CommandCenter() {
                         </Button>
                     </CardFooter>
                 )}
+                 {isAgentActive && (
+                    <CardFooter>
+                        <Button
+                          onClick={deactivateAgent}
+                          className="w-full glass-button bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 flex items-center gap-2 hover:electric-cyan-glow transition-all duration-300"
+                        >
+                            <PowerOff className="w-4 h-4 mr-2"/>
+                            Deactivate Agent
+                        </Button>
+                    </CardFooter>
+                )}
             </Card>
+            <Card className="glass-card border-0 text-white floating-animation">
+              <CardHeader>
+                <CardTitle className="electric-cyan">Followed Stars</CardTitle>
+                <CardDescription className="text-gray-300">Wallets you're copying trades from</CardDescription>
+              </CardHeader>
+              <CardContent>
+                 <div className="space-y-3">
+                   {isFollowedLoading ? <div className="h-12 w-full glass-card shimmer rounded-lg" />
+                   : !isConnected ? <p className="text-center text-gray-400 py-4">Connect wallet to see stars.</p>
+                   : followedStars.length === 0 ? <p className="text-center text-gray-400 py-4">Not following any stars.</p>
+                   : followedStars.map((address) => (
+                       <div key={address} className="flex items-center justify-between p-3 rounded-lg glass-card hover:electric-cyan-glow transition-all duration-300">
+                         <span className="font-mono text-sm">{address.slice(0, 6)}...{address.slice(-4)}</span>
+                         <Button
+                           variant="ghost"
+                           size="sm"
+                           onClick={() => unfollowStar(address)}
+                           className="glass-button hover:bg-red-500/20 hover:text-red-400"
+                         >
+                           <X className="w-4 h-4" />
+                         </Button>
+                       </div>
+                     ))
+                   }
+                 </div>
+              </CardContent>
+            </Card>
+
+            <Card className="glass-card border-0 text-white slide-in-up">
+              <CardHeader>
+                <CardTitle className="electric-cyan">Set Trade Size</CardTitle>
+                <CardDescription className="text-gray-300">Amount of AVAX to use per trade</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <label className="text-sm text-gray-400">AVAX per trade</label>
+                  <Input
+                    type="number"
+                    value={tradeSize}
+                    onChange={(e) => setTradeSize(e.target.value)}
+                    disabled={!isConnected}
+                    className="glass-input border-0 text-white placeholder-gray-400"
+                  />
+                </div>
+              </CardContent>
+              <CardFooter>
+                <Button
+                  onClick={handleSaveSettings}
+                  disabled={!isConnected || isSaving}
+                  className="w-full electric-cyan-bg text-black font-bold hover:electric-cyan-glow transition-all duration-300"
+                >
+                  {isSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+                  Save Trade Size
+                </Button>
+              </CardFooter>
+            </Card>
+
+            
 
           </div>
           <div className="lg:col-span-2 space-y-6">
@@ -328,8 +341,8 @@ export default function CommandCenter() {
                     <CardContent>
                         {isMetricsLoading ? <div className="h-6 w-32 glass-card shimmer rounded"/> : (
                             <div className="text-lg font-mono text-white">
-                                {metrics?.bestStar && metrics.bestStar !== 'N/A' 
-                                    ? `${metrics.bestStar.slice(0, 6)}...${metrics.bestStar.slice(-4)}` 
+                                {metrics?.bestStar && metrics.bestStar !== 'N/A'
+                                    ? `${metrics.bestStar.slice(0, 6)}...${metrics.bestStar.slice(-4)}`
                                     : 'N/A'}
                             </div>
                         )}

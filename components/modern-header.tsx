@@ -17,7 +17,7 @@ interface NavItem {
 const navigationItems: NavItem[] = [
   { href: "/", icon: Home, label: "Dashboard" },
   { href: "/command-center", icon: Settings, label: "Command Center" },
-  { href: "/testing", icon: TestTube, label: "Testing" },
+  // { href: "/testing", icon: TestTube, label: "Testing" },
 ]
 
 export default function ModernHeader() {
