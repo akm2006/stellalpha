@@ -1,3 +1,4 @@
+// In contexts/WalletContext.tsx
 "use client"
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react"
@@ -5,7 +6,7 @@ import { showToast } from "@/components/toast"
 import { ethers } from "ethers"
 import React from "react"
 
-// --- This is the definitive interface for our context ---
+// --- This is the definitive interface for our EOA-based context ---
 interface WalletContextType {
   // Wallet State
   isConnected: boolean
@@ -21,6 +22,8 @@ interface WalletContextType {
   
   // Functions
   handleConnectMetaMask: () => Promise<void>
+  handleDisconnectWallet: () => void;
+  handleChangeWallet: () => Promise<void>;
   activateAgent: (privateKey: string) => Promise<boolean>
   followStar: (address: string) => Promise<void>
   unfollowStar: (address: string) => Promise<void>
@@ -41,7 +44,7 @@ declare global {
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined)
 
-const FUJI_CHAIN_ID = '0xa869' // 43113 in hex
+const FUJI_CHAIN_ID = '0xa869' // 43113 in hex for Fuji Testnet
 const FUJI_NETWORK_PARAMS = {
     chainId: FUJI_CHAIN_ID,
     chainName: 'Avalanche Fuji C-Chain',
@@ -74,7 +77,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     if (!walletAddress) return;
     setIsFollowedLoading(true);
     try {
-      // API now uses `userWallet` query param
       const response = await fetch(`/api/followed-stars?userWallet=${walletAddress.toLowerCase()}`);
       const data = await response.json();
       if (data.success) {
@@ -140,6 +142,25 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       showToast("Failed to connect wallet.", "error");
     }
   };
+  
+  const handleDisconnectWallet = useCallback(() => {
+    updateWalletState([]); // Calling with an empty array triggers the disconnect logic
+    showToast("Wallet disconnected", "success");
+  }, [updateWalletState]);
+
+  const handleChangeWallet = async () => {
+    if (!window.ethereum) return;
+    try {
+        await window.ethereum.request({
+            method: 'wallet_requestPermissions',
+            params: [{ eth_accounts: {} }],
+        });
+    } catch (error: any) {
+        if (error.code !== 4001) {
+            showToast("Failed to open wallet selection.", "error");
+        }
+    }
+  };
 
   const activateAgent = async (privateKey: string): Promise<boolean> => {
     if (!connectedWallet || followedStars.length === 0) {
@@ -158,7 +179,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 userPrivateKey: pk,
-                starWallet: followedStars[0], // Using the first followed star to initialize
+                starWallet: followedStars[0], // Uses the first followed star for activation
                 userWallet: connectedWallet.toLowerCase(),
             }),
         });
@@ -176,7 +197,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   };
   
   const followStar = async (address: string) => {
-    if (!connectedWallet) return;
+    if (!connectedWallet) {
+        showToast("Please connect wallet to follow.", "error");
+        return;
+    };
     try {
         const response = await fetch('/api/follow', {
             method: 'POST',
@@ -184,7 +208,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify({ userWallet: connectedWallet.toLowerCase(), targetWallet: address.toLowerCase() }),
         });
         if(response.ok) {
-            setFollowedStars(prev => [...new Set([...prev, address])]); // Avoid duplicates
+            setFollowedStars(prev => [...new Set([...prev, address])]);
             showToast("Successfully followed star!", "success");
         } else {
             throw new Error("Failed to follow star.");
@@ -238,6 +262,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     followedStars,
     isFollowedLoading,
     handleConnectMetaMask,
+    handleDisconnectWallet,
+    handleChangeWallet,
     activateAgent,
     followStar,
     unfollowStar,

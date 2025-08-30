@@ -6,6 +6,7 @@ import ModernHeader from "@/components/modern-header"
 import ParticlesBackground from "@/components/particles-background"
 import { GlobalToastRenderer } from "@/components/toast"
 import { WalletProvider } from "@/contexts/WalletContext"
+import { Toaster } from "@/components/ui/sonner";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -20,9 +21,9 @@ const spaceGrotesk = Space_Grotesk({
 })
 
 export const metadata: Metadata = {
-  title: "Stellalpha - Web3 Dashboard",
-  description: "Futuristic Web3 application dashboard",
-  generator: "v0.app",
+  title: "Stellalpha",
+  description: "Autonomous Gasless Copy-Trading Agent",
+
 }
 
 export default function RootLayout({

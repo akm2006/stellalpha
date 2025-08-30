@@ -5,9 +5,9 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { useWallet } from "@/contexts/WalletContext"
-import { Star, Home, Settings, TestTube, Menu, X, Wallet, Activity } from "lucide-react"
+import { Star, Home, Settings, TestTube, Menu, X, Wallet, Activity, LogOut ,Replace } from "lucide-react"
 import { cn } from "@/lib/utils"
-
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu"
 interface NavItem {
   href: string
   icon: React.ComponentType<{ className?: string }>
@@ -23,13 +23,16 @@ const navigationItems: NavItem[] = [
 export default function ModernHeader() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const pathname = usePathname()
-  const { 
+   const { 
     isConnected, 
     connectedWallet, 
     agentBalance,
     isAgentActive,
-    handleConnectMetaMask 
+    handleConnectMetaMask,
+    handleDisconnectWallet, // Add this
+    handleChangeWallet    // Add this
   } = useWallet()
+
 
   const toggleMobileMenu = () => setIsMobileMenuOpen(!isMobileMenuOpen)
 
@@ -73,49 +76,62 @@ export default function ModernHeader() {
               })}
             </nav>
 
-            {/* Wallet & Agent Status */}
             <div className="hidden md:flex items-center gap-4">
-              {isConnected ? (
-                <div className="flex items-center gap-4">
-                  {/* Agent Status */}
-                  <div className="flex items-center gap-2 px-3 py-2 glass-card rounded-lg">
-                    <Activity className={cn(
-                      "w-4 h-4",
-                      isAgentActive ? "text-green-400" : "text-gray-400"
-                    )} />
-                    <span className={cn(
-                      "text-xs font-medium",
-                      isAgentActive ? "text-green-400 status-active" : "text-gray-400"
-                    )}>
-                      {isAgentActive ? "Active" : "Inactive"}
-                    </span>
-                  </div>
+  {isConnected && connectedWallet ? (
+    <div className="flex items-center gap-4">
+      {/* Agent Status */}
+      <div className="flex items-center gap-2 px-3 py-2 glass-card rounded-lg">
+        <Activity className={cn(
+          "w-4 h-4",
+          isAgentActive ? "text-green-400" : "text-gray-400"
+        )} />
+        <span className={cn(
+          "text-xs font-medium",
+          isAgentActive ? "text-green-400 status-active" : "text-gray-400"
+        )}>
+          {isAgentActive ? "Active" : "Inactive"}
+        </span>
+      </div>
 
-                  {/* Wallet Info */}
-                  <div className="glass-card px-4 py-2 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <Wallet className="w-4 h-4 electric-cyan" />
-                      <div className="text-right">
-                        <p className="text-sm font-medium text-white font-mono">
-                          {connectedWallet.slice(0, 6)}...{connectedWallet.slice(-4)}
-                        </p>
-                        <p className="text-xs electric-cyan">
-                          {agentBalance} AVAX
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <Button 
-                  onClick={handleConnectMetaMask}
-                  className="electric-cyan-bg text-black font-bold hover:electric-cyan-glow transition-all duration-300 px-6 py-2"
-                >
-                  Connect Wallet
-                </Button>
-              )}
-            </div>
-
+      {/* Wallet Info Dropdown */}
+<DropdownMenu>
+  <DropdownMenuTrigger asChild>
+    <div className="glass-card px-4 py-2 rounded-lg cursor-pointer hover:border-electric-cyan/50 border border-transparent transition-colors">
+      <div className="flex items-center gap-3">
+        <Wallet className="w-4 h-4 electric-cyan" />
+        <div className="text-right">
+          <p className="text-sm font-medium text-white font-mono">
+            {connectedWallet.slice(0, 6)}...{connectedWallet.slice(-4)}
+          </p>
+          <p className="text-xs electric-cyan">
+            {agentBalance} AVAX
+          </p>
+        </div>
+      </div>
+    </div>
+  </DropdownMenuTrigger>
+  <DropdownMenuContent className="glass-card mr-6">
+    <DropdownMenuItem onClick={handleChangeWallet} className="cursor-pointer">
+      <Replace className="w-4 h-4 mr-2" />
+      <span>Change Wallet</span>
+    </DropdownMenuItem>
+    <DropdownMenuSeparator />
+    <DropdownMenuItem onClick={handleDisconnectWallet} className="cursor-pointer text-red-400 focus:text-red-400">
+      <LogOut className="w-4 h-4 mr-2" />
+      <span>Disconnect</span>
+    </DropdownMenuItem>
+  </DropdownMenuContent>
+</DropdownMenu>
+    </div>
+  ) : (
+    <Button 
+      onClick={handleConnectMetaMask} // This connects the button
+      className="electric-cyan-bg text-black font-bold hover:electric-cyan-glow transition-all duration-300 px-6 py-2"
+    >
+      Connect Wallet
+    </Button>
+  )}
+</div>
             {/* Mobile Menu Button */}
             <Button
               variant="ghost"
@@ -163,41 +179,49 @@ export default function ModernHeader() {
 
               {/* Mobile Wallet Section */}
               <div className="pt-4 border-t border-white/10">
-                {isConnected ? (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-400">Wallet</span>
-                      <span className="text-sm font-mono text-white">
-                        {connectedWallet?.slice(0, 6)}...{connectedWallet?.slice(-4)}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-400">Balance</span>
-                      <span className="text-sm electric-cyan font-medium">
-                        {agentBalance} AVAX
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-400">Agent</span>
-                      <span className={cn(
-                        "text-sm font-medium",
-                        isAgentActive ? "text-green-400" : "text-gray-400"
-                      )}>
-                        {isAgentActive ? "Active" : "Inactive"}
-                      </span>
-                    </div>
-                  </div>
-                ) : (
-                  <Button 
-                    onClick={() => {
-                      handleConnectMetaMask()
-                      setIsMobileMenuOpen(false)
-                    }}
-                    className="w-full electric-cyan-bg text-black font-bold"
-                  >
-                    Connect Wallet
-                  </Button>
-                )}
+              {isConnected ? (
+  <div className="space-y-3">
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-gray-400">Wallet</span>
+      <span className="text-sm font-mono text-white">
+        {connectedWallet?.slice(0, 6)}...{connectedWallet?.slice(-4)}
+      </span>
+    </div>
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-gray-400">Balance</span>
+      <span className="text-sm electric-cyan font-medium">
+        {agentBalance} AVAX
+      </span>
+    </div>
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-gray-400">Agent</span>
+      <span className={cn(
+        "text-sm font-medium",
+        isAgentActive ? "text-green-400" : "text-gray-400"
+      )}>
+        {isAgentActive ? "Active" : "Inactive"}
+      </span>
+    </div>
+    <div className="pt-3 border-t border-white/10 space-y-2">
+       <Button onClick={() => {handleChangeWallet(); setIsMobileMenuOpen(false);}} variant="ghost" className="w-full justify-start">
+           <Replace className="w-4 h-4 mr-2" /> Change Wallet
+       </Button>
+       <Button onClick={() => {handleDisconnectWallet(); setIsMobileMenuOpen(false);}} variant="ghost" className="w-full justify-start text-red-400 hover:text-red-400">
+           <LogOut className="w-4 h-4 mr-2" /> Disconnect
+       </Button>
+    </div>
+  </div>
+) : (
+  <Button 
+    onClick={() => {
+      handleConnectMetaMask()
+      setIsMobileMenuOpen(false)
+    }}
+    className="w-full electric-cyan-bg text-black font-bold"
+  >
+    Connect Wallet
+  </Button>
+)}
               </div>
             </div>
           </div>
