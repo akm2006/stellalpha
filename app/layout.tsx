@@ -6,7 +6,8 @@ import ModernHeader from "@/components/modern-header"
 import ParticlesBackground from "@/components/particles-background"
 import { GlobalToastRenderer } from "@/components/toast"
 import { WalletProvider } from "@/contexts/WalletContext"
-import { Toaster } from "@/components/ui/sonner";
+
+import { ChatAgent } from "@/components/chat-agent"; 
 
 const inter = Inter({
   subsets: ["latin"],
@@ -23,7 +24,6 @@ const spaceGrotesk = Space_Grotesk({
 export const metadata: Metadata = {
   title: "Stellalpha",
   description: "Autonomous Gasless Copy-Trading Agent",
-
 }
 
 export default function RootLayout({
@@ -39,6 +39,7 @@ export default function RootLayout({
             <ParticlesBackground />
             <ModernHeader />
             <main className="relative z-10">{children}</main>
+            <ChatAgent /> 
           </div>
           <GlobalToastRenderer />
         </WalletProvider>

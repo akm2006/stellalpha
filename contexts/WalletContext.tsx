@@ -25,7 +25,7 @@ interface WalletContextType {
   handleDisconnectWallet: () => void;
   handleChangeWallet: () => Promise<void>;
   activateAgent: (privateKey: string) => Promise<boolean>
-  deactivateAgent: () => void; // Added deactivate function
+  deactivateAgent: () => Promise<void>;
   followStar: (address: string) => Promise<void>
   unfollowStar: (address: string) => Promise<void>
 }
@@ -45,9 +45,10 @@ declare global {
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined)
 
-const FUJI_CHAIN_ID = '0xa869' // 43113 in hex for Fuji Testnet
+const CHAIN_ID_HEX = `0x${parseInt(process.env.NEXT_PUBLIC_CHAIN_ID!, 10).toString(16)}`;
+
 const FUJI_NETWORK_PARAMS = {
-    chainId: FUJI_CHAIN_ID,
+    chainId: CHAIN_ID_HEX,
     chainName: 'Avalanche Fuji C-Chain',
     nativeCurrency: { name: 'Avalanche', symbol: 'AVAX', decimals: 18 },
     rpcUrls: [process.env.NEXT_PUBLIC_AVALANCHE_RPC_URL!],
@@ -62,17 +63,42 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [followedStars, setFollowedStars] = useState<string[]>([])
   const [isFollowedLoading, setIsFollowedLoading] = useState(false)
 
+  // --- MODIFIED: fetchBalance now calls the internal API ---
   const fetchBalance = useCallback(async (address: string) => {
+    if (!address) return;
     try {
-        const rpcUrl = process.env.NEXT_PUBLIC_AVALANCHE_RPC_URL!;
-        const provider = new ethers.JsonRpcProvider(rpcUrl);
-        const balanceWei = await provider.getBalance(address);
-        setAgentBalance(ethers.formatEther(balanceWei).slice(0, 8));
+        const response = await fetch('/api/portfolio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userSmartAccount: address }),
+        });
+        const result = await response.json();
+        if (response.ok && result.success && result.balances.length > 0) {
+            // Find the AVAX balance from the response
+            const avaxBalance = result.balances.find((b: {token: string}) => b.token === 'AVAX');
+            if (avaxBalance) {
+                setAgentBalance(parseFloat(avaxBalance.amount).toFixed(4));
+            }
+        } else {
+             throw new Error(result.error || "Failed to parse portfolio balance.");
+        }
     } catch (error) {
-        console.error("Failed to fetch balance:", error);
-        setAgentBalance("0.00");
+        console.error("Failed to fetch balance via API:", error);
     }
   }, []);
+
+  // Poll for balance every 15 seconds when the wallet is connected
+  useEffect(() => {
+    if (isConnected && connectedWallet) {
+      fetchBalance(connectedWallet); // Initial fetch
+      const interval = setInterval(() => {
+        fetchBalance(connectedWallet);
+      }, 15000);
+
+      return () => clearInterval(interval);
+    }
+  }, [isConnected, connectedWallet, fetchBalance]);
+
 
   const fetchFollowedStars = useCallback(async (walletAddress: string) => {
     if (!walletAddress) return;
@@ -111,7 +137,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     try {
         await window.ethereum.request({
             method: 'wallet_switchEthereumChain',
-            params: [{ chainId: FUJI_CHAIN_ID }],
+             params: [{ chainId: CHAIN_ID_HEX }],
         });
         return true;
     } catch (switchError: any) {
@@ -145,7 +171,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   };
 
   const handleDisconnectWallet = useCallback(() => {
-    updateWalletState([]); // Calling with an empty array triggers the disconnect logic
+    updateWalletState([]);
     showToast("Wallet disconnected", "success");
   }, [updateWalletState]);
 
@@ -180,7 +206,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 userPrivateKey: pk,
-                starWallet: followedStars[0], // Uses the first followed star for activation
+                starWallet: followedStars[0],
                 userWallet: connectedWallet.toLowerCase(),
             }),
         });
@@ -197,9 +223,19 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const deactivateAgent = useCallback(() => {
-    setIsAgentActive(false);
-    showToast("Agent deactivated.", "success");
+  const deactivateAgent = useCallback(async () => {
+    try {
+      const response = await fetch('/api/agent', { method: 'DELETE' });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Failed to deactivate agent on the server.");
+      }
+      setIsAgentActive(false);
+      showToast("Agent deactivated.", "success");
+    } catch (error: any) {
+      console.error(error);
+      showToast(error.message, "error");
+    }
   }, []);
 
 
@@ -272,7 +308,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     handleDisconnectWallet,
     handleChangeWallet,
     activateAgent,
-    deactivateAgent, // Export the new function
+    deactivateAgent,
     followStar,
     unfollowStar,
   };

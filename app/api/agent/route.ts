@@ -9,8 +9,8 @@ const redis = Redis.fromEnv();
 const provider = new ethers.JsonRpcProvider(process.env.AVALANCHE_RPC_URL!);
 
 // --- Fuji Testnet Configuration ---
-const FUJI_CHAIN_ID = 43113;
-const TRADER_JOE_ROUTER_ADDRESS = "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506";
+const FUJI_CHAIN_ID = 43113; 
+const TRADER_JOE_ROUTER_ADDRESS = "0x60aE616a2155Ee3d9A68541Ba4544862310933d4";
 const TRADER_JOE_ABI = [
   "function swapExactAVAXForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable",
   "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)"
@@ -38,7 +38,7 @@ async function initializeAgent(userPrivateKey: `0x${string}`) {
     process.env["USE_EOA"] = "true";
     process.env["PRIVATE_KEY"] = userPrivateKey;
     process.env["RPC_URL"] = rpcUrl;
-    process.env["CHAIN_ID"] = String(FUJI_CHAIN_ID);
+    process.env["CHAIN_ID"] = process.env.CHAIN_ID;
     process.env["0xGASLESS_API_KEY"] = apiKey;
 
     console.log("✅ EOA environment variables set for AgentKit tools.");
@@ -47,7 +47,7 @@ async function initializeAgent(userPrivateKey: `0x${string}`) {
         privateKey: userPrivateKey,
         rpcUrl: rpcUrl,
         apiKey: apiKey,
-        chainID: FUJI_CHAIN_ID,
+        chainID: Number(process.env.CHAIN_ID!),
     });
 
     agentToolkit = new AgentkitToolkit(agentkit);

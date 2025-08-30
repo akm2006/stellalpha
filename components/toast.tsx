@@ -37,7 +37,8 @@ export function Toast({ variant, title, description, className }: ToastProps) {
   }
 
   return (
-    <div className={cn("glassmorphism-card rounded-lg p-4 flex items-start gap-3 min-w-[320px] max-w-md", className)}>
+    // Corrected class from "glassmorphism-card" to "glass-card"
+    <div className={cn("glass-card rounded-lg p-4 flex items-start gap-3 min-w-[320px] max-w-md", className)}>
       {getIcon()}
       <div className="flex-1 min-w-0">
         <h4 className="font-semibold text-white text-sm leading-tight">{title}</h4>
@@ -79,38 +80,33 @@ let toastListeners: ((toasts: ToastItem[]) => void)[] = []
 let toasts: ToastItem[] = []
 
 export const showToast = (
-  message: string, 
-  type: 'success' | 'error' | 'loading', 
+  message: string,
+  type: 'success' | 'error' | 'loading',
   toastId?: string
 ): string => {
-  // Generate a new ID if none provided
   const id = toastId || Math.random().toString(36).substr(2, 9);
-  
-  // Remove existing toast if ID provided
+
   if (toastId) {
     toasts = toasts.filter(t => t.id !== toastId);
   }
-  
-  // Add new toast
+
   const newToast: ToastItem = {
     id,
     message,
     variant: type
   };
-  
+
   toasts = [...toasts, newToast];
-  
-  // Notify listeners
+
   toastListeners.forEach(listener => listener(toasts));
-  
-  // Auto-remove non-loading toasts
+
   if (type !== 'loading') {
     setTimeout(() => {
       toasts = toasts.filter(t => t.id !== id);
       toastListeners.forEach(listener => listener(toasts));
     }, 3000);
   }
-  
+
   return id;
 }
 

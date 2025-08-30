@@ -2,10 +2,13 @@
 import { NextResponse } from 'next/server';
 import { ethers } from 'ethers';
 
-// This API now fetches the EOA's portfolio
+// Placeholder for real-time price fetching. In a real-world scenario,
+// you would fetch this from a price oracle or an API like CoinGecko.
+const MOCK_AVAX_PRICE_USD = 30.50; // Example: 1 AVAX = $30.50
+
 export async function POST(request: Request) {
   try {
-    const { userSmartAccount: userWallet } = await request.json(); // Rename for clarity
+    const { userSmartAccount: userWallet } = await request.json();
 
     if (!userWallet) {
       return NextResponse.json({ success: false, error: 'userWallet is required' }, { status: 400 });
@@ -15,9 +18,15 @@ export async function POST(request: Request) {
     const balanceWei = await provider.getBalance(userWallet);
     const balanceAvax = parseFloat(ethers.formatEther(balanceWei)).toFixed(4);
 
-    // For now, we only return the native AVAX balance for the EOA.
-    // Fetching all ERC20 balances is more complex and can be added later.
-    const balances = [{ token: 'AVAX', amount: balanceAvax }];
+    // Calculate the USD value based on the mock price
+    const valueUsd = (parseFloat(balanceAvax) * MOCK_AVAX_PRICE_USD).toFixed(2);
+
+    // The API now returns the token, its amount, and its converted value
+    const balances = [{ 
+      token: 'AVAX', 
+      amount: balanceAvax, 
+      value: `$${valueUsd}` 
+    }];
 
     return NextResponse.json({ success: true, balances });
   } catch (error) {

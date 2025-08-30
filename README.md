@@ -1,36 +1,136 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+# Stellalpha
+
+**Stellalpha** is an autonomous, gasless copy-trading agent and interactive AI assistant built for EVM-compatible chains, demonstrated on the Avalanche network.  
+
+Welcome to Stellalpha!  
+This project allows users to connect their MetaMask wallet, follow **"Star" traders**, and have the Stellalpha agent automatically replicate their trades in a gasless manner.  
+
+It also features a powerful on-chain AI assistant that can perform wallet operations through natural language commands, making complex blockchain interactions as simple as having a conversation.  
+
+---
+
+## Features
+
+- **Autonomous Copy-Trading**:  
+  Automatically monitor and execute the same trades as followed *Star* wallets when they interact with the Trader Joe DEX. Our backend service watches the chain for you, 24/7.
+
+- **Gasless Transactions**:  
+  Powered by the **0xGasless AgentKit**, all trades are executed without requiring the user to hold native tokens (like AVAX) for gas fees. This removes a major barrier to entry for new users.
+
+- **EOA Agent Model**:  
+  Utilizes a secure **Externally Owned Account (EOA)** agent on the backend to perform actions. This is a direct wallet-to-wallet operation and does not use the 0xGasless Smart Account model, offering a simpler and more direct approach to automation.
+
+- **Interactive AI Assistant**:  
+  A built-in chatbot that can check balances, transfer tokens, and perform swaps using natural language. It's designed to understand your intent and execute complex on-chain actions on your command.
+
+- **Live Activity Feed**:  
+  A real-time log of all trades executed by the agent, providing transparency and instant feedback on the agent's performance.
+
+- **Portfolio Management**:  
+  A comprehensive command center to view current holdings with real-time value conversion, manage your list of followed stars, and configure trade settings like the amount to be used per trade.
+
+- **Modern UI**:  
+  A sleek, futuristic interface with a dark theme and glassmorphism effects, built with **Next.js** and **Tailwind CSS** for a responsive and visually appealing experience.
+
+---
+
+## Core Technologies
+
+- **Framework**: Next.js & React  
+- **Styling**: Tailwind CSS  
+- **Blockchain Interaction**: Ethers.js  
+- **Gasless Infrastructure**: 0xGasless AgentKit SDK  
+- **AI Chat**: LangChain.js with OpenRouter (GPT-4o)  
+- **Database**: Upstash Redis for session and state management  
+- **Network**: Avalanche Fuji Testnet & Mainnet compatible  
+
+---
+
+## Mainnet Functionality
+
+This application is fully functional on the Avalanche Mainnet.  
+To switch from the default Fuji Testnet to Mainnet, update the following environment variables:
+
+```env
+CHAIN_ID=43114
+NEXT_PUBLIC_CHAIN_ID=43114
+AVALANCHE_RPC_URL=Your_Avalanche_Mainnet_RPC_URL
+````
+
+---
+
+## ⚠️ Security Warning: Private Key Usage
+
+To enable the autonomous features, this application requires you to provide your wallet's **private key**.
+
+* **NEVER** use your primary wallet or a wallet with significant funds.
+* **ALWAYS** use a *burner wallet* created specifically for this application.
+
+The private key is sent to the backend to initialize the agent for the current session. While it is **not stored permanently**, exposing your private key online is inherently risky.
+
+You are solely responsible for the security of your private keys and funds.
+
+---
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+* Node.js (v18 or higher)
+* npm or yarn
+* A MetaMask wallet
+* Testnet or Mainnet funds, depending on your configuration
+
+---
+
+### Installation
+
+1. **Clone the repository**:
+
+   ```bash
+   git clone <your-repo-url>
+   cd stellalpha-new
+   ```
+
+2. **Install dependencies**:
+
+   ```bash
+   npm install
+   ```
+
+3. **Set up environment variables**:
+   Create a file named `.env.local` in the root of your project and add:
+
+   ```env
+   # Your private RPC URL for the Avalanche Fuji Testnet or Mainnet
+   AVALANCHE_RPC_URL="YOUR_AVAX_RPC_URL"
+   NEXT_PUBLIC_AVALANCHE_RPC_URL="YOUR_AVAX_RPC_URL"
+
+   # Your 0xGasless API Key from the 0xGasless dashboard
+   OXGASLESS_API_KEY="YOUR_0XGASLESS_API_KEY"
+
+   # Your API key from OpenRouter.ai for the chat agent
+   OPENROUTER_API_KEY="YOUR_OPENROUTER_API_KEY"
+
+   # Chain ID for the target network (43113 for Fuji, 43114 for Mainnet)
+   CHAIN_ID="43113"
+   NEXT_PUBLIC_CHAIN_ID="43113"
+
+   # Upstash Redis connection details
+   UPSTASH_REDIS_REST_URL="YOUR_UPSTASH_URL"
+   UPSTASH_REDIS_REST_TOKEN="YOUR_UPSTASH_TOKEN"
+   ```
+
+---
+
+### Running the Application
+
+Start the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
