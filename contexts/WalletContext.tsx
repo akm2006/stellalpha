@@ -3,20 +3,25 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react"
 import { showToast } from "@/components/toast"
 import { ethers } from "ethers"
+import React from "react"
 
-// --- Interfaces and Types ---
+// --- This is the definitive interface for our context ---
 interface WalletContextType {
+  // Wallet State
   isConnected: boolean
   connectedWallet: string | null
-  smartAccountAddress: string | null
-  isMetaMaskInstalled: boolean
+  
+  // Agent State
+  isAgentActive: boolean
+  agentBalance: string
+  
+  // Data State
   followedStars: string[]
   isFollowedLoading: boolean
+  
+  // Functions
   handleConnectMetaMask: () => Promise<void>
-  handleDisconnectWallet: () => void
-  handleChangeWallet: () => Promise<void>
-  handleCopyAddress: () => void
-  handleViewOnExplorer: () => void
+  activateAgent: (privateKey: string) => Promise<boolean>
   followStar: (address: string) => Promise<void>
   unfollowStar: (address: string) => Promise<void>
 }
@@ -36,272 +41,215 @@ declare global {
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined)
 
-// Avalanche C-Chain details
-const AVALANCHE_CHAIN_ID = '0xa86a' // 43114 in hex
-const AVALANCHE_NETWORK_PARAMS = {
-    chainId: AVALANCHE_CHAIN_ID,
-    chainName: 'Avalanche C-Chain',
+const FUJI_CHAIN_ID = '0xa869' // 43113 in hex
+const FUJI_NETWORK_PARAMS = {
+    chainId: FUJI_CHAIN_ID,
+    chainName: 'Avalanche Fuji C-Chain',
     nativeCurrency: { name: 'Avalanche', symbol: 'AVAX', decimals: 18 },
-    rpcUrls: ['https://api.avax.network/ext/bc/C/rpc'],
-    blockExplorerUrls: ['https://snowtrace.io/'],
+    rpcUrls: [process.env.NEXT_PUBLIC_AVALANCHE_RPC_URL!],
+    blockExplorerUrls: ['https://testnet.snowtrace.io/'],
 };
 
-
 export function WalletProvider({ children }: { children: ReactNode }) {
-  const [isConnected, setIsConnected] = useState(false);
-  const [connectedWallet, setConnectedWallet] = useState<string | null>(null);
-  const [smartAccountAddress, setSmartAccountAddress] = useState<string | null>(null);
-  const [isMetaMaskInstalled, setIsMetaMaskInstalled] = useState(false);
-  const [followedStars, setFollowedStars] = useState<string[]>([]);
-  const [isFollowedLoading, setIsFollowedLoading] = useState(false);
+  const [isConnected, setIsConnected] = useState(false)
+  const [connectedWallet, setConnectedWallet] = useState<string | null>(null)
+  const [agentBalance, setAgentBalance] = useState("0.00")
+  const [isAgentActive, setIsAgentActive] = useState(false)
+  const [followedStars, setFollowedStars] = useState<string[]>([])
+  const [isFollowedLoading, setIsFollowedLoading] = useState(false)
 
-  // --- Core Logic ---
-
-  const initializeSmartAccount = useCallback(async (ethereumProvider: any) => {
+  const fetchBalance = useCallback(async (address: string) => {
     try {
-      const { ZeroXgaslessSmartAccount } = await import("@0xgasless/smart-account");
-      const web3Provider = new ethers.BrowserProvider(ethereumProvider);
-      const signer = await web3Provider.getSigner();
-      const smartAccount = await ZeroXgaslessSmartAccount.create({
-        signer: signer,
-        chainId: 43114,
-        bundlerUrl: `https://bundler.0xgasless.com/v1/43114`,
-        paymasterUrl: `https://paymaster.0xgasless.com/v1/43114/rpc/${process.env.OXGASLESS_API_KEY!}`,
-        ZeroXgaslessPaymasterApiKey: process.env.NEXT_PUBLIC_0XGASLESS_API_KEY!,
-      });
-      const sca = await smartAccount.getAddress();
-      setSmartAccountAddress(sca);
-      return sca;
+        const rpcUrl = process.env.NEXT_PUBLIC_AVALANCHE_RPC_URL!;
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const balanceWei = await provider.getBalance(address);
+        setAgentBalance(ethers.formatEther(balanceWei).slice(0, 8));
     } catch (error) {
-      console.error("Failed to initialize Smart Account:", error);
-      showToast("Could not derive Smart Account address.", "error");
-      return null;
+        console.error("Failed to fetch balance:", error);
+        setAgentBalance("0.00");
     }
   }, []);
-
-  const fetchFollowedStars = useCallback(async (sca: string) => {
-    if (!sca) return;
+  
+  const fetchFollowedStars = useCallback(async (walletAddress: string) => {
+    if (!walletAddress) return;
     setIsFollowedLoading(true);
     try {
-      const response = await fetch('/api/followed-stars', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userSmartAccount: sca }),
-      });
-      const result = await response.json();
-      if (response.ok && result.success) {
-        setFollowedStars(result.followedWallets);
-      } else {
-        throw new Error(result.error || "Failed to fetch followed stars.");
+      // API now uses `userWallet` query param
+      const response = await fetch(`/api/followed-stars?userWallet=${walletAddress.toLowerCase()}`);
+      const data = await response.json();
+      if (data.success) {
+        setFollowedStars(data.followedWallets);
       }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "An unknown error occurred.";
-      showToast(errorMessage, "error");
+    } catch (error) {
+      console.error("Failed to fetch followed stars", error);
     } finally {
       setIsFollowedLoading(false);
     }
   }, []);
 
-  const updateWalletStateAndData = useCallback(async (accounts: string[]) => {
+  const updateWalletState = useCallback(async (accounts: string[]) => {
     if (accounts.length > 0) {
       const account = accounts[0];
       setIsConnected(true);
       setConnectedWallet(account);
-      const sca = await initializeSmartAccount(window.ethereum);
-      if (sca) {
-        await fetchFollowedStars(sca);
-      }
+      await fetchBalance(account);
+      await fetchFollowedStars(account);
     } else {
       setIsConnected(false);
       setConnectedWallet(null);
-      setSmartAccountAddress(null);
+      setAgentBalance("0.00");
+      setIsAgentActive(false);
       setFollowedStars([]);
     }
-  }, [initializeSmartAccount, fetchFollowedStars]);
-
-  const switchToAvalanche = async () => {
+  }, [fetchBalance, fetchFollowedStars]);
+  
+  const switchToFuji = async (): Promise<boolean> => {
     if (!window.ethereum) return false;
     try {
-      await window.ethereum.request({
-        method: 'wallet_switchEthereumChain',
-        params: [{ chainId: AVALANCHE_CHAIN_ID }],
-      });
-      return true;
+        await window.ethereum.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: FUJI_CHAIN_ID }],
+        });
+        return true;
     } catch (switchError: any) {
-      if (switchError.code === 4902) {
-        try {
-          await window.ethereum.request({
-            method: 'wallet_addEthereumChain',
-            params: [AVALANCHE_NETWORK_PARAMS],
-          });
-          return true;
-        } catch (addError) {
-          console.error("Failed to add Avalanche network:", addError);
-          return false;
+        if (switchError.code === 4902) {
+            try {
+                await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [FUJI_NETWORK_PARAMS] });
+                return true;
+            } catch (addError) { return false; }
         }
-      }
-      return false;
+        return false;
     }
   };
 
-  // --- Public Handler Functions ---
-
   const handleConnectMetaMask = async () => {
-    if (!window.ethereum?.isMetaMask) {
-      showToast("MetaMask is not installed.", "error");
+    if (!window.ethereum) {
+      showToast("Please install MetaMask!", "error");
       return;
     }
-    const loadingToastId = showToast("Please check your MetaMask...", "loading");
     try {
-      const switched = await switchToAvalanche();
+      const switched = await switchToFuji();
       if (!switched) {
-        showToast("Please switch to the Avalanche network.", "error", loadingToastId);
-        return;
+          showToast("Please switch to the Fuji Testnet in MetaMask.", "error");
+          return;
       }
       const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
-      await updateWalletStateAndData(accounts);
-      showToast("Successfully connected wallet", "success", loadingToastId);
-    } catch (error: any) {
-      const message = error.code === 4001 ? "Connection rejected by user" : "Failed to connect to MetaMask";
-      showToast(message, "error", loadingToastId);
+      updateWalletState(accounts);
+      showToast("Wallet Connected", "success");
+    } catch (error) {
+      showToast("Failed to connect wallet.", "error");
     }
-  }
+  };
 
-  const handleDisconnectWallet = useCallback(() => {
-    setIsConnected(false);
-    setConnectedWallet(null);
-    setSmartAccountAddress(null);
-    setFollowedStars([]);
-    showToast("Wallet disconnected", "success");
-  }, []);
-
-  const handleChangeWallet = async () => {
-    if (!window.ethereum) return;
+  const activateAgent = async (privateKey: string): Promise<boolean> => {
+    if (!connectedWallet || followedStars.length === 0) {
+        showToast("Please connect your wallet and follow at least one star.", "error");
+        return false;
+    }
     try {
-      await window.ethereum.request({
-        method: 'wallet_requestPermissions',
-        params: [{ eth_accounts: {} }],
-      });
-    } catch (error: any) {
-      if (error.code !== 4001) {
-        showToast("Failed to open wallet selection.", "error");
-      }
-    }
-  }
+        let pk = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
+        const walletFromKey = new ethers.Wallet(pk);
+        if (walletFromKey.address.toLowerCase() !== connectedWallet.toLowerCase()) {
+            throw new Error("Private key does not match the connected wallet address.");
+        }
 
+        const response = await fetch('/api/agent', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                userPrivateKey: pk,
+                starWallet: followedStars[0], // Using the first followed star to initialize
+                userWallet: connectedWallet.toLowerCase(),
+            }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || "Failed to activate agent.");
+        }
+        setIsAgentActive(true);
+        return true;
+    } catch (error: any) {
+        showToast(error.message, "error");
+        setIsAgentActive(false);
+        return false;
+    }
+  };
+  
   const followStar = async (address: string) => {
-    if (!isConnected || !smartAccountAddress) {
-      showToast("Please connect your wallet first.", "error");
-      return;
-    }
-    const loadingToastId = showToast("Following star...", "loading");
+    if (!connectedWallet) return;
     try {
-      const response = await fetch('/api/follow', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userSmartAccount: smartAccountAddress, targetWallet: address }),
-      });
-      const result = await response.json();
-      if (response.ok && result.success) {
-        showToast(result.message, "success", loadingToastId);
-        setFollowedStars(prev => [...prev, address]);
-      } else {
-        throw new Error(result.error || "Failed to follow star.");
-      }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "An unknown error occurred.";
-      showToast(errorMessage, "error", loadingToastId);
+        const response = await fetch('/api/follow', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userWallet: connectedWallet.toLowerCase(), targetWallet: address.toLowerCase() }),
+        });
+        if(response.ok) {
+            setFollowedStars(prev => [...new Set([...prev, address])]); // Avoid duplicates
+            showToast("Successfully followed star!", "success");
+        } else {
+            throw new Error("Failed to follow star.");
+        }
+    } catch (error) {
+        showToast("Failed to follow star.", "error");
     }
   };
 
   const unfollowStar = async (address: string) => {
-    if (!isConnected || !smartAccountAddress) {
-      showToast("Please connect your wallet first.", "error");
-      return;
-    }
-    const loadingToastId = showToast("Unfollowing star...", "loading");
+    if (!connectedWallet) return;
     try {
-      const response = await fetch('/api/unfollow', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userSmartAccount: smartAccountAddress, targetWallet: address }),
-      });
-      const result = await response.json();
-      if (response.ok && result.success) {
-        showToast(result.message, "success", loadingToastId);
-        setFollowedStars(prev => prev.filter(star => star !== address));
-      } else {
-        throw new Error(result.error || "Failed to unfollow star.");
-      }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "An unknown error occurred.";
-      showToast(errorMessage, "error", loadingToastId);
+        const response = await fetch('/api/unfollow', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userWallet: connectedWallet.toLowerCase(), targetWallet: address.toLowerCase() }),
+        });
+        if (response.ok) {
+            setFollowedStars(prev => prev.filter(star => star.toLowerCase() !== address.toLowerCase()));
+            showToast("Unfollowed star.", "success");
+        } else {
+            throw new Error("Failed to unfollow star.");
+        }
+    } catch (error) {
+        showToast("Failed to unfollow star.", "error");
     }
   };
 
-  const handleCopyAddress = () => {
-    if (smartAccountAddress) {
-      navigator.clipboard.writeText(smartAccountAddress);
-      showToast("Smart Account address copied!", "success");
-    }
-  }
-
-  const handleViewOnExplorer = () => {
-    if (smartAccountAddress) {
-      window.open(`https://snowtrace.io/address/${smartAccountAddress}`, "_blank");
-    }
-  }
-
-  // Effect to set up MetaMask event listeners
   useEffect(() => {
-    if (typeof window.ethereum !== 'undefined') {
-      setIsMetaMaskInstalled(true);
-      
-      const handleAccountsChanged = (accounts: string[]) => {
-        console.log("MetaMask account changed.");
-        updateWalletStateAndData(accounts);
-      };
-      
+    if (typeof window !== "undefined" && window.ethereum) {
+      const handleAccountsChanged = (accounts: string[]) => updateWalletState(accounts);
       const handleChainChanged = () => window.location.reload();
-      const handleDisconnect = () => handleDisconnectWallet();
 
       window.ethereum.on('accountsChanged', handleAccountsChanged);
       window.ethereum.on('chainChanged', handleChainChanged);
-      window.ethereum.on('disconnect', handleDisconnect);
 
       return () => {
         if (window.ethereum?.removeListener) {
             window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
             window.ethereum.removeListener('chainChanged', handleChainChanged);
-            window.ethereum.removeListener('disconnect', handleDisconnect);
         }
       };
     }
-  }, [updateWalletStateAndData, handleDisconnectWallet]);
+  }, [updateWalletState]);
 
-  const value: WalletContextType = {
+  const value = {
     isConnected,
     connectedWallet,
-    smartAccountAddress,
-    isMetaMaskInstalled,
+    agentBalance,
+    isAgentActive,
     followedStars,
     isFollowedLoading,
     handleConnectMetaMask,
-    handleDisconnectWallet,
-    handleChangeWallet,
-    handleCopyAddress,
-    handleViewOnExplorer,
+    activateAgent,
     followStar,
     unfollowStar,
-  }
+  };
 
-  return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>
+  return <WalletContext.Provider value={value as WalletContextType}>{children}</WalletContext.Provider>;
 }
 
 export function useWallet() {
-  const context = useContext(WalletContext)
+  const context = useContext(WalletContext);
   if (context === undefined) {
-    throw new Error("useWallet must be used within a WalletProvider")
+    throw new Error("useWallet must be used within a WalletProvider");
   }
-  return context
+  return context;
 }

@@ -1,165 +1,128 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  ArrowRightCircle as ArrowUpRightCircle,
-  ArrowDownLeftFromCircle as ArrowDownLeftCircle,
-  ExternalLink,
-} from "lucide-react"
-import WalletHeader from "@/components/wallet-header"
-import { useWallet } from "@/contexts/WalletContext";
-import { showToast } from "@/components/toast";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { useWallet } from "@/contexts/WalletContext"
+import { showToast } from "@/components/toast"
 import { Skeleton } from "@/components/ui/skeleton"
-import { formatDistanceToNow } from 'date-fns';
+import WalletHeader from "@/components/wallet-header"
+import { Rss, ExternalLink } from "lucide-react"
 
 interface Signal {
   id: string;
-  type: 'buy' | 'sell' | 'swap';
   action: string;
-  wallet: string;
+  star: string;
   timestamp: string;
   txHash: string;
 }
 
-export default function StellaphaaDashboard() {
-  const [address, setAddress] = useState("")
-  // Get isConnected and the followStar function from the context
-  const { isConnected, followStar } = useWallet();
-  const [signalLog, setSignalLog] = useState<Signal[]>([]);
-  const [isLogLoading, setIsLogLoading] = useState(true);
+export default function DashboardPage() {
+  const [starToFollow, setStarToFollow] = useState("")
+  const [signals, setSignals] = useState<Signal[]>([]);
+  const [isLoadingSignals, setIsLoadingSignals] = useState(true);
 
-  useEffect(() => {
-    const fetchSignals = async () => {
-      // Don't set loading to true on refetch to avoid flashing
-      if (isLogLoading) {
-        try {
-          const response = await fetch('/api/signals');
-          const data = await response.json();
-          if (data.success) {
-            setSignalLog(data.signals);
-          } else {
-            throw new Error("Failed to fetch signals");
-          }
-        } catch (error) {
-          console.error("Failed to fetch signal log", error);
-          showToast("Could not load signal log.", "error");
-        } finally {
-          setIsLogLoading(false);
+  // Use our fully refactored EOA-based context
+  const { 
+    isConnected,
+    connectedWallet,
+    followStar
+  } = useWallet();
+
+  const fetchSignals = useCallback(async () => {
+    if (isConnected && connectedWallet) {
+      try {
+        const response = await fetch(`/api/signals?userWallet=${connectedWallet}`);
+        const data = await response.json();
+        if (data.success) {
+          setSignals(data.signals);
         }
+      } catch (error) {
+        console.error("Failed to fetch signals", error);
+      } finally {
+        setIsLoadingSignals(false);
       }
-    };
-
-    fetchSignals();
-    // Poll for new signals every 30 seconds
-    const interval = setInterval(fetchSignals, 30000);
-    return () => clearInterval(interval);
-  }, [isLogLoading]); // Rerunning the effect is not needed on every render
-
-
-  const handleActivateAgent = async () => {
-    if (!address) {
-        showToast("Please enter a valid address to follow.", "error");
-        return;
     }
-    // Directly call the followStar function from the context.
-    // It already handles loading toasts and state updates.
-    await followStar(address);
-    setAddress(""); // Clear input after submission
+  }, [isConnected, connectedWallet]);
+
+  // Effect to fetch signals periodically
+  useEffect(() => {
+    fetchSignals(); // Fetch on component load
+    const interval = setInterval(fetchSignals, 10000); // Poll for new signals every 10 seconds
+    return () => clearInterval(interval);
+  }, [fetchSignals]);
+
+
+  const handleFollow = () => {
+    if (!starToFollow) {
+      showToast("Please enter a wallet address.", "error");
+      return;
+    }
+    followStar(starToFollow);
+    setStarToFollow(""); // Clear input after following
   };
 
   return (
     <div className="min-h-screen stellalpha-bg text-white font-sans">
-      <header className="flex items-center justify-between p-6 border-b border-gray-800">
-        <div></div>
+      <header className="flex items-center justify-end p-6 border-b border-gray-800">
         <WalletHeader />
       </header>
 
-      <main className="max-w-4xl mx-auto p-6 space-y-8">
-        <Card className="glassmorphism-card">
-          <CardHeader>
-            <CardTitle className="text-2xl font-[family-name:var(--font-space-grotesk)] text-white">
-              Follow a Star
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
+      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-1">
+          <Card className="glassmorphism-card">
+            <CardHeader>
+              <CardTitle className="text-xl">Follow a Star</CardTitle>
+              <CardDescription>Enter a wallet address to start copying their trades.</CardDescription>
+            </CardHeader>
+            <CardContent className="flex gap-2">
               <Input
-                type="text"
-                placeholder="Paste Avalanche C-Chain address (0x...)"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                className="bg-gray-900/50 border-gray-600 text-white placeholder-gray-400 focus:electric-cyan-border focus:ring-1 focus:ring-[#00F6FF] transition-all duration-300"
+                placeholder="0x..."
+                value={starToFollow}
+                onChange={e => setStarToFollow(e.target.value)}
+                disabled={!isConnected}
+                className="bg-gray-900/50 border-gray-600"
               />
-            </div>
-            <Button
-              onClick={handleActivateAgent}
-              disabled={!address || !isConnected}
-              className="w-full electric-cyan-bg text-black font-bold hover:electric-cyan-glow-intense transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Activate Agent
-            </Button>
-          </CardContent>
-        </Card>
+              <Button onClick={handleFollow} disabled={!isConnected || !starToFollow}>Follow</Button>
+            </CardContent>
+          </Card>
+        </div>
 
-        <Card className="glassmorphism-card">
-          <CardHeader>
-            <CardTitle className="text-2xl font-[family-name:var(--font-space-grotesk)] text-white">
-              Signal Log
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {isLogLoading ? (
-                Array.from({ length: 4 }).map((_, index) => (
-                  <Skeleton key={index} className="h-20 w-full rounded-lg bg-gray-900/50" />
-                ))
-              ) : signalLog.length === 0 ? (
-                <div className="text-center py-10 text-gray-400">
-                  <p>No recent signals from followed stars.</p>
-                  <p className="text-xs mt-1">The log will update automatically when a followed star makes a trade.</p>
-                </div>
-              ) : (
-                signalLog.map((signal) => (
-                  <div
-                    key={signal.id}
-                    className={`flex items-center justify-between p-4 rounded-lg bg-gray-900/30 border border-gray-800/50 hover:border-gray-700/50 transition-colors duration-200 ${
-                      signal.type === "buy" ? "transaction-buy" : "transaction-sell"
-                    }`}
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="flex items-center justify-center">
-                        {signal.type === "buy" ? (
-                          <ArrowUpRightCircle className="w-6 h-6 text-green-400" />
-                        ) : (
-                          <ArrowDownLeftCircle className="w-6 h-6 text-red-400" />
-                        )}
-                      </div>
-                      <div className="w-8 h-8 rounded-full bg-gray-700/50 border border-gray-600/50"></div>
-                      <div className="space-y-1">
-                        <p className="text-white font-medium">{signal.action}</p>
-                        <p className="text-gray-400 text-sm">
-                          From wallet {signal.wallet.slice(0, 6)}...{signal.wallet.slice(-4)}
-                        </p>
-                      </div>
+        <div className="lg:col-span-2">
+          <Card className="glassmorphism-card">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><Rss/> Agent Activity Log</CardTitle>
+              <CardDescription>Autonomous trades executed by your agent will appear here.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 max-h-[60vh] overflow-y-auto">
+                {isLoadingSignals ? (
+                  Array.from({length: 3}).map((_, i) => <Skeleton key={i} className="h-16 w-full bg-gray-900/50"/>)
+                ) : !isConnected ? (
+                  <p className="text-gray-400 text-center py-8">Connect your wallet to see agent activity.</p>
+                ) : signals.length === 0 ? (
+                  <p className="text-gray-400 text-center py-8">No signals yet. Activate your agent and wait for a followed star to make a swap.</p>
+                ) : (
+                  signals.map(signal => (
+                    <div key={signal.id} className="p-4 bg-gray-900/30 rounded-lg border border-gray-800/50 animate-fade-in">
+                        <p className="font-semibold">{signal.action}</p>
+                        <div className="text-xs text-gray-400 mt-1 flex justify-between items-center">
+                            <span>Star: <span className="font-mono">{signal.star.slice(0,10)}...</span></span>
+                            <a 
+                                href={`https://testnet.snowtrace.io/tx/${signal.id}`} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 hover:text-electric-cyan transition-colors"
+                            >
+                                View Tx <ExternalLink className="w-3 h-3"/>
+                            </a>
+                        </div>
                     </div>
-                    <a 
-                      href={`https://snowtrace.io/tx/${signal.txHash}`} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-gray-500 hover:text-electric-cyan transition-colors"
-                    >
-                      <span className="text-sm hidden sm:inline">{formatDistanceToNow(new Date(signal.timestamp), { addSuffix: true })}</span>
-                      <ExternalLink className="w-4 h-4" />
-                    </a>
-                  </div>
-                ))
-              )}
-            </div>
-          </CardContent>
-        </Card>
+                 ))
+                )}
+            </CardContent>
+          </Card>
+        </div>
       </main>
     </div>
   )

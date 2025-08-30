@@ -8,16 +8,16 @@ const redis = Redis.fromEnv();
 
 export async function POST(request: Request) {
   try {
-    const { userSmartAccount, targetWallet } = await request.json();
+    const { userWallet, targetWallet } = await request.json();
 
-    if (!userSmartAccount || !targetWallet) {
-      return NextResponse.json({ error: 'Missing userSmartAccount or targetWallet' }, { status: 400 });
+    if (!userWallet || !targetWallet) {
+      return NextResponse.json({ error: 'Missing userWallet or targetWallet' }, { status: 400 });
     }
 
     // Remove the user from the targetWallet's set of followers
-    await redis.srem(`follows:${targetWallet}`, userSmartAccount);
+    await redis.srem(`follows:${targetWallet}`, userWallet);
 
-    console.log(`✅ DATABASE UPDATE: User ${userSmartAccount} has unfollowed ${targetWallet}`);
+    console.log(`✅ DATABASE UPDATE: User ${userWallet} has unfollowed ${targetWallet}`);
 
     return NextResponse.json({ success: true, message: 'Successfully unfollowed the star.' });
 

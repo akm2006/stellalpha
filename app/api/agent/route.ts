@@ -2,158 +2,156 @@
 
 import { NextResponse } from 'next/server';
 import { ethers } from 'ethers';
-import { Agentkit } from '@0xgasless/agentkit';
 import { Redis } from '@upstash/redis';
+import { Agentkit, AgentkitToolkit } from '@0xgasless/agentkit';
 
 const redis = Redis.fromEnv();
+// We will use the Fuji RPC URL from our environment variables
 const provider = new ethers.JsonRpcProvider(process.env.AVALANCHE_RPC_URL!);
 
-// --- CONFIGURATION ---
-const TRADER_JOE_ROUTER_ADDRESS = "0x60aE616a2155Ee3d9A68541Ba4544862310933d4";
+// --- Fuji Testnet Configuration ---
+const FUJI_CHAIN_ID = 43113;
+// This is the common Trader Joe V2 Router address on the Fuji Testnet
+const TRADER_JOE_ROUTER_ADDRESS = "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506";
+// We need the ABI to understand the swap transactions
 const TRADER_JOE_ABI = [
   "function swapExactAVAXForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable",
   "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)"
 ];
 const traderJoeInterface = new ethers.Interface(TRADER_JOE_ABI);
-const ERC20_ABI_SIMPLE = ["function symbol() view returns (string)"];
-const STABLECOIN_ADDRESSES = [
-  "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e", // USDC
-  "0x9702230a8ea53601f5e225511177af20bb36413c", // USDT.e
-  "0xd586e7f844cea2f87f5015266582702126738038", // DAI.e
-].map(addr => addr.toLowerCase());
 
+// Global instances to manage our single agent
+let agentToolkit: AgentkitToolkit | null = null;
+let blockListenerActive = false;
 
-let agent: Agentkit | null = null;
-let isListenerSetup = false;
+// This function initializes the agent with a user's private key
+async function initializeAgent(userPrivateKey: `0x${string}`) {
+    console.log("--- Initializing Agentkit in EOA mode for Fuji Testnet ---");
 
-const getAgent = async (): Promise<Agentkit> => {
-  if (agent) return agent;
-  console.log("Initializing 0xGasless Agentkit...");
-  const privateKeyString = process.env.AGENT_PRIVATE_KEY as `0x${string}`;
-  if (!privateKeyString) {
-    throw new Error("AGENT_PRIVATE_KEY is not set in the environment variables.");
-  }
+    const apiKey = process.env.OXGASLESS_API_KEY;
+    const rpcUrl = process.env.AVALANCHE_RPC_URL;
 
-  agent = await Agentkit.configureWithWallet({
-    apiKey: process.env.OXGASLESS_API_KEY!,
-    privateKey: privateKeyString,
-    chainID: 43114,
-    rpcUrl: process.env.AVALANCHE_RPC_URL!,
-  });
-  console.log("✅ Agentkit Initialized successfully.");
-  return agent;
-};
-
-const handleNewBlock = async (blockNumber: number) => {
-  console.log(`✅ New block detected: #${blockNumber}`);
-  try {
-    const block = await provider.getBlock(blockNumber, true);
-    if (!block) return;
-
-    const followedWalletKeys = await redis.keys('follows:*');
-    if (followedWalletKeys.length === 0) return;
+    if (!apiKey) throw new Error("AGENT ERROR: OXGASLESS_API_KEY is not set!");
+    if (!rpcUrl) throw new Error("AGENT ERROR: AVALANCHE_RPC_URL is not set!");
     
-    const targetWallets = new Set(followedWalletKeys.map(key => key.split(':')[1].toLowerCase()));
+    console.log("✅ Environment variables loaded for Fuji.");
 
-    for (const tx of block.prefetchedTransactions) {
-      if (tx.to && tx.to.toLowerCase() === TRADER_JOE_ROUTER_ADDRESS && targetWallets.has(tx.from.toLowerCase())) {
-        console.log(`🔥🔥🔥 Matched transaction from ${tx.from} to Trader Joe! Hash: ${tx.hash}`);
+    // Set the environment variables that the internal AgentKit tools need to function correctly
+    process.env["USE_EOA"] = "true";
+    process.env["PRIVATE_KEY"] = userPrivateKey;
+    process.env["RPC_URL"] = rpcUrl;
+    process.env["CHAIN_ID"] = String(FUJI_CHAIN_ID);
+    process.env["0xGASLESS_API_KEY"] = apiKey;
+    
+    console.log("✅ EOA environment variables set for AgentKit tools.");
+
+    const agentkit = await Agentkit.configureWithWallet({
+        privateKey: userPrivateKey,
+        rpcUrl: rpcUrl,
+        apiKey: apiKey,
+        chainID: FUJI_CHAIN_ID,
+    });
+
+    agentToolkit = new AgentkitToolkit(agentkit);
+    
+    const userWallet = new ethers.Wallet(userPrivateKey);
+    console.log("✅ Agentkit initialized successfully for EOA:", userWallet.address);
+}
+
+// This function runs for every new block on the Fuji testnet
+const handleNewBlock = async (blockNumber: number) => {
+    if (!agentToolkit) return; // Do nothing if the agent isn't active
+
+    console.log(`Scanning Fuji block #${blockNumber}...`);
+    try {
+        const block = await provider.getBlock(blockNumber, true);
+        if (!block || !block.prefetchedTransactions) return;
+
+        const followedWalletKeys = await redis.keys('follows:*');
+        if (followedWalletKeys.length === 0) return;
         
-        try {
-          const parsedTx = traderJoeInterface.parseTransaction({ data: tx.data, value: tx.value });
-          if (!parsedTx || !["swapExactTokensForTokens", "swapExactAVAXForTokens"].includes(parsedTx.name)) continue;
+        const targetWallets = new Set(followedWalletKeys.map(key => key.split(':')[1].toLowerCase()));
 
-          console.log(`   - DECODED ACTION: ${parsedTx.name}`);
-          const path = parsedTx.args.path;
-          const tokenInAddress = path[0];
-          const tokenOutAddress = path[path.length - 1];
+        for (const tx of block.prefetchedTransactions) {
+            // Check if a followed wallet sent a transaction to the Trader Joe Router
+            if (tx.to && tx.to.toLowerCase() === TRADER_JOE_ROUTER_ADDRESS.toLowerCase() && targetWallets.has(tx.from.toLowerCase())) {
+                console.log(`🔥🔥🔥 Matched transaction from Star wallet: ${tx.from}!`);
+                
+                try {
+                    const parsedTx = traderJoeInterface.parseTransaction({ data: tx.data, value: tx.value });
+                    if (!parsedTx || !parsedTx.args.path) continue; // Ensure it's a swap with a path
 
-          // --- Create and Save Signal Log ---
-          let actionText = "Swapped tokens";
-          try {
-            const tokenOutContract = new ethers.Contract(tokenOutAddress, ERC20_ABI_SIMPLE, provider);
-            const tokenOutSymbol = await tokenOutContract.symbol();
-            let tokenInSymbol = "AVAX";
-            if (parsedTx.name === "swapExactTokensForTokens") {
-                const tokenInContract = new ethers.Contract(tokenInAddress, ERC20_ABI_SIMPLE, provider);
-                tokenInSymbol = await tokenInContract.symbol();
+                    const followers = await redis.smembers(`follows:${tx.from.toLowerCase()}`);
+                    for (const userWalletAddress of followers) {
+                        const tradeSize = await redis.hget(`settings:${userWalletAddress}`, 'tradeSize') as string || "0.01";
+                        const fromToken = parsedTx.args.path[0];
+                        const toToken = parsedTx.args.path[parsedTx.args.path.length - 1];
+                        
+                        console.log(`🚀 Triggering autonomous copy-trade for user ${userWalletAddress}...`);
+                        
+                        const tools = agentToolkit.getTools();
+                        const swapTool = tools.find(t => t.name === "smart_swap");
+
+                        if (!swapTool) {
+                            throw new Error("Critical Error: 'smart_swap' tool not found in AgentkitToolkit!");
+                        }
+
+                        console.log(`✅ Found 'smart_swap' tool. Executing a swap of ${tradeSize} of ${fromToken} for ${toToken}...`);
+                        
+                        const result = await swapTool.invoke({
+                            fromAssetAddress: fromToken,
+                            toAssetAddress: toToken,
+                            amount: tradeSize,
+                        });
+
+                        console.log(`✅✅✅ Gasless copy-trade EXECUTED! Result:`, result);
+                        
+                        const signal = { 
+                            id: tx.hash,
+                            type: 'copy-trade',
+                            action: `Copied trade: Swapped ${tradeSize} of token ${fromToken.slice(0,6)} for ${toToken.slice(0,6)}`,
+                            star: tx.from,
+                            timestamp: new Date().toISOString(),
+                        };
+                        await redis.lpush(`signals:${userWalletAddress}`, JSON.stringify(signal));
+                        console.log("📝 Signal saved to log.");
+                    }
+                } catch (e: any) { 
+                    console.error("❌ Error during autonomous trade execution:", e.message); 
+                }
             }
-            actionText = `Swapped $${tokenInSymbol} for $${tokenOutSymbol}`;
-          } catch (e) { console.warn("Could not fully enrich signal log."); }
-          
-          const signal = {
-            id: tx.hash,
-            type: STABLECOIN_ADDRESSES.includes(tokenOutAddress.toLowerCase()) ? 'sell' : 'buy',
-            action: actionText,
-            wallet: tx.from,
-            timestamp: new Date().toISOString(),
-            txHash: tx.hash
-          };
-          
-          await redis.lpush('signal:log', JSON.stringify(signal));
-          await redis.ltrim('signal:log', 0, 49);
-          console.log(`   - 📝 Signal saved to log: ${actionText}`);
-
-          // --- Execute and RECORD Copy Trade ---
-          const followers = await redis.smembers(`follows:${tx.from}`);
-          if (followers.length > 0) {
-            const signingAgent = await getAgent();
-            
-            for (const userSmartAccountAddress of followers) {
-              const userTradeSize = await redis.hget(`settings:${userSmartAccountAddress}`, 'tradeSize') as string | null;
-              const amountToSwap = ethers.parseEther(userTradeSize ?? "0.01");
-
-              console.log(`   - 🚀 Preparing copy-trade for user: ${userSmartAccountAddress} with size ${ethers.formatEther(amountToSwap)} AVAX`);
-              
-              // NEW: Record the trade details before executing
-              const tradeRecord = {
-                id: tx.hash,
-                user: userSmartAccountAddress,
-                star: tx.from,
-                type: STABLECOIN_ADDRESSES.includes(tokenOutAddress.toLowerCase()) ? 'sell' : 'buy',
-                amountInAVAX: ethers.formatEther(amountToSwap), // Record the value of the trade
-                tokenIn: tokenInAddress,
-                tokenOut: tokenOutAddress,
-                timestamp: new Date().toISOString(),
-                status: 'pending'
-              };
-
-              // Save the trade record to a list for that specific user
-              await redis.lpush(`trades:${userSmartAccountAddress}`, JSON.stringify(tradeRecord));
-
-
-              (signingAgent as any).SmartSwap({
-                smartAccountAddress: userSmartAccountAddress,
-                tokenIn: tokenInAddress,
-                tokenOut: tokenOutAddress,
-                amountIn: amountToSwap,
-                paymasterUrl: `https://paymaster.0xgasless.com/v1/43114/rpc/${process.env.OXGASLESS_API_KEY!}`,
-              }).then((taskId: string) => {
-                 console.log(`   - ✅ UserOperation sent for ${userSmartAccountAddress}! Task ID: ${taskId}`);
-              }).catch((e: any) => {
-                 console.error(`   - ❌ Failed to send UserOp for ${userSmartAccountAddress}:`, e);
-              });
-            }
-          }
-        } catch (decodeError) { /* Ignore */ }
-      }
+        }
+    } catch (error: any) { 
+        console.error(`❌ Error processing block #${blockNumber}:`, error.message); 
     }
-  } catch (error) {
-    console.error(`Error processing block #${blockNumber}:`, error);
-  }
 };
 
-const setupBlockListener = () => {
-  if (!isListenerSetup) {
-    console.log("Setting up Avalanche blockchain listener...");
-    provider.on('block', handleNewBlock);
-    isListenerSetup = true;
-    console.log(`✅ Agent is now listening...`);
-  }
-};
+// This is the API endpoint the frontend will call to activate the agent
+export async function POST(request: Request) {
+    try {
+        const { userPrivateKey, starWallet, userWallet } = await request.json();
 
-export async function GET(request: Request) {
-  setupBlockListener();
-  getAgent().catch(console.error);
-  return NextResponse.json({ message: "Stellalpha Agent is now fully operational and listener is active." });
+        if (!userPrivateKey || !starWallet || !userWallet) {
+            return NextResponse.json({ success: false, error: 'Missing parameters' }, { status: 400 });
+        }
+
+        // Initialize the agent with the user's provided private key
+        await initializeAgent(userPrivateKey);
+        
+        // Save the follow relationship in the database
+        await redis.sadd(`follows:${starWallet.toLowerCase()}`, userWallet.toLowerCase());
+        console.log(`User ${userWallet.toLowerCase()} is now following ${starWallet.toLowerCase()}`);
+
+        // Start the block listener only if it's not already running
+        if (!blockListenerActive) {
+            provider.on('block', handleNewBlock);
+            blockListenerActive = true;
+            console.log("✅ Block listener started on Fuji Testnet!");
+        }
+
+        return NextResponse.json({ success: true, message: "Agent activated successfully on Fuji!" });
+    } catch (error: any) {
+        console.error("Error activating agent:", error);
+        return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    }
 }
