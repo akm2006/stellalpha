@@ -119,6 +119,7 @@
   * {
     @apply border-border outline-ring/50;
   }
+
   body {
     @apply bg-background text-foreground;
   }
@@ -138,7 +139,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: 
+  background:
     radial-gradient(circle at 20% 80%, rgba(0, 246, 255, 0.1) 0%, transparent 50%),
     radial-gradient(circle at 80% 20%, rgba(138, 43, 226, 0.1) 0%, transparent 50%),
     radial-gradient(circle at 40% 40%, rgba(255, 20, 147, 0.05) 0%, transparent 50%);
@@ -150,7 +151,7 @@
   backdrop-filter: blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
-  box-shadow: 
+  box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.1);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -159,7 +160,7 @@
 .glass-card:hover {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(0, 246, 255, 0.3);
-  box-shadow: 
+  box-shadow:
     0 12px 40px rgba(0, 0, 0, 0.4),
     0 0 20px rgba(0, 246, 255, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.15);
@@ -229,8 +230,15 @@
 }
 
 @keyframes float {
-  0%, 100% { transform: translateY(0px); }
-  50% { transform: translateY(-10px); }
+
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+
+  50% {
+    transform: translateY(-10px);
+  }
 }
 
 .pulse-glow {
@@ -238,8 +246,13 @@
 }
 
 @keyframes pulseGlow {
-  from { box-shadow: 0 0 20px rgba(0, 246, 255, 0.2); }
-  to { box-shadow: 0 0 30px rgba(0, 246, 255, 0.4); }
+  from {
+    box-shadow: 0 0 20px rgba(0, 246, 255, 0.2);
+  }
+
+  to {
+    box-shadow: 0 0 30px rgba(0, 246, 255, 0.4);
+  }
 }
 
 .slide-in-up {
@@ -251,6 +264,7 @@
     opacity: 0;
     transform: translateY(30px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -262,8 +276,13 @@
 }
 
 @keyframes fadeInDelayed {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 /* Navigation styles */
@@ -300,17 +319,19 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 4px;
+  background: rgba(1, 1, 1, 1);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 246, 255, 0.3);
-  border-radius: 4px;
+  background: rgba(0, 247, 255, 0.178);
+  /* This is a transparent cyan color */
+  border-radius: 9999px;
+  /* This gives the scrollbar a pill shape */
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 246, 255, 0.5);
+  background: rgba(0, 247, 255, 0.825);
+  /* The color darkens slightly on hover for a subtle effect */
 }
 
 /* Transaction styles */
@@ -324,19 +345,22 @@
 
 /* Loading shimmer effect */
 .shimmer {
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.05) 0%,
-    rgba(255, 255, 255, 0.1) 50%,
-    rgba(255, 255, 255, 0.05) 100%
-  );
+  background: linear-gradient(90deg,
+      rgba(255, 255, 255, 0.05) 0%,
+      rgba(255, 255, 255, 0.1) 50%,
+      rgba(255, 255, 255, 0.05) 100%);
   background-size: 200% 100%;
   animation: shimmer 2s infinite;
 }
 
 @keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
 }
 
 /* Particle effect background */
@@ -364,12 +388,15 @@
     transform: translateY(100vh) translateX(0);
     opacity: 0;
   }
+
   10% {
     opacity: 1;
   }
+
   90% {
     opacity: 1;
   }
+
   100% {
     transform: translateY(-100px) translateX(100px);
     opacity: 0;
@@ -396,8 +423,15 @@
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
 }
 
 /* Responsive design improvements */
@@ -406,7 +440,7 @@
     margin: 0 16px;
     border-radius: 12px;
   }
-  
+
   .glass-header {
     padding: 16px;
   }

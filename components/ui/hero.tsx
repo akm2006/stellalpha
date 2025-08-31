@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
-import { MoveRight, Play, Star } from "lucide-react";
+import { MoveRight, Play } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
 interface Beam {
