@@ -3,11 +3,11 @@ import type { Metadata } from "next"
 import { Inter, Space_Grotesk } from "next/font/google"
 import "./globals.css"
 import ModernHeader from "@/components/modern-header"
-import ParticlesBackground from "@/components/particles-background"
 import { GlobalToastRenderer } from "@/components/toast"
 import { WalletProvider } from "@/contexts/WalletContext"
 
-import { ChatAgent } from "@/components/chat-agent"; 
+import { ChatAgent } from "@/components/chat-agent";
+import { BeamsBackground } from "@/components/ui/beams-background";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -35,12 +35,11 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} ${spaceGrotesk.variable} antialiased`}>
       <body>
         <WalletProvider>
-          <div className="stellalpha-bg min-h-screen relative">
-            <ParticlesBackground />
+          <BeamsBackground>
             <ModernHeader />
             <main className="relative z-10">{children}</main>
-            <ChatAgent /> 
-          </div>
+            <ChatAgent />
+          </BeamsBackground>
           <GlobalToastRenderer />
         </WalletProvider>
       </body>
