@@ -223,12 +223,25 @@ export function ChatAgent() {
     <>
       {/* Floating Action Button */}
       {!isOpen && (
-        <Button
-          onClick={() => setIsOpen(true)}
-          className="fixed bottom-6 right-6 z-50 h-16 w-16 rounded-full electric-cyan-bg text-black shadow-lg hover:electric-cyan-glow animate-float"
-        >
-          <Bot className="w-8 h-8" />
-        </Button>
+        <button
+  onClick={() => setIsOpen(true)}
+  className={cn(
+    "group fixed bottom-6 right-6 z-50 h-16 w-16 rounded-full text-gray-200 shadow-lg hover:shadow-xl animate-float transition-all duration-300 ease-in-out",
+    "border border-[#333] bg-cyan-400/20", // base: faint cyan + dark border
+    "hover:w-[220px]",
+    "hover:border-cyan-400/60 hover:bg-[linear-gradient(90deg,rgba(0,246,255,0.70)_10%,rgba(255,255,255,0.20)_90%)] hover:text-white"
+  )}
+>
+  <div className="flex items-center justify-center space-x-2 size-full">
+    {/* Bot Icon */}
+    <Bot className="w-8 h-8 flex-shrink-0" />
+    {/* Text appears on hover */}
+    <span className="font-bold text-sm overflow-hidden whitespace-nowrap w-0 opacity-0 transition-all duration-300 ease-in-out group-hover:w-auto group-hover:opacity-100">
+      Stellalpha AI Agent
+    </span>
+  </div>
+</button>
+
       )}
 
       {/* Full-screen Chat Modal */}
