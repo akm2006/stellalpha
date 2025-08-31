@@ -1,139 +1,152 @@
+# ![Stellalpha Logo](https://raw.githubusercontent.com/akm2006/stellalpha/main/public/stellalpha.png) Stellalpha
 
-# Stellalpha
-
-**Stellalpha** is an autonomous, gasless copy-trading agent and interactive AI assistant built for EVM-compatible chains, demonstrated on the Avalanche network.  
+**Stellalpha** is an **autonomous, gasless copy-trading agent** and **interactive AI assistant** built for **EVM-compatible chains**, demonstrated on the **Avalanche network**.  
 
 Welcome to Stellalpha!  
-This project allows users to connect their MetaMask wallet, follow **"Star" traders**, and have the Stellalpha agent automatically replicate their trades in a gasless manner.  
+This project allows users to connect their MetaMask wallet, follow **"Star Traders"**, and have the Stellalpha agent automatically replicate their trades **gaslessly**.  
 
-It also features a powerful on-chain AI assistant that can perform wallet operations through natural language commands, making complex blockchain interactions as simple as having a conversation.  
-
-![WARNING](https://img.shields.io/badge/⚠️-WARNING-red?style=for-the-badge)
-The actual implemenation will use 0xgasless smart-account which will not require user private key.The user can fund their smart-accont and the app will only interact with the smart wallet.But for testing and development we are using EOA(Externaly Owned Account) and FUJI TESTNET. While app can be used in AVALANCHE MAINNET by chainging the CHAIN-ID and RPC URL in .env file and is fully funcional to execute copy-trades, but **USE PRIVATE KEY OF MAINNET WALLET AT YOUR OWN RISK**. Main purpose of this project is to explain the usage of 0xgasless agent to make a autonomous trading agent.
+It also includes a powerful **on-chain AI assistant** that can perform wallet operations through **natural language commands**, making blockchain interactions as simple as chatting.  
 
 ---
 
-## Features
+![WARNING](https://img.shields.io/badge/⚠️-CRITICAL_WARNING-red?style=for-the-badge)
 
-- **Autonomous Copy-Trading**:  
-  Automatically monitor and execute the same trades as followed *Star* wallets when they interact with the Trader Joe DEX. Our backend service watches the chain for you, 24/7.
+## ⚠️ Important Notice  
 
-- **Gasless Transactions**:  
-  Powered by the **0xGasless AgentKit**, all trades are executed without requiring the user to hold native tokens (like AVAX) for gas fees. This removes a major barrier to entry for new users.
+This project is for **Hackathon and development purposes only**.  
 
-- **EOA Agent Model**:  
-  Utilizes a secure **Externally Owned Account (EOA)** agent on the backend to perform actions. This is a direct wallet-to-wallet operation and does not use the 0xGasless Smart Account model, offering a simpler and more direct approach to automation JUST FOR DEVELOPMENT.
+- The production-ready implementation will use **0xGasless Smart Accounts**, which do **not** require private keys.  
+- Users will fund their smart accounts, and the app will interact only with the **smart wallet**.  
 
-- **Interactive AI Assistant**:  
-  A built-in chatbot that can check balances, transfer tokens, and perform swaps using natural language. It's designed to understand your intent and execute complex on-chain actions on your command.
+For **testing and development**, we currently use:  
+- **EOA (Externally Owned Accounts)**  
+- **Avalanche Fuji Testnet**  
 
-- **Live Activity Feed**:  
-  A real-time log of all trades executed by the agent, providing transparency and instant feedback on the agent's performance.
+Although the app **can be run on Avalanche Mainnet** by changing the `CHAIN_ID` and `RPC_URL` in `.env`, it is **strongly discouraged** to use your **real private key**.  
+👉 **Any use of your Mainnet private key is entirely at your own risk.**  
 
-- **Portfolio Management**:  
-  A comprehensive command center to view current holdings , manage your list of followed stars, and configure trade settings like the amount to be used per trade.
-
-- **Modern UI**:  
-  A sleek, futuristic interface with a dark theme and glassmorphism effects, built with **Next.js** and **Tailwind CSS** for a responsive and visually appealing experience.
+The purpose of this project is to demonstrate how the **0xGasless Agent** can power an **autonomous trading agent**.  
 
 ---
 
-## Core Technologies
+## ✨ Features
+
+- **Autonomous Copy-Trading**  
+  Monitor and replicate trades from *Star Traders* on Trader Joe DEX. The backend watches the chain for you, 24/7.
+
+- **Gasless Transactions**  
+  Powered by **0xGasless AgentKit**, trades are executed without requiring native tokens (e.g., AVAX) for gas fees.
+
+- **EOA Agent Model (Development Only)**  
+  Uses an **Externally Owned Account (EOA)** agent for development simplicity.  
+  ⚠️ This is not the final implementation—production will rely on **0xGasless Smart Accounts**.
+
+- **Interactive AI Assistant**  
+  A chatbot that can check balances, transfer tokens, and perform swaps using **natural language commands**.
+
+- **Live Activity Feed**  
+  Real-time logs of all agent-executed trades for transparency and monitoring.
+
+- **Portfolio Management**  
+  Manage holdings, configure followed traders, and customize trade amounts.
+
+- **Modern UI**  
+  Dark theme + glassmorphism, built with **Next.js** + **Tailwind CSS** for a sleek and responsive design.
+
+---
+
+## 🛠️ Core Technologies
 
 - **Framework**: Next.js & React  
 - **Styling**: Tailwind CSS  
 - **Blockchain Interaction**: Ethers.js  
-- **Gasless Infrastructure**: 0xGasless AgentKit SDK  
-- **AI Chat**: LangChain.js with OpenRouter (GPT-4o)  
-- **Database**: Upstash Redis for session and state management  
-- **Network**: Avalanche Fuji Testnet & Mainnet compatible  
+- **Gasless Infra**: 0xGasless AgentKit SDK  
+- **AI Chat**: LangChain.js + OpenRouter (GPT-4o)  
+- **Database**: Upstash Redis  
+- **Networks**: Avalanche Fuji Testnet & Mainnet  
 
 ---
 
-## Mainnet Functionality
+## 🌐 Mainnet Usage
 
-This application is fully functional on the Avalanche Mainnet.  
-To switch from the default Fuji Testnet to Mainnet, update the following environment variables:
+This app is **Mainnet-ready**, but only recommended for testing with **burner wallets**.  
+
+To switch from Fuji Testnet to Avalanche Mainnet, update `.env.local`:  
 
 ```env
 CHAIN_ID=43114
 NEXT_PUBLIC_CHAIN_ID=43114
-AVALANCHE_RPC_URL=Your_Avalanche_Mainnet_RPC_URL
+AVALANCHE_RPC_URL=YOUR_AVALANCHE_MAINNET_RPC_URL
 ````
 
 ---
 
-## ⚠️ Security Warning: Private Key Usage
+## 🔒 Security Warning: Private Key Usage
 
-To enable the autonomous features, this application requires you to provide your wallet's **private key**.
+To enable autonomous features, this app requires your wallet’s **private key**.
 
-* **NEVER** use your primary wallet or a wallet with significant funds.
-* **ALWAYS** use a *burner wallet* created specifically for this application.
+⚠️ **Critical Guidelines**:
 
-The private key is sent to the backend to initialize the agent for the current session. While it is **not stored permanently**, exposing your private key online is inherently risky.
+* **NEVER** use your primary wallet or one with significant funds.
+* **ALWAYS** use a dedicated **burner wallet**.
+* While the private key is **not stored permanently**, sending it to a backend service is inherently risky.
 
-You are solely responsible for the security of your private keys and funds.
+You are **solely responsible** for the security of your keys and funds.
 
 ---
 
-## Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 
-* Node.js (v18 or higher)
+* Node.js (v18+)
 * npm or yarn
-* A MetaMask wallet
-* Testnet or Mainnet funds, depending on your configuration
-
----
+* MetaMask wallet
+* Testnet/Mainnet funds (depending on config)
 
 ### Installation
 
-1. **Clone the repository**:
+```bash
+git clone <your-repo-url>
+cd stellalpha-new
+npm install
+```
 
-   ```bash
-   git clone <your-repo-url>
-   cd stellalpha-new
-   ```
+### Environment Setup
 
-2. **Install dependencies**:
+Create `.env.local` in the root folder:
 
-   ```bash
-   npm install
-   ```
+```env
+# Avalanche RPC (Fuji or Mainnet)
+AVALANCHE_RPC_URL="YOUR_AVAX_RPC_URL"
+NEXT_PUBLIC_AVALANCHE_RPC_URL="YOUR_AVAX_RPC_URL"
 
-3. **Set up environment variables**:
-   Create a file named `.env.local` in the root of your project and add:
+# 0xGasless API Key
+OXGASLESS_API_KEY="YOUR_0XGASLESS_API_KEY"
 
-   ```env
-   # Your private RPC URL for the Avalanche Fuji Testnet or Mainnet
-   AVALANCHE_RPC_URL="YOUR_AVAX_RPC_URL"
-   NEXT_PUBLIC_AVALANCHE_RPC_URL="YOUR_AVAX_RPC_URL"
+# OpenRouter AI API Key
+OPENROUTER_API_KEY="YOUR_OPENROUTER_API_KEY"
 
-   # Your 0xGasless API Key from the 0xGasless dashboard
-   OXGASLESS_API_KEY="YOUR_0XGASLESS_API_KEY"
+# Network (43113 = Fuji, 43114 = Mainnet)
+CHAIN_ID="43113"
+NEXT_PUBLIC_CHAIN_ID="43113"
 
-   # Your API key from OpenRouter.ai for the chat agent
-   OPENROUTER_API_KEY="YOUR_OPENROUTER_API_KEY"
+# Upstash Redis
+UPSTASH_REDIS_REST_URL="YOUR_UPSTASH_URL"
+UPSTASH_REDIS_REST_TOKEN="YOUR_UPSTASH_TOKEN"
+```
 
-   # Chain ID for the target network (43113 for Fuji, 43114 for Mainnet)
-   CHAIN_ID="43113"
-   NEXT_PUBLIC_CHAIN_ID="43113"
-
-   # Upstash Redis connection details
-   UPSTASH_REDIS_REST_URL="YOUR_UPSTASH_URL"
-   UPSTASH_REDIS_REST_TOKEN="YOUR_UPSTASH_TOKEN"
-   ```
-
----
-
-### Running the Application
-
-Start the development server:
+### Running Locally
 
 ```bash
 npm run dev
 ```
 
+---
 
+```
 
+ 
+
+Do you want me to also create a **docs-style yellow callout box** (like GitHub Docs uses) for the **Critical Warning** part so it visually stands out more than the rest?
+```
