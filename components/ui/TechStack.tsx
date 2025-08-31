@@ -1,13 +1,13 @@
 "use client";
 import React from "react";
 import Image from "next/image";
-import { BackgroundBeams } from "@/components/ui/background-beams";
+import { BGPattern } from "./bg-pattern";
 
 export const TechStack = () => {
   return (
     <div className="relative overflow-hidden">
       {/* BackgroundBeams component is placed here to fill the TechStack section */}
-      <BackgroundBeams />
+      <BGPattern variant="grid" mask="fade-edges" />
       
       {/* Technology Stack Section */}
       <section className="relative z-10 py-20 px-4">
@@ -86,7 +86,7 @@ export const TechStack = () => {
                   <div className="relative">
                     <div className="absolute inset-0 bg-cyan-400 blur-lg opacity-20 group-hover:opacity-40 transition-opacity"></div>
                     <div className="relative w-12 h-12 bg-white rounded-xl flex items-center justify-center overflow-hidden">
-                      <Image src="/langchain.png" alt="LangChain" height={40} width={40} className="h-full w-full"/>
+                      <Image src="/langchain.svg" alt="LangChain" height={40} width={40} className="h-full w-full"/>
                     </div>
                   </div>
                 </div>

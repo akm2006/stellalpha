@@ -2,39 +2,30 @@
 
 import React from "react";
 import {
-  Star,
   Zap,
   MessageCircle,
-  ExternalLink,
-  Github,
-  Play,
-  Twitter,
-  Mail,
-  FileText,
   Shield,
   Wallet,
   Users,
   Bot,
-  ArrowRight,
   CheckCircle,
 } from "lucide-react";
 import { StellaHero } from "@/components/ui/hero";
 import { Footer } from "@/components/ui/footer";
 import { TechStack } from "@/components/ui/TechStack";
-import { BackgroundBeams } from "@/components/ui/background-beams";
+import { BGPattern } from "@/components/ui/bg-pattern";
 
 export default function HomePage() {
   return (
-    // The main container doesn't need a specific background setup anymore,
-    // as each section will handle its own.
+    
     <div className="min-h-screen">
       {/* Hero Section */}
       <StellaHero />
 
       {/* About Stellalpha Section */}
       <section className="relative overflow-hidden py-20 px-4">
-        {/* Background Beams for the About section */}
-        <BackgroundBeams />
+        
+        <BGPattern variant="grid" mask="fade-edges" />
         <div className="relative z-10 max-w-4xl mx-auto text-center">
           <h2 className="text-4xl md:text-5xl font-bold text-white mb-8 neon-text">
             The Bridge Between Human Insight and AI Automation
@@ -60,7 +51,7 @@ export default function HomePage() {
 
       {/* How It Works Section */}
       <section className="relative overflow-hidden py-20 px-4">
-        {/* Background Beams for the How It Works section */}
+       
         
         <div className="relative z-10 max-w-6xl mx-auto">
           <div className="text-center mb-16">
@@ -162,8 +153,8 @@ export default function HomePage() {
 
       {/* Features Section */}
       <section className="relative overflow-hidden py-20 px-4">
-        {/* Background Beams for the Features section */}
-        <BackgroundBeams />
+        
+        <BGPattern variant="grid" mask="fade-edges" />
         <div className="relative z-10 max-w-6xl mx-auto">
           <div className="text-center mb-16">
             <h2 className="text-4xl md:text-5xl font-bold text-white mb-4 neon-text">
@@ -224,7 +215,7 @@ export default function HomePage() {
 
       {/* Security and Implementation Details Section */}
       <section className="relative overflow-hidden py-20 px-4">
-        {/* Background Beams for the Security section */}
+        
         
         <div className="relative z-10 max-w-6xl mx-auto">
           <div className="text-center mb-16">
@@ -339,7 +330,7 @@ export default function HomePage() {
               </div>
             </div>
 
-            {/* Critical Warning Banner */}
+            {/* Critical Warning Banner */}<BGPattern variant="grid" mask="fade-edges" />
             <div className="glass-card border-red-500/50 bg-red-500/10">
               <div className="p-8">
                 <h3 className="text-3xl font-bold text-red-400 mb-6 text-center flex items-center justify-center gap-3">
