@@ -7,8 +7,8 @@ Welcome to Stellalpha!
 This project allows users to connect their MetaMask wallet, follow **"Star" traders**, and have the Stellalpha agent automatically replicate their trades in a gasless manner.  
 
 It also features a powerful on-chain AI assistant that can perform wallet operations through natural language commands, making complex blockchain interactions as simple as having a conversation.  
-![WARNING](https://img.shields.io/badge/⚠️-WARNING-red?style=for-the-badge)
 
+![WARNING](https://img.shields.io/badge/⚠️-WARNING-red?style=for-the-badge)
 The actual implemenation will use 0xgasless smart-account which will not require user private key.The user can fund their smart-accont and the app will only interact with the smart wallet.But for testing and development we are using EOA(Externaly Owned Account) and FUJI TESTNET. While app can be used in AVALANCHE MAINNET by chainging the CHAIN-ID and RPC URL in .env file and is fully funcional to execute copy-trades, but **USE PRIVATE KEY OF MAINNET WALLET AT YOUR OWN RISK**. Main purpose of this project is to explain the usage of 0xgasless agent to make a autonomous trading agent.
 
 ---
