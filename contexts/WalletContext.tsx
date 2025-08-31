@@ -6,21 +6,21 @@ import { showToast } from "@/components/toast"
 import { ethers } from "ethers"
 import React from "react"
 
-// --- This is the definitive interface for our EOA-based context ---
+
 interface WalletContextType {
-  // Wallet State
+  
   isConnected: boolean
   connectedWallet: string | null
 
-  // Agent State
+  
   isAgentActive: boolean
   agentBalance: string
 
-  // Data State
+
   followedStars: string[]
   isFollowedLoading: boolean
 
-  // Functions
+  isMetaMaskInstalled: boolean;
   handleConnectMetaMask: () => Promise<void>
   handleDisconnectWallet: () => void;
   handleChangeWallet: () => Promise<void>;
@@ -62,7 +62,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [isAgentActive, setIsAgentActive] = useState(false)
   const [followedStars, setFollowedStars] = useState<string[]>([])
   const [isFollowedLoading, setIsFollowedLoading] = useState(false)
-
+  const [isMetaMaskInstalled, setIsMetaMaskInstalled] = useState(false);
   // --- MODIFIED: fetchBalance now calls the internal API ---
   const fetchBalance = useCallback(async (address: string) => {
     if (!address) return;
@@ -86,7 +86,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         console.error("Failed to fetch balance via API:", error);
     }
   }, []);
-
+  useEffect(() => {
+  // Check if MetaMask is installed
+  const checkMetaMask = () => {
+    if (typeof window !== 'undefined') {
+      setIsMetaMaskInstalled(!!window.ethereum?.isMetaMask);
+    }
+  };
+  
+  checkMetaMask();
+}, []);
   // Poll for balance every 15 seconds when the wallet is connected
   useEffect(() => {
     if (isConnected && connectedWallet) {
@@ -298,6 +307,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, [updateWalletState]);
 
   const value = {
+    isMetaMaskInstalled,
     isConnected,
     connectedWallet,
     agentBalance,
