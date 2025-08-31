@@ -18,7 +18,7 @@ It also includes a powerful **on-chain AI assistant** that can perform wallet op
 
 This project is for **Hackathon and other development purposes only**.  
 
-- The production-ready implementation will use **0xGasless Smart Accounts**, which do **not** require private keys.  
+- The production-ready implementation will use **0xGasless Smart Accounts**, which do **not** require user private keys.  
 - Users will fund their smart accounts, and the app will interact only with the **smart wallet**.  
 
 For **testing and development**, we currently use:  
@@ -147,9 +147,4 @@ npm run dev
 
 ---
 
-```
 
- 
-
-Do you want me to also create a **docs-style yellow callout box** (like GitHub Docs uses) for the **Critical Warning** part so it visually stands out more than the rest?
-```
