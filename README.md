@@ -1,8 +1,8 @@
 <p align="center">
   <img src="public/stellalpha.png" alt="Stellalpha Logo" width="120"/>
 </p>
-
 <h1 align="center">Stellalpha</h1>
+
 **Stellalpha** is an **autonomous, gasless copy-trading agent** and **interactive AI assistant** built for **EVM-compatible chains**, demonstrated on the **Avalanche network**.  
 
 Welcome to Stellalpha!  
@@ -12,6 +12,13 @@ It also includes a powerful **on-chain AI assistant** that can perform wallet op
 
 ---
 
+## 🚀 Deployed App
+
+🔗 **Live Demo**: [stellalpha.vercel.app](https://stellalpha.vercel.app)  
+
+> ⚠️ **Note:** The chatbot functionality may not work in the deployed app due to lack of OpenRouter API credits. All other features (UI, wallet connection, etc.) are still accessible.
+
+---
 ![WARNING](https://img.shields.io/badge/⚠️-CRITICAL_WARNING-red?style=for-the-badge)
 
 ## ⚠️ Important Notice  
