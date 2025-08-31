@@ -1,5 +1,8 @@
-# ![Stellalpha Logo](https://raw.githubusercontent.com/akm2006/stellalpha/main/public/stellalpha.png) Stellalpha
+<p align="center">
+  <img src="public/stellalpha.png" alt="Stellalpha Logo" width="120"/>
+</p>
 
+<h1 align="center">Stellalpha</h1>
 **Stellalpha** is an **autonomous, gasless copy-trading agent** and **interactive AI assistant** built for **EVM-compatible chains**, demonstrated on the **Avalanche network**.  
 
 Welcome to Stellalpha!  
@@ -13,7 +16,7 @@ It also includes a powerful **on-chain AI assistant** that can perform wallet op
 
 ## ⚠️ Important Notice  
 
-This project is for **Hackathon and development purposes only**.  
+This project is for **Hackathon and other development purposes only**.  
 
 - The production-ready implementation will use **0xGasless Smart Accounts**, which do **not** require private keys.  
 - Users will fund their smart accounts, and the app will interact only with the **smart wallet**.  
