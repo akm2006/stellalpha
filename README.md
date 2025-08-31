@@ -7,6 +7,9 @@ Welcome to Stellalpha!
 This project allows users to connect their MetaMask wallet, follow **"Star" traders**, and have the Stellalpha agent automatically replicate their trades in a gasless manner.  
 
 It also features a powerful on-chain AI assistant that can perform wallet operations through natural language commands, making complex blockchain interactions as simple as having a conversation.  
+![WARNING](https://img.shields.io/badge/⚠️-WARNING-red?style=for-the-badge)
+
+The actual implemenation will use 0xgasless smart-account which will not require user private key.The user can fund their smart-accont and the app will only interact with the smart wallet.But for testing and development we are using EOA(Externaly Owned Account) and FUJI TESTNET. While app can be used in AVALANCHE MAINNET by chainging the CHAIN-ID and RPC URL in .env file and is fully funcional to execute copy-trades, but **USE PRIVATE KEY OF MAINNET WALLET AT YOUR OWN RISK**. Main purpose of this project is to explain the usage of 0xgasless agent to make a autonomous trading agent.
 
 ---
 
@@ -19,7 +22,7 @@ It also features a powerful on-chain AI assistant that can perform wallet operat
   Powered by the **0xGasless AgentKit**, all trades are executed without requiring the user to hold native tokens (like AVAX) for gas fees. This removes a major barrier to entry for new users.
 
 - **EOA Agent Model**:  
-  Utilizes a secure **Externally Owned Account (EOA)** agent on the backend to perform actions. This is a direct wallet-to-wallet operation and does not use the 0xGasless Smart Account model, offering a simpler and more direct approach to automation.
+  Utilizes a secure **Externally Owned Account (EOA)** agent on the backend to perform actions. This is a direct wallet-to-wallet operation and does not use the 0xGasless Smart Account model, offering a simpler and more direct approach to automation JUST FOR DEVELOPMENT.
 
 - **Interactive AI Assistant**:  
   A built-in chatbot that can check balances, transfer tokens, and perform swaps using natural language. It's designed to understand your intent and execute complex on-chain actions on your command.
@@ -28,7 +31,7 @@ It also features a powerful on-chain AI assistant that can perform wallet operat
   A real-time log of all trades executed by the agent, providing transparency and instant feedback on the agent's performance.
 
 - **Portfolio Management**:  
-  A comprehensive command center to view current holdings with real-time value conversion, manage your list of followed stars, and configure trade settings like the amount to be used per trade.
+  A comprehensive command center to view current holdings , manage your list of followed stars, and configure trade settings like the amount to be used per trade.
 
 - **Modern UI**:  
   A sleek, futuristic interface with a dark theme and glassmorphism effects, built with **Next.js** and **Tailwind CSS** for a responsive and visually appealing experience.
