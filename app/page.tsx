@@ -50,106 +50,113 @@ export default function HomePage() {
       </section>
 
       {/* How It Works Section */}
-      <section className="relative overflow-hidden py-20 px-4">
-       
-        
-        <div className="relative z-10 max-w-6xl mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl md:text-5xl font-bold text-white mb-4 neon-text">
-              How to Get Started in 3 Simple Steps
-            </h2>
-          </div>
+<section className="relative overflow-hidden py-20 px-4">
+  <BGPattern variant="grid" mask="fade-edges" />
+  <div className="relative z-10 max-w-6xl mx-auto">
+    <div className="text-center mb-16">
+      <h2 className="text-4xl md:text-5xl font-bold text-white mb-4 neon-text">
+        How to Get Started in 3 Simple Steps
+      </h2>
+    </div>
 
-          <div className="grid md:grid-cols-3 gap-8">
-            {/* Step 1 */}
-            <div className="glass-card group relative">
-              <div className="absolute -top-4 left-8">
-                <div className="bg-cyan-500 text-black font-bold text-lg w-8 h-8 rounded-full flex items-center justify-center shadow-lg shadow-cyan-500/50">
-                  1
-                </div>
-              </div>
-              <div className="p-8 pt-12">
-                <div className="mb-6 flex justify-center">
-                  <div className="relative">
-                    <div className="absolute inset-0 bg-cyan-400 blur-lg opacity-30 group-hover:opacity-50 transition-opacity"></div>
-                    <Wallet
-                      size={48}
-                      className="relative text-cyan-400 neon-glow"
-                    />
-                  </div>
-                </div>
-                <h3 className="text-2xl font-bold text-white mb-4 text-center">
-                  Connect Wallet
-                </h3>
-                <p className="text-gray-300 leading-relaxed text-center">
-                  Connect your MetaMask wallet to the Avalanche Fuji Testnet.
-                  This establishes your identity and allows you to interact with
-                  the Stellalpha ecosystem safely.
-                </p>
-              </div>
-            </div>
-
-            {/* Step 2 */}
-            <div className="glass-card group relative">
-              <div className="absolute -top-4 left-8">
-                <div className="bg-cyan-500 text-black font-bold text-lg w-8 h-8 rounded-full flex items-center justify-center shadow-lg shadow-cyan-500/50">
-                  2
-                </div>
-              </div>
-              <div className="p-8 pt-12">
-                <div className="mb-6 flex justify-center">
-                  <div className="relative">
-                    <div className="absolute inset-0 bg-cyan-400 blur-lg opacity-30 group-hover:opacity-50 transition-opacity"></div>
-                    <Users
-                      size={48}
-                      className="relative text-cyan-400 neon-glow"
-                    />
-                  </div>
-                </div>
-                <h3 className="text-2xl font-bold text-white mb-4 text-center">
-                  Follow Stars
-                </h3>
-                <p className="text-gray-300 leading-relaxed text-center">
-                  Browse and choose best performing "Star Traders" whose strategies align
-                  with your goals from Trader JOE DEX. Copy their wallet address and follow them.
-                </p>
-              </div>
-            </div>
-
-            {/* Step 3 */}
-            <div className="glass-card group relative">
-              <div className="absolute -top-4 left-8">
-                <div className="bg-cyan-500 text-black font-bold text-lg w-8 h-8 rounded-full flex items-center justify-center shadow-lg shadow-cyan-500/50">
-                  3
-                </div>
-              </div>
-              <div className="p-8 pt-12">
-                <div className="mb-6 flex justify-center">
-                  <div className="relative">
-                    <div className="absolute inset-0 bg-cyan-400 blur-lg opacity-30 group-hover:opacity-50 transition-opacity"></div>
-                    <Bot
-                      size={48}
-                      className="relative text-cyan-400 neon-glow"
-                    />
-                  </div>
-                </div>
-                <h3 className="text-2xl font-bold text-white mb-4 text-center">
-                  Activate Agent
-                </h3>
-                <p className="text-gray-300 leading-relaxed text-center">
-                  Activate your autonomous agent with a dedicated burner
-                  wallet's private key.
-                  <span className="text-yellow-400 m-1 font-semibold">
-                    
-                    Always use a test wallet with minimal funds
-                  </span>
-                  to begin gasless copy-trading.
-                </p>
-              </div>
-            </div>
+    {/* Step Cards */}
+    <div className="grid md:grid-cols-3 gap-8">
+      {/* Step 1 */}
+      <div className="glass-card group relative">
+        <div className="absolute -top-4 left-8">
+          <div className="bg-cyan-500 text-black font-bold text-lg w-8 h-8 rounded-full flex items-center justify-center shadow-lg shadow-cyan-500/50">
+            1
           </div>
         </div>
-      </section>
+        <div className="p-8 pt-12">
+          <div className="mb-6 flex justify-center">
+            <div className="relative">
+              <div className="absolute inset-0 bg-cyan-400 blur-lg opacity-30 group-hover:opacity-50 transition-opacity"></div>
+              <Wallet size={48} className="relative text-cyan-400 neon-glow" />
+            </div>
+          </div>
+          <h3 className="text-2xl font-bold text-white mb-4 text-center">
+            Connect Wallet
+          </h3>
+          <p className="text-gray-300 leading-relaxed text-center">
+            Connect your MetaMask wallet to the Avalanche Fuji Testnet. This establishes your identity and allows you to interact with the Stellalpha ecosystem safely.
+          </p>
+        </div>
+      </div>
+
+      {/* Step 2 */}
+      <div className="glass-card group relative">
+        <div className="absolute -top-4 left-8">
+          <div className="bg-cyan-500 text-black font-bold text-lg w-8 h-8 rounded-full flex items-center justify-center shadow-lg shadow-cyan-500/50">
+            2
+          </div>
+        </div>
+        <div className="p-8 pt-12">
+          <div className="mb-6 flex justify-center">
+            <div className="relative">
+              <div className="absolute inset-0 bg-cyan-400 blur-lg opacity-30 group-hover:opacity-50 transition-opacity"></div>
+              <Users size={48} className="relative text-cyan-400 neon-glow" />
+            </div>
+          </div>
+          <h3 className="text-2xl font-bold text-white mb-4 text-center">
+            Follow Stars
+          </h3>
+          <p className="text-gray-300 leading-relaxed text-center">
+            Find top "Star Traders" using tools like Dexscreener. Copy their wallet address and follow them to replicate their success.
+            <a className="block text-cyan-400 hover:text-cyan-300 transition-colors mt-2" href="https://www.youtube.com/watch?v=kCohSiyIVw4" target="_blank" rel="noopener noreferrer">
+              Watch the guide
+            </a>
+          </p>
+        </div>
+      </div>
+
+      {/* Step 3 */}
+      <div className="glass-card group relative">
+        <div className="absolute -top-4 left-8">
+          <div className="bg-cyan-500 text-black font-bold text-lg w-8 h-8 rounded-full flex items-center justify-center shadow-lg shadow-cyan-500/50">
+            3
+          </div>
+        </div>
+        <div className="p-8 pt-12">
+          <div className="mb-6 flex justify-center">
+            <div className="relative">
+              <div className="absolute inset-0 bg-cyan-400 blur-lg opacity-30 group-hover:opacity-50 transition-opacity"></div>
+              <Bot size={48} className="relative text-cyan-400 neon-glow" />
+            </div>
+          </div>
+          <h3 className="text-2xl font-bold text-white mb-4 text-center">
+            Activate Agent
+          </h3>
+          <p className="text-gray-300 leading-relaxed text-center">
+            Activate your autonomous agent with a burner wallet's private key to begin gasless copy-trading.
+            <span className="block text-yellow-400 mt-2 font-semibold">
+              Always use a test wallet with minimal funds.
+            </span>
+          </p>
+        </div>
+      </div>
+    </div>
+
+    {/* Video Section */}
+<div className="mt-16">
+  <div className="text-center mb-8">
+    <h3 className="text-3xl font-bold text-white neon-text">
+      Visual Walkthrough
+    </h3>
+  </div>
+  <div className="glass-card overflow-hidden rounded-2xl max-w-4xl mx-auto">
+    <iframe
+      className="w-full aspect-video"
+      src="https://www.youtube.com/embed/yPQ_Yd2hufo?rel=0&modestbranding=1&controls=1&autoplay=1&mute=1&start=110"
+      title="Visual Walkthrough"
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+      allowFullScreen
+    ></iframe>
+  </div>
+</div>
+
+  </div>
+</section>
 
       {/* Features Section */}
       <section className="relative overflow-hidden py-20 px-4">
