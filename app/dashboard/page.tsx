@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import Image from "next/image"; 
 import {
   Card,
   CardContent,
@@ -14,7 +15,7 @@ import {
 import { useWallet } from "@/contexts/WalletContext";
 import { showToast } from "@/components/toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Rss, ExternalLink, X, Loader2, Power, AlertTriangle, PowerOff } from "lucide-react";
+import { Rss, ExternalLink, X, Loader2, Power, AlertTriangle, PowerOff, ArrowRight, Coins, Copy } from "lucide-react";
 
 
 interface Signal {
@@ -23,6 +24,9 @@ interface Signal {
   starWallet: string;
   timestamp: string;
   txHash: string;
+  fromTokenAddress: string;
+  toTokenAddress: string;
+  amountSwapped: string;
 }
 
 export default function DashboardPage() {
@@ -30,7 +34,7 @@ export default function DashboardPage() {
   const [privateKey, setPrivateKey] = useState("");
   const [isActivating, setIsActivating] = useState(false);
   const [signals, setSignals] = useState<Signal[]>([]);
-  const [isLoadingSignals, setIsLoadingSignals] = useState(false); // Fix: Initialize to false
+  const [isLoadingSignals, setIsLoadingSignals] = useState(false);
 
   const {
     isConnected,
@@ -48,7 +52,7 @@ export default function DashboardPage() {
     if (!isConnected || !connectedWallet) {
         return;
     };
-    setIsLoadingSignals(true); // Set loading to true only when we start fetching
+    setIsLoadingSignals(true);
     try {
       const response = await fetch(`/api/signals?userWallet=${connectedWallet}`);
       const data = await response.json();
@@ -62,15 +66,66 @@ export default function DashboardPage() {
     }
   }, [isConnected, connectedWallet]);
 
+  const tokenInfoMap: { [key: string]: { name: string; logo: string } } = {
+    "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7": { name: "USDT", logo: "/usdt.png" },
+    "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7": { name: "WAVAX", logo: "/avax.png" },
+    // using hardcoded data for test, ideally fetch from a reliable source
+  };
+
+  const parseActionForTokens = (action: string) => {
+    // Extract token addresses and amounts from action string
+    const tokenRegex = /0x[a-fA-F0-9]{40}/g;
+    const amountRegex = /Swapped\s+([\d.]+)\s+of\s+token\s+0x[a-fA-F0-9]{40}\s+for\s+0x[a-fA-F0-9]{40}/;
+    
+    const addresses = action.match(tokenRegex) || [];
+    const amountMatch = action.match(amountRegex);
+    const amount = amountMatch ? amountMatch[1] : '';
+    
+    return {
+      fromTokenAddress: addresses[0] || '',
+      toTokenAddress: addresses[1] || '',
+      amount: amount
+    };
+  };
+
+  const getTokenInfo = (address?: string) => {
+    if (!address) {
+      return { name: 'N/A', logo: '', showGenericIcon: true, fullAddress: '' };
+    }
+    const addressLower = address.toLowerCase();
+    const tokenInfo = tokenInfoMap[addressLower];
+    
+    if (tokenInfo) {
+      return { ...tokenInfo, showGenericIcon: false, fullAddress: address };
+    } else {
+      // Return the actual token address with generic icon
+      return { 
+        name: `${address.slice(0, 6)}...${address.slice(-4)}`, 
+        logo: '', 
+        showGenericIcon: true,
+        fullAddress: address
+      };
+    }
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("Address copied to clipboard!", "success");
+    } catch (error) {
+      showToast("Failed to copy address", "error");
+    }
+  };
+  
   useEffect(() => {
-    if (isAgentActive && isConnected) {
+    if (isConnected) {
       fetchSignals();
       const interval = setInterval(fetchSignals, 10000);
       return () => clearInterval(interval);
     } else {
         setSignals([]);
     }
-  }, [isAgentActive, isConnected, fetchSignals]);
+  }, [isConnected, fetchSignals]);
 
   const handleFollow = () => {
     if (!starToFollow) {
@@ -96,12 +151,11 @@ export default function DashboardPage() {
 
   return (
     <>
-      
       <div className="relative z-10 min-h-screen flex flex-col">
         <main className="flex-grow max-w-7xl w-full mx-auto p-6 mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-1 space-y-6">
-              <Card  className="glass-card border-0 text-white floating-animation">
+              <Card className="glass-card border-0 text-white floating-animation">
                 <CardHeader>
                   <CardTitle className="electric-cyan">1. Follow a Star</CardTitle>
                   <CardDescription className="text-white">Enter a wallet address to begin tracking.</CardDescription>
@@ -138,7 +192,7 @@ export default function DashboardPage() {
                 </CardContent>
               </Card>
 
-              <Card  className="glass-card border-0 electric-cyan floating-animation">
+              <Card className="glass-card border-0 electric-cyan floating-animation">
                 <CardHeader>
                   <CardTitle>2. Activate Agent</CardTitle>
                   <CardDescription className="text-white">
@@ -197,26 +251,87 @@ export default function DashboardPage() {
                   <CardDescription className="text-white">Autonomous trades executed by your agent will appear here.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-                  {isLoadingSignals ? Array.from({length: 5}).map((_, i) => <Skeleton key={i} className="h-16 w-full bg-white/5"/>)
+                  {isLoadingSignals ? Array.from({length: 5}).map((_, i) => <Skeleton key={i} className="h-20 w-full bg-white/5"/>)
                    : !isConnected ? <p className="text-gray-400 text-center py-8">Connect your wallet to see agent activity.</p>
-                   : !isAgentActive ? <p className="text-gray-400 text-center py-8">Activate your agent to see live signals.</p>
                    : signals.length === 0 ? <p className="text-gray-400 text-center py-8">No signals yet. Waiting for a followed star to make a swap.</p>
-                   : signals.map(signal => (
-                      <div key={signal.id} className="p-4 bg-white/5 rounded-lg border border-white/10 animate-fade-in">
-                          <p className="font-semibold text-white">{signal.action}</p>
-                          <div className="text-xs text-gray-400 mt-1 flex justify-between items-center">
-                              <span>Star: <span className="font-mono">{signal.starWallet.slice(0,10)}...</span></span>
-                              <a
-                                  href={`https://testnet.snowtrace.io/tx/${signal.txHash}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex items-center gap-1 hover:text-electric-cyan transition-colors"
-                              >
-                                  View Tx <ExternalLink className="w-3 h-3"/>
-                              </a>
-                          </div>
-                      </div>
-                   ))
+                   : signals.map(signal => {
+                      const parsedTokens = parseActionForTokens(signal.action);
+                      const fromTokenAddress = parsedTokens.fromTokenAddress || signal.fromTokenAddress;
+                      const toTokenAddress = parsedTokens.toTokenAddress || signal.toTokenAddress;
+                      const swapAmount = parsedTokens.amount || signal.amountSwapped;
+                      
+                      const fromToken = getTokenInfo(fromTokenAddress);
+                      const toToken = getTokenInfo(toTokenAddress);
+                      
+                      return (
+                        <div key={signal.id} className="p-4 bg-white/5 rounded-lg border border-white/10 animate-fade-in space-y-3">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3 font-mono text-lg text-white">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-cyan-400 font-semibold">{swapAmount}</span>
+                                      {fromToken.showGenericIcon ? (
+                                        <Coins className="w-5 h-5 text-gray-400" />
+                                      ) : fromToken.logo ? (
+                                        <Image src={fromToken.logo} alt={fromToken.name} width={20} height={20} className="rounded-full" />
+                                      ) : (
+                                        <Coins className="w-5 h-5 text-gray-400" />
+                                      )}
+                                      <span 
+                                        className="text-gray-400" 
+                                        title={fromToken.fullAddress}
+                                      >
+                                        {fromToken.name}
+                                      </span>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() => copyToClipboard(fromToken.fullAddress)}
+                                        className="h-6 w-6 text-gray-500 hover:text-cyan-400 transition-colors"
+                                      >
+                                        <Copy className="w-3 h-3" />
+                                      </Button>
+                                    </div>
+                                    <ArrowRight className="w-4 h-4 text-cyan-400" />
+                                    <div className="flex items-center gap-2">
+                                      {toToken.showGenericIcon ? (
+                                        <Coins className="w-5 h-5 text-gray-400" />
+                                      ) : toToken.logo ? (
+                                        <Image src={toToken.logo} alt={toToken.name} width={20} height={20} className="rounded-full" />
+                                      ) : (
+                                        <Coins className="w-5 h-5 text-gray-400" />
+                                      )}
+                                      <span 
+                                        className="text-gray-400"
+                                        title={toToken.fullAddress}
+                                      >
+                                        {toToken.name}
+                                      </span>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() => copyToClipboard(toToken.fullAddress)}
+                                        className="h-6 w-6 text-gray-500 hover:text-cyan-400 transition-colors"
+                                      >
+                                        <Copy className="w-3 h-3" />
+                                      </Button>
+                                    </div>
+                                </div>
+                                <a
+                                    href={`https://testnet.snowtrace.io/tx/${signal.txHash}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                                >
+                                    View Tx <ExternalLink className="w-3 h-3"/>
+                                </a>
+                            </div>
+                            <div className="text-xs text-gray-500 flex justify-between items-center border-t border-white/10 pt-2">
+                                <span>Star: <span className="font-mono text-gray-400">{signal.starWallet.slice(0, 10)}...</span></span>
+                                <span>{new Date(signal.timestamp).toLocaleString()}</span>
+                            </div>
+                        </div>
+                      )
+                   })
                   }
                 </CardContent>
               </Card>
