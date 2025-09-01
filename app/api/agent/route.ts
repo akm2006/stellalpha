@@ -8,14 +8,42 @@ import { Agentkit, AgentkitToolkit } from '@0xgasless/agentkit';
 const redis = Redis.fromEnv();
 const provider = new ethers.JsonRpcProvider(process.env.AVALANCHE_RPC_URL!);
 
-// --- Fuji Testnet Configuration ---
-const FUJI_CHAIN_ID = 43113; 
+// --- DEX Configurations ---
+
+// 1. Trader Joe
 const TRADER_JOE_ROUTER_ADDRESS = "0x60aE616a2155Ee3d9A68541Ba4544862310933d4";
 const TRADER_JOE_ABI = [
   "function swapExactAVAXForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable",
   "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)"
 ];
 const traderJoeInterface = new ethers.Interface(TRADER_JOE_ABI);
+
+// 2. SushiSwap
+const SUSHISWAP_ROUTER_ADDRESS = "0x1b02dA8Cb0d097eB8D57A175b88c7D8b479975b6";
+const SUSHISWAP_ABI = [
+    // Note: The function is named swapExactETHForTokens but works for AVAX on Avalanche
+    "function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable",
+    "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)"
+];
+const sushiswapInterface = new ethers.Interface(SUSHISWAP_ABI);
+
+
+// --- Supported DEXs Array ---
+// To add more DEXs, add their configuration here.
+const supportedDexes = [
+    {
+        name: 'TraderJoe',
+        address: TRADER_JOE_ROUTER_ADDRESS,
+        interface: traderJoeInterface,
+    },
+    {
+        name: 'SushiSwap',
+        address: SUSHISWAP_ROUTER_ADDRESS,
+        interface: sushiswapInterface
+    }
+    //Example - { name: 'Pangolin', address: PANGOLIN_ROUTER_ADDRESS, interface: pangolinInterface },
+];
+
 
 // --- Redis Key for Agent State ---
 const AGENT_STATUS_KEY = "agent:status:fuji";
@@ -58,7 +86,6 @@ async function initializeAgent(userPrivateKey: `0x${string}`) {
 
 const handleNewBlock = async (blockNumber: number) => {
     // --- Redis "Kill Switch" Check ---
-    // The first thing we do is check the centralized state.
     const agentStatus = await redis.get(AGENT_STATUS_KEY);
     if (agentStatus !== 'active') {
         console.log(`Agent status is '${agentStatus}'. Shutting down this block listener instance.`);
@@ -82,51 +109,57 @@ const handleNewBlock = async (blockNumber: number) => {
         const targetWallets = new Set(followedWalletKeys.map(key => key.split(':')[1].toLowerCase()));
 
         for (const tx of block.prefetchedTransactions) {
-            if (tx.to && tx.to.toLowerCase() === TRADER_JOE_ROUTER_ADDRESS.toLowerCase() && targetWallets.has(tx.from.toLowerCase())) {
-                console.log(`🔥🔥🔥 Matched transaction from Star wallet: ${tx.from}!`);
+            // Iterate over each supported DEX
+            for (const dex of supportedDexes) {
+                if (tx.to && tx.to.toLowerCase() === dex.address.toLowerCase() && targetWallets.has(tx.from.toLowerCase())) {
+                    console.log(`🔥🔥🔥 Matched transaction from Star wallet: ${tx.from} on ${dex.name}!`);
 
-                try {
-                    const parsedTx = traderJoeInterface.parseTransaction({ data: tx.data, value: tx.value });
-                    if (!parsedTx || !parsedTx.args.path) continue;
+                    try {
+                        const parsedTx = dex.interface.parseTransaction({ data: tx.data, value: tx.value });
+                        
+                        // Check if the transaction is a swap and has a path
+                        if (!parsedTx || !parsedTx.args.path) continue;
 
-                    const followers = await redis.smembers(`follows:${tx.from.toLowerCase()}`);
-                    for (const userWalletAddress of followers) {
-                        const tradeSize = await redis.hget(`settings:${userWalletAddress}`, 'tradeSize') as string || "0.01";
-                        const fromToken = parsedTx.args.path[0];
-                        const toToken = parsedTx.args.path[parsedTx.args.path.length - 1];
+                        const followers = await redis.smembers(`follows:${tx.from.toLowerCase()}`);
+                        for (const userWalletAddress of followers) {
+                            const tradeSize = await redis.hget(`settings:${userWalletAddress}`, 'tradeSize') as string || "0.01";
+                            const fromToken = parsedTx.args.path[0];
+                            const toToken = parsedTx.args.path[parsedTx.args.path.length - 1];
 
-                        console.log(`🚀 Triggering autonomous copy-trade for user ${userWalletAddress}...`);
+                            console.log(`🚀 Triggering autonomous copy-trade for user ${userWalletAddress} on ${dex.name}...`);
 
-                        const tools = agentToolkit.getTools();
-                        const swapTool = tools.find(t => t.name === "smart_swap");
+                            const tools = agentToolkit.getTools();
+                            const swapTool = tools.find(t => t.name === "smart_swap");
 
-                        if (!swapTool) {
-                            throw new Error("Critical Error: 'smart_swap' tool not found in AgentkitToolkit!");
+                            if (!swapTool) {
+                                throw new Error("Critical Error: 'smart_swap' tool not found in AgentkitToolkit!");
+                            }
+
+                            console.log(`✅ Found 'smart_swap' tool. Executing a swap of ${tradeSize} of ${fromToken} for ${toToken}...`);
+
+                            const result = await swapTool.invoke({
+                                fromAssetAddress: fromToken,
+                                toAssetAddress: toToken,
+                                amount: tradeSize,
+                            });
+
+                            console.log(`✅✅✅ Gasless copy-trade EXECUTED! Result:`, result);
+
+                            const signal = {
+                                id: tx.hash,
+                                type: 'copy-trade',
+                                action: `Copied trade on ${dex.name}: Swapped ${tradeSize} of token ${fromToken.slice(0,6)} for ${toToken.slice(0,6)}`,
+                                starWallet: tx.from,
+                                timestamp: new Date().toISOString(),
+                                txHash: tx.hash
+                            };
+                            await redis.lpush(`signals:${userWalletAddress}`, JSON.stringify(signal));
+                            console.log("📝 Signal saved to log.");
                         }
-
-                        console.log(`✅ Found 'smart_swap' tool. Executing a swap of ${tradeSize} of ${fromToken} for ${toToken}...`);
-
-                        const result = await swapTool.invoke({
-                            fromAssetAddress: fromToken,
-                            toAssetAddress: toToken,
-                            amount: tradeSize,
-                        });
-
-                        console.log(`✅✅✅ Gasless copy-trade EXECUTED! Result:`, result);
-
-                        const signal = {
-                            id: tx.hash,
-                            type: 'copy-trade',
-                            action: `Copied trade: Swapped ${tradeSize} of token ${fromToken.slice(0,6)} for ${toToken.slice(0,6)}`,
-                            starWallet: tx.from,
-                            timestamp: new Date().toISOString(),
-                            txHash: tx.hash
-                        };
-                        await redis.lpush(`signals:${userWalletAddress}`, JSON.stringify(signal));
-                        console.log("📝 Signal saved to log.");
+                    } catch (e: any) {
+                        // This might be a non-swap transaction to the router, so we can ignore the error
+                        // console.error(`Could not parse transaction for ${dex.name}:`, e.message);
                     }
-                } catch (e: any) {
-                    console.error("❌ Error during autonomous trade execution:", e.message);
                 }
             }
         }
@@ -186,4 +219,3 @@ export async function DELETE(request: Request) {
         return NextResponse.json({ success: false, error: error.message }, { status: 500 });
     }
 }
-
