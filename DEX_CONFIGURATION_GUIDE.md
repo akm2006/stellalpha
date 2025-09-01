@@ -37,7 +37,9 @@ The current agent logic is specifically designed to parse transactions from DEX 
 - `swapExactTokensForTokens(...)`  
 - `swapExactAVAXForTokens(...)` or `swapExactETHForTokens(...)`  
 
-⚠️ Routers with fundamentally different architectures (e.g., **Uniswap's UniversalRouter**, which uses a generic `execute(...)` command) are **not compatible** with the current parsing logic and would require a **significant rewrite** of the `handleNewBlock` function.
+⚠️ Routers with fundamentally different architectures (e.g., Uniswap's UniversalRouter, which uses a generic execute(...) command) are not compatible with the current parsing logic and would require a significant rewrite of the handleNewBlock function.
+
+However, integrating such routers is entirely possible in the future. It would involve developing a more advanced parser within the handleNewBlock function capable of decoding the Universal Router's commands byte string. This new logic would need to interpret these encoded instructions to extract the swap details (like the token path and amounts) before the agent could replicate the trade. We may implement this enhancement in a future version of Stellalpha.
 
 ---
 
