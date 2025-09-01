@@ -8,20 +8,21 @@ import { Agentkit, AgentkitToolkit } from '@0xgasless/agentkit';
 const redis = Redis.fromEnv();
 const provider = new ethers.JsonRpcProvider(process.env.AVALANCHE_RPC_URL!);
 
-// --- DEX Configurations ---
+// --- Token & DEX Configurations ---
 
-// 1. Trader Joe
-const TRADER_JOE_ROUTER_ADDRESS = "0x60aE616a2155Ee3d9A68541Ba4544862310933d4";
+// Wrapped AVAX (WAVAX) on Fuji Testnet
+const WAVAX_ADDRESS = "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7";
+
+// 1. Trader Joe V2.1 Router
+const TRADER_JOE_ROUTER_ADDRESS = "0x45A62B090DF48243F12A21897e7ed91863E2c86b";
 const TRADER_JOE_ABI = [
-  "function swapExactAVAXForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable",
-  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)"
+  "function swapExactIn(address logic, address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOutMin, address to, uint256 deadline, bytes route) external payable"
 ];
 const traderJoeInterface = new ethers.Interface(TRADER_JOE_ABI);
 
-// 2. SushiSwap
+// 2. SushiSwap Router
 const SUSHISWAP_ROUTER_ADDRESS = "0x1b02dA8Cb0d097eB8D57A175b88c7D8b479975b6";
 const SUSHISWAP_ABI = [
-    // Note: The function is named swapExactETHForTokens but works for AVAX on Avalanche
     "function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable",
     "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)"
 ];
@@ -29,26 +30,26 @@ const sushiswapInterface = new ethers.Interface(SUSHISWAP_ABI);
 
 
 // --- Supported DEXs Array ---
-// To add more DEXs, add their configuration here.
 const supportedDexes = [
     {
         name: 'TraderJoe',
         address: TRADER_JOE_ROUTER_ADDRESS,
         interface: traderJoeInterface,
+        isV2: true
     },
     {
         name: 'SushiSwap',
         address: SUSHISWAP_ROUTER_ADDRESS,
-        interface: sushiswapInterface
+        interface: sushiswapInterface,
+        isV2: false
     }
-    //Example - { name: 'Pangolin', address: PANGOLIN_ROUTER_ADDRESS, interface: pangolinInterface },
 ];
 
 
 // --- Redis Key for Agent State ---
 const AGENT_STATUS_KEY = "agent:status:fuji";
 
-// Global instances to manage our single agent
+// Global instances
 let agentToolkit: AgentkitToolkit | null = null;
 let blockListenerActive = false;
 
@@ -79,13 +80,12 @@ async function initializeAgent(userPrivateKey: `0x${string}`) {
     });
 
     agentToolkit = new AgentkitToolkit(agentkit);
-
+    
     const userWallet = new ethers.Wallet(userPrivateKey);
     console.log("✅ Agentkit initialized successfully for EOA:", userWallet.address);
 }
 
 const handleNewBlock = async (blockNumber: number) => {
-    // --- Redis "Kill Switch" Check ---
     const agentStatus = await redis.get(AGENT_STATUS_KEY);
     if (agentStatus !== 'active') {
         console.log(`Agent status is '${agentStatus}'. Shutting down this block listener instance.`);
@@ -95,7 +95,6 @@ const handleNewBlock = async (blockNumber: number) => {
         return;
     }
     
-    // In-memory check for safety
     if (!agentToolkit || !blockListenerActive) return;
 
     console.log(`Scanning Fuji block #${blockNumber}...`);
@@ -109,24 +108,46 @@ const handleNewBlock = async (blockNumber: number) => {
         const targetWallets = new Set(followedWalletKeys.map(key => key.split(':')[1].toLowerCase()));
 
         for (const tx of block.prefetchedTransactions) {
-            // Iterate over each supported DEX
             for (const dex of supportedDexes) {
                 if (tx.to && tx.to.toLowerCase() === dex.address.toLowerCase() && targetWallets.has(tx.from.toLowerCase())) {
-                    console.log(`🔥🔥🔥 Matched transaction from Star wallet: ${tx.from} on ${dex.name}!`);
-
+                    
                     try {
                         const parsedTx = dex.interface.parseTransaction({ data: tx.data, value: tx.value });
                         
-                        // Check if the transaction is a swap and has a path
-                        if (!parsedTx || !parsedTx.args.path) continue;
+                        let fromToken: string | null = null;
+                        let toToken: string | null = null;
+
+                        if (dex.isV2) {
+                            if (parsedTx && parsedTx.name === 'swapExactIn' && parsedTx.args.tokenIn && parsedTx.args.tokenOut) {
+                                fromToken = parsedTx.args.tokenIn;
+                                toToken = parsedTx.args.tokenOut;
+                            }
+                        } else {
+                            if (parsedTx && parsedTx.args.path && parsedTx.args.path.length >= 2) {
+                                fromToken = parsedTx.args.path[0];
+                                toToken = parsedTx.args.path[parsedTx.args.path.length - 1];
+                            }
+                        }
+
+                        if (!fromToken || !toToken) continue;
+                        
+                        console.log(`🔥🔥🔥 Matched transaction from Star wallet: ${tx.from} on ${dex.name}!`);
+                        
+                        if (fromToken.toLowerCase() === '0x0000000000000000000000000000000000000000') {
+                            fromToken = WAVAX_ADDRESS;
+                            console.log(`ℹ️ Detected swap from native asset. Using WAVAX address for input: ${fromToken}`);
+                        }
+                        if (toToken.toLowerCase() === '0x0000000000000000000000000000000000000000') {
+                            toToken = WAVAX_ADDRESS;
+                            console.log(`ℹ️ Detected swap to native asset. Using WAVAX address for output: ${toToken}`);
+                        }
 
                         const followers = await redis.smembers(`follows:${tx.from.toLowerCase()}`);
                         for (const userWalletAddress of followers) {
                             const tradeSize = await redis.hget(`settings:${userWalletAddress}`, 'tradeSize') as string || "0.01";
-                            const fromToken = parsedTx.args.path[0];
-                            const toToken = parsedTx.args.path[parsedTx.args.path.length - 1];
 
                             console.log(`🚀 Triggering autonomous copy-trade for user ${userWalletAddress} on ${dex.name}...`);
+                            console.log(`   Swapping ${tradeSize} of ${fromToken} for ${toToken}...`);
 
                             const tools = agentToolkit.getTools();
                             const swapTool = tools.find(t => t.name === "smart_swap");
@@ -134,31 +155,44 @@ const handleNewBlock = async (blockNumber: number) => {
                             if (!swapTool) {
                                 throw new Error("Critical Error: 'smart_swap' tool not found in AgentkitToolkit!");
                             }
+                            
+                            try {
+    // Explicitly cast all dynamic variables to strings
+    const swapParams = {
+        tokenIn: String(fromToken),
+        tokenOut: String(toToken),
+        amount: String(tradeSize),
+        approveMax: true
+    };
 
-                            console.log(`✅ Found 'smart_swap' tool. Executing a swap of ${tradeSize} of ${fromToken} for ${toToken}...`);
+    console.log(`[DEBUG] Invoking smart_swap with explicitly typed params:`, swapParams);
+    
+    const result = await swapTool.invoke(swapParams);
 
-                            const result = await swapTool.invoke({
-                                fromAssetAddress: fromToken,
-                                toAssetAddress: toToken,
-                                amount: tradeSize,
-                            });
+    console.log(`✅✅✅ Gasless copy-trade EXECUTED! Result:`, result);
 
-                            console.log(`✅✅✅ Gasless copy-trade EXECUTED! Result:`, result);
+  const signal = {
+    id: tx.hash,
+    type: 'copy-trade',
+    action: `Copied trade on ${dex.name}`, // Simplified action string
+    starWallet: tx.from,
+    timestamp: new Date().toISOString(),
+    txHash: tx.hash,
+    // Add the full token data for the frontend
+    fromTokenAddress: fromToken,
+    toTokenAddress: toToken,
+    amountSwapped: tradeSize
+};
 
-                            const signal = {
-                                id: tx.hash,
-                                type: 'copy-trade',
-                                action: `Copied trade on ${dex.name}: Swapped ${tradeSize} of token ${fromToken.slice(0,6)} for ${toToken.slice(0,6)}`,
-                                starWallet: tx.from,
-                                timestamp: new Date().toISOString(),
-                                txHash: tx.hash
-                            };
-                            await redis.lpush(`signals:${userWalletAddress}`, JSON.stringify(signal));
-                            console.log("📝 Signal saved to log.");
+await redis.lpush(`signals:${userWalletAddress}`, JSON.stringify(signal));
+console.log("📝 Signal (with full data) saved to log.");
+
+} catch (swapError: any) {
+    console.error(`❌❌❌ CRITICAL ERROR during smart_swap execution for user ${userWalletAddress}:`, swapError);
+}
                         }
                     } catch (e: any) {
-                        // This might be a non-swap transaction to the router, so we can ignore the error
-                        // console.error(`Could not parse transaction for ${dex.name}:`, e.message);
+                        // Ignore errors from transactions that are not valid swaps
                     }
                 }
             }
@@ -176,11 +210,12 @@ export async function POST(request: Request) {
             return NextResponse.json({ success: false, error: 'Missing parameters' }, { status: 400 });
         }
         
-        // Set the agent status to active in Redis
         await redis.set(AGENT_STATUS_KEY, 'active');
         console.log(`✅ Agent status set to 'active' in Redis.`);
 
         await initializeAgent(userPrivateKey);
+
+       
 
         await redis.sadd(`follows:${starWallet.toLowerCase()}`, userWallet.toLowerCase());
         console.log(`User ${userWallet.toLowerCase()} is now following ${starWallet.toLowerCase()}`);
@@ -194,7 +229,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true, message: "Agent activated successfully on Fuji!" });
     } catch (error: any) {
         console.error("Error activating agent:", error);
-        // In case of an error during activation, set status to inactive
         await redis.set(AGENT_STATUS_KEY, 'inactive');
         return NextResponse.json({ success: false, error: error.message }, { status: 500 });
     }
@@ -202,11 +236,9 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
     try {
-        // Set the agent status to inactive in Redis
         await redis.set(AGENT_STATUS_KEY, 'inactive');
         console.log("✅ Agent status set to 'inactive' in Redis. Any active listeners will now self-terminate.");
 
-        // Still attempt to remove listeners on the current instance as a good practice
         if (blockListenerActive) {
             provider.removeAllListeners('block');
             blockListenerActive = false;
