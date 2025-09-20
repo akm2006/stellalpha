@@ -175,9 +175,10 @@ To enable autonomous features, this app requires your wallet’s private key.
 ## 🌟 Community Recognition
 
 We were thrilled to receive a shout-out from the official 0xGasless X account for Stellalpha's innovative use of their AgentKit!
+https://x.com/0xGasless/status/1968939296733245728
 
 <p align="center">
-  <img src="[URL_TO_YOUR_SCREENSHOT_HERE]" alt="0xGasless Shout-out for Stellalpha" width="500"/>
+  <img src="shoutout_screenshot.png" alt="0xGasless Shout-out for Stellalpha" width="500"/>
 </p>
 
 ---
