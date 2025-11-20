@@ -103,9 +103,11 @@ export const StellaHero = () => {
                  </div>
 
                  {/* Anchor */}
+                
                  <div className="flex items-center gap-3 group opacity-60 hover:opacity-100 transition-opacity duration-300">
-                   <div className="relative w-6 h-6 flex items-center justify-center bg-white/5 rounded-md border border-white/10 group-hover:border-cyan-500/50 transition-colors">
-                      <img src="/anchor.png" alt="Solana" className="w-full h-full object-contain grayscale group-hover:grayscale-0 transition-all duration-300" />
+                   <div className="relative w-6 h-6">
+                      <img src="/anchor.png" alt="anchor" className="w-full h-full object-contain grayscale group-hover:grayscale-0 transition-all duration-300" />
+                      <div className="absolute inset-0 bg-green-400/20 blur-md -z-10 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
                    </div>
                    <span className="text-sm font-medium text-gray-400 group-hover:text-white transition-colors">Anchor</span>
                  </div>
