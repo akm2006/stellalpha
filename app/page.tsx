@@ -1,486 +1,641 @@
 "use client";
 
-import React from "react";
-import {
-  Zap,
-  MessageCircle,
-  Shield,
-  Wallet,
-  Users,
-  Bot,
-  CheckCircle,Terminal,ArrowRight
+import React, { useState, useEffect } from "react";
+import { motion } from "framer-motion";
+import { 
+  ArrowRight, 
+  Zap, 
+  Terminal, 
+  Lock, 
+  Cpu, 
+  Server,Coins,
+  Activity,
+  ShieldCheck,
+  ExternalLink,
+  Github,
+  TrendingUp,
+  Network,
+  Code2
 } from "lucide-react";
-import { StellaHero } from "@/components/ui/hero";
-import { Footer } from "@/components/ui/footer";
-import { TechStack } from "@/components/ui/TechStack";
-import { Lock, Eye, FileCode, AlertTriangle } from "lucide-react";
+
+// --- BRAND COLORS ---
+const COLORS = {
+  canvas: '#050505',
+  surface: '#0A0A0A',
+  structure: '#262626',
+  brand: '#10B981',
+  text: '#E5E5E5',
+  data: '#A3A3A3',
+};
+
+// --- CONSTANTS & DATA ---
+const TERMINAL_LOGS = [
+  { time: "14:20:01", type: "INFO", msg: "Initializing Watcher Agent [Solana-Devnet]..." },
+  { time: "14:20:01", type: "SUCCESS", msg: "Geyser Plugin Stream Connected (WSS)" },
+  { time: "14:20:02", type: "INFO", msg: "Monitoring 14 'Star Trader' Wallets." },
+  { time: "14:20:03", type: "WARN", msg: "Signal: 8x...F29a swapped 500 USDC -> SOL" },
+  { time: "14:20:03", type: "EXEC", msg: "Calculating Optimal Route via Jupiter Aggregator..." },
+  { time: "14:20:04", type: "INFO", msg: "Route: ORCA -> RAYDIUM (Impact: <0.05%)" },
+  { time: "14:20:04", type: "EXEC", msg: "Signing PDA Vault Instruction (CPI)..." },
+  { time: "14:20:05", type: "SUCCESS", msg: "Trade Confirmed. Fee Payer: Relayer Service." },
+];
+
+const FEATURES = [
+  {
+    icon: Activity,
+    label: "Watcher Latency",
+    value: "< 400ms",
+    description: "Real-time WebSocket surveillance detects Star Trader moves within the same block."
+  },
+  {
+    icon: Zap,
+    label: "Execution Engine",
+    value: "Jupiter V6",
+    description: "Smart routing across Solana's liquidity layer ensures minimal price impact."
+  },
+  {
+    icon: ShieldCheck,
+    label: "Custody Model",
+    value: "PDA Vaults",
+    description: "Funds are held in Program Derived Addresses. Only YOU can withdraw."
+  },
+  {
+    icon: Cpu,
+    label: "Fee Architecture",
+    value: "Gasless Relayer",
+    description: "Meta-transaction support allows seamless trading without managing SOL for gas."
+  }
+];
+
+const METRICS = [
+  { label: "Network", value: "Solana", change: "Migration Active" },
+  { label: "Block Time", value: "~400ms", change: "Sub-second Finality" },
+  { label: "Architecture", value: "Non-Custodial", change: "Anchor Framework" },
+  { label: "Status", value: "Beta", change: "Devnet Live" },
+];
+
+const TEAM_MEMBERS = [
+  {
+    name: "Aakash Mandal",
+    role: "Founder & Protocol Lead",
+    context: "Core protocol design, relational architecture, and rapid DApp prototyping.",
+    handle: "@aakashbeyond",
+    link: "https://x.com/aakashbeyond"
+  },
+  {
+    name: "Manobendra Mandal",
+    role: "Co-Founder & Architect",
+    context: "Backend systems, EVM to Solana migration, & Anchor Program development.",
+    handle: "@manovmandal",
+    link: "https://x.com/manovmandal" 
+  },
+];
+
+// --- COMPONENTS ---
+
+const LiveTerminal = () => {
+  const [logs, setLogs] = useState<typeof TERMINAL_LOGS>([]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setLogs((prevLogs) => {
+        if (prevLogs.length >= TERMINAL_LOGS.length) return [];
+        const nextLog = TERMINAL_LOGS[prevLogs.length];
+        return nextLog ? [...prevLogs, nextLog] : prevLogs;
+      });
+    }, 1200);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="w-full h-full bg-canvas border border-structure rounded-none font-mono text-[10px] p-5 flex flex-col shadow-2xl">
+      <div className="flex items-center justify-between mb-4 border-b border-structure pb-3 select-none">
+        <div className="flex gap-2">
+          <div className="w-2 h-2 rounded-full bg-structure" />
+          <div className="w-2 h-2 rounded-full bg-structure" />
+        </div>
+        <div className="flex items-center gap-2.5" style={{ color: COLORS.brand }}>
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: COLORS.brand }}></span>
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ backgroundColor: COLORS.brand }}></span>
+          </span>
+          <span className="text-[9px] tracking-wider font-medium">LIVE_FEED :: SOLANA_DEVNET</span>
+        </div>
+      </div>
+      <div className="space-y-2 flex-1 overflow-y-auto scrollbar-hide">
+        {logs.map((log, i) => (
+          <motion.div 
+            key={i} 
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.2 }}
+            className="flex gap-3 items-start"
+          >
+            <span className="shrink-0" style={{ color: COLORS.data }}>[{log.time}]</span>
+            <span className={`shrink-0 w-14 font-semibold text-[9px]`} style={{ 
+              color: log.type === 'SUCCESS' ? COLORS.brand : 
+                     log.type === 'WARN' ? '#F59E0B' : 
+                     log.type === 'EXEC' ? '#3B82F6' : COLORS.data
+            }}>
+              {log.type}
+            </span>
+            <span className="truncate" style={{ color: COLORS.text }}>{log.msg}</span>
+          </motion.div>
+        ))}
+        {logs.length < TERMINAL_LOGS.length && (
+          <div className="w-1.5 h-3 animate-pulse inline-block ml-1" style={{ backgroundColor: COLORS.data }} />
+        )}
+      </div>
+    </div>
+  );
+};
+
+const FeatureCard = ({ feature, delay }: { feature: any, delay: number }) => (
+  <motion.div 
+    initial={{ opacity: 0, y: 20 }}
+    whileInView={{ opacity: 1, y: 0 }}
+    viewport={{ once: true }}
+    transition={{ duration: 0.5, delay }}
+    className="relative bg-surface border border-structure p-6 rounded-none group overflow-hidden"
+    style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}
+  >
+    <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500" 
+         style={{ background: `linear-gradient(135deg, ${COLORS.brand}05 0%, transparent 100%)` }} />
+    
+    <div className="relative z-10">
+      <div className="flex items-start justify-between mb-5">
+        <div className="p-2.5 bg-canvas border border-structure group-hover:border-brand/20 transition-all duration-300"
+             style={{ backgroundColor: COLORS.canvas, borderColor: COLORS.structure }}>
+          <feature.icon size={16} style={{ color: COLORS.data }} className="group-hover:text-brand transition-colors" />
+        </div>
+        <span className="text-[9px] font-mono tracking-widest" style={{ color: COLORS.data }}>
+          {feature.value}
+        </span>
+      </div>
+      
+      <h3 className="text-sm font-medium mb-2.5 tracking-tight" style={{ color: COLORS.text }}>
+        {feature.label}
+      </h3>
+      <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
+        {feature.description}
+      </p>
+    </div>
+  </motion.div>
+);
+
+const MetricCard = ({ metric, delay }: { metric: any, delay: number }) => (
+  <motion.div 
+    initial={{ opacity: 0, y: 20 }}
+    whileInView={{ opacity: 1, y: 0 }}
+    viewport={{ once: true }}
+    transition={{ duration: 0.5, delay }}
+    className="bg-surface border border-structure p-6 group"
+    style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}
+  >
+    <div className="flex flex-col h-full justify-between">
+      <span className="text-[9px] font-mono tracking-widest mb-4" style={{ color: COLORS.data }}>
+        {metric.label}
+      </span>
+      <div>
+        <motion.div 
+          initial={{ scale: 1 }}
+          whileInView={{ scale: [1, 1.02, 1] }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.6, delay: delay + 0.2 }}
+          className="text-3xl font-medium mb-2 tracking-tight"
+          style={{ color: COLORS.text }}
+        >
+          {metric.value}
+        </motion.div>
+        <p className="text-xs flex items-center gap-1.5" style={{ color: COLORS.brand }}>
+          <Activity size={12} />
+          {metric.change}
+        </p>
+      </div>
+    </div>
+  </motion.div>
+);
+
+const Button = ({ children, variant = "default", className = "", ...props }: any) => (
+  <button 
+    className={`inline-flex items-center justify-center font-medium tracking-tight transition-all duration-300 ${className}`}
+    style={variant === "outline" 
+      ? { borderColor: COLORS.structure, color: COLORS.data, backgroundColor: 'transparent' }
+      : { backgroundColor: COLORS.brand, color: COLORS.canvas }
+    }
+    {...props}
+  >
+    {children}
+  </button>
+);
+
+const BGPattern = () => (
+  <div 
+    className="absolute inset-0 opacity-[0.015]"
+    style={{
+      backgroundImage: `linear-gradient(${COLORS.structure} 1px, transparent 1px), linear-gradient(90deg, ${COLORS.structure} 1px, transparent 1px)`,
+      backgroundSize: '32px 32px'
+    }}
+  />
+);
+
+const Footer = () => (
+  <footer className="border-t py-12 px-6" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.canvas }}>
+    <div className="max-w-7xl mx-auto">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-8 mb-12">
+        <div className="max-w-md">
+          <h3 className="text-lg font-medium mb-2" style={{ color: COLORS.text }}>StellAlpha</h3>
+          <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
+            Non-custodial autonomous trading infrastructure for Solana. Execute algorithmic strategies without compromising key security.
+          </p>
+        </div>
+        <div className="flex gap-4">
+          <a href="https://github.com/akm2006/stellalpha" target="_blank" rel="noopener noreferrer" 
+             className="p-2.5 border transition-colors hover:border-brand/50"
+             style={{ borderColor: COLORS.structure, color: COLORS.data }}>
+            <Github size={16} />
+          </a>
+          <a href="https://x.com/AakashM88827113" target="_blank" rel="noopener noreferrer"
+             className="p-2.5 border transition-colors hover:border-brand/50"
+             style={{ borderColor: COLORS.structure, color: COLORS.data }}>
+            <ExternalLink size={16} />
+          </a>
+        </div>
+      </div>
+      
+      <div className="pt-6 border-t flex flex-col md:flex-row justify-between items-center gap-4"
+           style={{ borderColor: COLORS.structure }}>
+        <div className="text-[10px] font-mono tracking-wider" style={{ color: COLORS.data }}>
+          © 2025 StellAlpha Protocol. Open Source (MIT).
+        </div>
+        <div className="flex gap-6 text-[10px] font-mono" style={{ color: COLORS.data }}>
+          <a href="https://github.com/akm2006/stellalpha" className="hover:text-brand transition-colors">Documentation</a>
+          <a href="#" className="hover:text-brand transition-colors">Anchor IDL</a>
+          <a href="#" className="hover:text-brand transition-colors">Terms</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+);
+
 export default function HomePage() {
   return (
-    
-    <div className="min-h-screen">
-      {/* Hero Section */}
-      <StellaHero />
-
-    {/* Core Architecture / System Spec Section */}
-      <section className="relative py-32 px-4 bg-[#050508] border-b border-white/5 overflow-hidden">
+    <div className="min-h-screen font-sans" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
+      
+      {/* --- 1. HERO SECTION --- */}
+      <section className="relative pt-24 pb-20 px-6 border-b" style={{ borderColor: COLORS.structure }}>
+        <BGPattern />
         
-        {/* Technical Background Elements */}
-        <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-[0.03]" />
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-3xl h-px bg-gradient-to-r from-transparent via-cyan-900/50 to-transparent" />
-
-        <div className="relative z-10 max-w-6xl mx-auto">
+        <div className="max-w-7xl mx-auto relative z-10">
           
-          {/* Section Header - Technical Spec Style */}
-          <div className="mb-20 flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-white/5 pb-8">
-            <div className="max-w-2xl">
-              <div className="flex items-center gap-2 text-cyan-500 mb-3">
-                <div className="w-2 h-2 rounded-sm bg-cyan-500" />
-                <span className="text-[11px] font-mono uppercase tracking-widest">System Architecture v1.2</span>
+          {/* Status Badge */}
+          <motion.div 
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+            className="inline-flex items-center gap-2.5 px-3 py-2 border mb-12"
+            style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}
+          >
+            <span className="flex h-1.5 w-1.5 relative">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" 
+                    style={{ backgroundColor: COLORS.brand }}></span>
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5" 
+                    style={{ backgroundColor: COLORS.brand }}></span>
+            </span>
+            <span className="text-[9px] font-mono font-medium tracking-widest" style={{ color: COLORS.data }}>
+              MIGRATION TO SOLANA SVM ACTIVE
+            </span>
+          </motion.div>
+
+          <div className="grid lg:grid-cols-2 gap-20 items-center">
+            
+            {/* Left Content */}
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.1 }}
+              className="space-y-8"
+            >
+              <div className="space-y-4">
+                <h1 className="text-5xl md:text-6xl font-medium tracking-tight leading-[1.1]" 
+                    style={{ color: COLORS.text }}>
+                  Non-Custodial Copy Trading for Solana
+                </h1>
+                <div className="h-px w-16" style={{ backgroundColor: COLORS.brand }}></div>
               </div>
-              <h2 className="text-3xl md:text-4xl font-medium text-white tracking-tight font-[family-name:var(--font-space-grotesk)]">
-                Non-Custodial Execution Layer.
-              </h2>
-              <p className="text-lg text-gray-400 mt-4 leading-relaxed font-light text-balance">
-                StellAlpha leverages the <strong>Solana Virtual Machine (SVM)</strong> to enable atomic, composable copy-trading. 
-                Architecture utilizes Program Derived Addresses for strictly deterministic fund management.
+              
+              <p className="text-base leading-relaxed max-w-xl" style={{ color: COLORS.data }}>
+                Mirror star traders instantly without compromising security. 
+                Your keys, your funds, our execution.
               </p>
-            </div>
-            
-            {/* System Stats / Specs */}
-            <div className="flex gap-8 font-mono text-[10px] text-gray-500 uppercase tracking-wider">
-               <div>
-                 <p className="mb-1">Finality</p>
-                 <p className="text-white text-sm">~400ms</p>
-               </div>
-               <div>
-                 <p className="mb-1">Security</p>
-                 <p className="text-white text-sm">Audited (Anchor)</p>
-               </div>
-               <div>
-                 <p className="mb-1">Execution</p>
-                 <p className="text-white text-sm">Jupiter CPI</p>
-               </div>
-            </div>
-          </div>
 
-          {/* Architecture Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-white/10 border border-white/10 rounded-2xl overflow-hidden">
-            
-            {/* Module 1: Vaults */}
-            <div className="md:col-span-2 bg-[#08080A] p-10 group relative hover:bg-[#0C0C0E] transition-colors">
-              <div className="absolute top-6 right-6 opacity-20 group-hover:opacity-100 transition-opacity">
-                 <Shield className="w-6 h-6 text-gray-400" />
+              <div className="flex flex-wrap gap-3">
+                <a href="/dashboard">
+                  <Button className="h-11 px-7 text-sm font-medium hover:opacity-90">
+                    LAUNCH_TERMINAL
+                    <ArrowRight size={14} className="ml-2" />
+                  </Button>
+                </a>
               </div>
-              
-              <div className="h-full flex flex-col justify-between space-y-12">
-                <div className="space-y-4">
-                   <h3 className="text-xl font-medium text-white">Program Derived Vaults (PDA)</h3>
-                   <p className="text-sm text-gray-400 leading-7 max-w-lg">
-                     User assets are held in <strong>Program Derived Addresses</strong> deterministically seeded by the user's public key. 
-                     Unlike standard EOA hot wallets, these vaults have no private keys and can only sign transactions 
-                     authorized by the on-chain Anchor program constraints.
-                   </p>
-                </div>
-                
-                {/* Visual Micro-interaction */}
-                <div className="font-mono text-[10px] text-gray-600 p-3 border border-white/5 rounded bg-black/50 w-fit">
-                   seeds = [b"vault", user_pubkey, bump]
-                </div>
-              </div>
-            </div>
+            </motion.div>
 
-            {/* Module 2: Signal Processing */}
-            <div className="bg-[#08080A] p-10 group hover:bg-[#0C0C0E] transition-colors border-t md:border-t-0 border-white/5">
-                <div className="space-y-4">
-                   <div className="w-8 h-8 rounded bg-cyan-900/20 flex items-center justify-center text-cyan-500 mb-6">
-                      <Zap className="w-4 h-4" />
-                   </div>
-                   <h3 className="text-lg font-medium text-white">Low-Latency RPC Stream</h3>
-                   <p className="text-sm text-gray-400 leading-7">
-                     Watcher nodes utilize <strong>Geyser Plugins</strong> and high-throughput WebSocket subscriptions (`logsSubscribe`) to ingest Star Trader transactions within the same block slot they occur.
-                   </p>
-                </div>
-            </div>
-
-            {/* Module 3: Execution Engine */}
-            <div className="bg-[#08080A] p-10 group hover:bg-[#0C0C0E] transition-colors border-t border-white/5">
-                <div className="space-y-4">
-                   <div className="w-8 h-8 rounded bg-green-900/20 flex items-center justify-center text-green-500 mb-6">
-                      <Terminal className="w-4 h-4" />
-                   </div>
-                   <h3 className="text-lg font-medium text-white">Jupiter CPI Integration</h3>
-                   <p className="text-sm text-gray-400 leading-7">
-                     Routes are calculated off-chain for optimal pricing, then executed on-chain via <strong>Cross-Program Invocation (CPI)</strong> to the Jupiter V6 program. This ensures atomic execution and slippage protection.
-                   </p>
-                </div>
-            </div>
-
-            {/* Module 4: Relayer */}
-            <div className="md:col-span-2 bg-[#08080A] p-10 group hover:bg-[#0C0C0E] transition-colors border-t border-white/5">
-               <div className="flex flex-col md:flex-row gap-8 justify-between items-start">
-                  <div className="space-y-4 max-w-md">
-                     <h3 className="text-xl font-medium text-white">Meta-Transaction Relayer</h3>
-                     <p className="text-sm text-gray-400 leading-7">
-                       To abstract gas management, a dedicated Relayer Service acts as the transaction <strong>Fee Payer</strong>. 
-                       The User Vault signs as the <em>Authority</em>, while the Relayer covers SOL fees, enabling a seamless "Gasless" UX.
-                     </p>
-                  </div>
-                  
-                  {/* Diagrammatic Representation */}
-                  <div className="flex items-center gap-3 font-mono text-[10px] text-gray-500 mt-4 md:mt-0">
-                     <span className="px-2 py-1 border border-white/10 rounded bg-white/5 text-gray-300">Relayer (Signer)</span>
-                     <ArrowRight className="w-3 h-3 text-gray-700" />
-                     <span className="px-2 py-1 border border-white/10 rounded bg-white/5 text-gray-300">Vault (Authority)</span>
-                     <ArrowRight className="w-3 h-3 text-gray-700" />
-                     <span className="px-2 py-1 border border-white/10 rounded bg-white/5 text-green-400/80">Jupiter V6</span>
-                  </div>
-               </div>
-            </div>
-
+            {/* Right Content (Terminal) */}
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.6, delay: 0.3 }}
+              className="relative h-[460px] w-full"
+            >
+              <div className="absolute -inset-px opacity-20 pointer-events-none" 
+                   style={{ background: `linear-gradient(to bottom, ${COLORS.structure}, transparent)` }} />
+              <LiveTerminal />
+            </motion.div>
           </div>
         </div>
       </section>
-  {/* Deployment Workflow / How It Works */}
-      <section className="relative py-32 px-4 bg-[#050508] border-b border-white/5 overflow-hidden">
-        <div className="relative z-10 max-w-6xl mx-auto">
-          
-          <div className="flex flex-col md:flex-row justify-between items-end mb-20 gap-6 border-b border-white/5 pb-8">
-            <div className="max-w-2xl">
-              <p className="text-[11px] font-mono text-cyan-500 uppercase tracking-widest mb-3">
-                Operational Sequence
-              </p>
-              <h2 className="text-3xl md:text-4xl font-medium text-white tracking-tight font-[family-name:var(--font-space-grotesk)]">
-                Vault Deployment Workflow.
-              </h2>
-            </div>
-            <div className="text-right hidden md:block">
-              <p className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Estimated Setup</p>
-              <p className="text-xl font-medium text-white font-mono">~45s</p>
-            </div>
+
+      {/* --- 2. METRICS OVERVIEW (Truthful Data) --- */}
+      <section className="py-16 px-6 border-b" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+        <div className="max-w-7xl mx-auto">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-px" style={{ backgroundColor: COLORS.structure }}>
+            {METRICS.map((metric, idx) => (
+              <MetricCard key={metric.label} metric={metric} delay={idx * 0.1} />
+            ))}
           </div>
-
-          {/* Workflow Grid */}
-          <div className="grid md:grid-cols-3 gap-8 relative">
-             {/* Connector Lines (Desktop Only) */}
-             <div className="hidden md:block absolute top-12 left-[16%] w-[33%] h-[1px] bg-gradient-to-r from-cyan-900/50 to-transparent z-0" />
-             <div className="hidden md:block absolute top-12 right-[16%] w-[33%] h-[1px] bg-gradient-to-r from-transparent to-cyan-900/50 z-0" />
-
-            {/* Step 1 */}
-            <div className="relative z-10 group">
-              <div className="w-full h-full p-1 rounded-2xl bg-gradient-to-b from-white/5 to-transparent">
-                <div className="h-full bg-[#08080A] p-8 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
-                  <div className="flex items-center justify-between mb-6">
-                     <div className="w-10 h-10 rounded bg-white/5 flex items-center justify-center border border-white/10 text-white font-mono">1</div>
-                     <Wallet className="w-5 h-5 text-gray-500 group-hover:text-white transition-colors" />
-                  </div>
-                  
-                  <div className="mb-2 font-mono text-[10px] text-gray-600 bg-white/5 w-fit px-2 py-1 rounded">
-                    POST /auth/connect
-                  </div>
-                  <h3 className="text-lg font-medium text-white mb-3">Establish Session</h3>
-                  <p className="text-sm text-gray-400 leading-relaxed">
-                    Authenticate via Solana Wallet Adapter (Phantom/Solflare). This derives your public key for PDA seed generation.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Step 2 */}
-            <div className="relative z-10 group">
-              <div className="w-full h-full p-1 rounded-2xl bg-gradient-to-b from-white/5 to-transparent">
-                <div className="h-full bg-[#08080A] p-8 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
-                  <div className="flex items-center justify-between mb-6">
-                     <div className="w-10 h-10 rounded bg-cyan-900/20 flex items-center justify-center border border-cyan-500/30 text-cyan-400 font-mono">2</div>
-                     <Users className="w-5 h-5 text-gray-500 group-hover:text-cyan-400 transition-colors" />
-                  </div>
-                  
-                  <div className="mb-2 font-mono text-[10px] text-gray-600 bg-white/5 w-fit px-2 py-1 rounded">
-                    FN select_target_trader()
-                  </div>
-                  <h3 className="text-lg font-medium text-white mb-3">Configure Strategy</h3>
-                  <p className="text-sm text-gray-400 leading-relaxed">
-                    Select a Star Trader from the registry. Define your execution constraints: Max Slippage (bps), Daily Volume, and Token Whitelist.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Step 3 */}
-            <div className="relative z-10 group">
-              <div className="w-full h-full p-1 rounded-2xl bg-gradient-to-b from-white/5 to-transparent">
-                <div className="h-full bg-[#08080A] p-8 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
-                  <div className="flex items-center justify-between mb-6">
-                     <div className="w-10 h-10 rounded bg-white/5 flex items-center justify-center border border-white/10 text-white font-mono">3</div>
-                     <Shield className="w-5 h-5 text-gray-500 group-hover:text-green-400 transition-colors" />
-                  </div>
-                  
-                  <div className="mb-2 font-mono text-[10px] text-gray-600 bg-white/5 w-fit px-2 py-1 rounded">
-                    IX initialize_vault
-                  </div>
-                  <h3 className="text-lg font-medium text-white mb-3">Deploy Vault</h3>
-                  <p className="text-sm text-gray-400 leading-relaxed">
-                    Sign a single transaction to deploy your PDA Vault and deposit initial capital. The Relayer takes over execution monitoring immediately.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Video Section - "Terminal Window" Style */}
-          <div className="mt-32">
-            <div className="flex items-center gap-4 mb-8 border-b border-white/5 pb-4">
-               <div className="flex gap-1.5">
-                  <div className="w-3 h-3 rounded-full bg-white/10" />
-                  <div className="w-3 h-3 rounded-full bg-white/10" />
-                  <div className="w-3 h-3 rounded-full bg-white/10" />
-               </div>
-               <p className="text-[11px] font-mono text-gray-500 uppercase tracking-widest">
-                 System_Demo.mp4
-               </p>
-            </div>
-            
-            <div className="relative rounded-lg border border-white/10 bg-black shadow-2xl overflow-hidden">
-               {/* Overlay Grid for video */}
-               <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-[0.1] pointer-events-none z-10" />
-               
-               <iframe
-                className="w-full aspect-video relative z-0 grayscale hover:grayscale-0 transition-all duration-700 ease-in-out"
-                src="https://www.youtube.com/embed/yPQ_Yd2hufo?rel=0&modestbranding=1&controls=1&autoplay=0"
-                title="System Demo"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-              />
-            </div>
-          </div>
-
         </div>
       </section>
 
-   {/* Platform Capabilities / Features */}
-      <section className="relative py-32 px-4 bg-[#050508] border-b border-white/5 overflow-hidden">
+      {/* --- 3. TECHNICAL ARCHITECTURE --- */}
+      <section className="py-24 px-6 relative overflow-hidden border-b" style={{ borderColor: COLORS.structure }}>
+        <motion.div 
+          animate={{ backgroundPosition: ['0% 0%', '100% 100%'] }}
+          transition={{ duration: 20, repeat: Infinity, repeatType: 'reverse', ease: 'linear' }}
+          className="absolute inset-0 opacity-[0.02]"
+          style={{
+            backgroundImage: `radial-gradient(circle at center, ${COLORS.structure} 1px, transparent 1px)`,
+            backgroundSize: '40px 40px'
+          }}
+        />
         
-        {/* Radial Gradient Background */}
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-blue-900/5 blur-[100px] rounded-full pointer-events-none" />
-
-        <div className="relative z-10 max-w-6xl mx-auto">
-          
-          {/* Header */}
-          <div className="text-center mb-20">
-            <h2 className="text-3xl md:text-4xl font-medium text-white tracking-tight font-[family-name:var(--font-space-grotesk)] mb-4">
-              Capabilities.
+        <div className="max-w-7xl mx-auto relative z-10">
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.6 }}
+            className="mb-16"
+          >
+            <h2 className="text-3xl font-medium mb-3 tracking-tight" style={{ color: COLORS.text }}>
+              Technical Architecture
             </h2>
-            <p className="text-lg text-gray-400 max-w-2xl mx-auto leading-relaxed font-light">
-              Beyond simple copy-trading. StellAlpha provides a complete suite of 
-              autonomous tools for the sovereign DeFi user.
+            <p className="text-sm font-mono tracking-widest" style={{ color: COLORS.data }}>
+              EXECUTION PIPELINE
             </p>
+          </motion.div>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {FEATURES.map((feature, idx) => (
+              <FeatureCard key={feature.label} feature={feature} delay={idx * 0.1} />
+            ))}
           </div>
 
-          {/* Features Grid */}
-          <div className="grid md:grid-cols-2 gap-8">
+          {/* Technical Diagram */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.6, delay: 0.3 }}
+            className="mt-16 border p-8"
+            style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}
+          >
+            <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="flex items-center gap-4">
+                <div className="p-3 border" style={{ borderColor: COLORS.structure }}>
+                  <Network size={20} style={{ color: COLORS.brand }} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-medium mb-1" style={{ color: COLORS.text }}>
+                    Cross-Program Invocation (CPI)
+                  </h3>
+                  <p className="text-xs" style={{ color: COLORS.data }}>
+                    Direct vault-to-DEX execution via Anchor programs. No intermediate custody.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <ShieldCheck size={16} style={{ color: COLORS.brand }} />
+                <span className="text-xs font-mono" style={{ color: COLORS.data }}>
+                  SECURED BY ANCHOR • AUDIT PENDING
+                </span>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      </section>
+
+      {/* --- 4. PROTOCOL DETAILS (Token & Roadmap) --- */}
+      <section className="py-24 px-6 border-b" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+        <div className="max-w-7xl mx-auto grid lg:grid-cols-2 gap-16">
+          
+          {/* Token Utility */}
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.6 }}
+          >
+            <div className="flex items-center gap-3 mb-6">
+              <Coins size={18} style={{ color: COLORS.brand }} />
+              <span className="text-[9px] font-mono tracking-widest" style={{ color: COLORS.data }}>
+                TOKEN UTILITY
+              </span>
+            </div>
             
-            {/* Feature 1: AI Agent */}
-            <div className="group relative p-8 rounded-2xl bg-[#08080A] border border-white/5 hover:border-white/10 transition-all duration-300 overflow-hidden">
-              <div className="absolute top-0 right-0 p-8 opacity-20 group-hover:opacity-100 transition-opacity duration-500">
-                 <MessageCircle className="w-16 h-16 text-cyan-900/40" />
-              </div>
-              
-              <div className="relative z-10">
-                <div className="w-12 h-12 rounded-lg bg-cyan-500/10 flex items-center justify-center mb-6 border border-cyan-500/20 text-cyan-400">
-                   <Bot className="w-6 h-6" />
-                </div>
-                
-                <h3 className="text-xl font-medium text-white mb-3">Intent-Based AI Agent</h3>
-                <p className="text-sm text-gray-400 leading-7 mb-6">
-                  Manage your vault via natural language. The integrated LangChain agent translates conversational intents 
-                  ("Swap 5 SOL to USDC", "Check PnL") into verifiable on-chain transactions.
-                </p>
+            <h2 className="text-2xl font-medium mb-4 tracking-tight" style={{ color: COLORS.text }}>
+              Protocol Governance & Economic Model
+            </h2>
+            
+            <p className="text-sm leading-relaxed mb-8" style={{ color: COLORS.data }}>
+              The native token serves as the coordination mechanism for protocol upgrades and provides 
+              tangible utility for active participants through fee discounts and priority execution.
+            </p>
 
-                {/* Mock Chat Interface */}
-                <div className="mt-auto rounded-lg bg-black/50 border border-white/5 p-4 font-mono text-[10px] space-y-2">
-                   <div className="flex gap-2 text-gray-500">
-                      <span>&gt;</span>
-                      <span>Simulate copy-trade performance for wallet 8x...F2a9</span>
-                   </div>
-                   <div className="flex gap-2 text-cyan-400">
-                      <span>AI:</span>
-                      <span>Based on 30d history, wallet 8x...F2a9 has a 12% win rate. Simulation complete.</span>
-                   </div>
+            <div className="grid grid-cols-2 gap-3">
+              {['Fee Reduction', 'Priority Queue', 'Governance Rights', 'Premium Features'].map((item) => (
+                <div key={item} className="px-4 py-3 border text-xs font-mono text-center transition-all hover:border-brand/50"
+                     style={{ borderColor: COLORS.structure, color: COLORS.data, backgroundColor: COLORS.canvas }}>
+                  {item}
                 </div>
-              </div>
+              ))}
             </div>
+          </motion.div>
 
-            {/* Feature 2: Aggregation */}
-            <div className="group relative p-8 rounded-2xl bg-[#08080A] border border-white/5 hover:border-white/10 transition-all duration-300 overflow-hidden">
-              <div className="absolute top-0 right-0 p-8 opacity-20 group-hover:opacity-100 transition-opacity duration-500">
-                 <Zap className="w-16 h-16 text-purple-900/40" />
-              </div>
-              
-              <div className="relative z-10">
-                <div className="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center mb-6 border border-purple-500/20 text-purple-400">
-                   <Zap className="w-6 h-6" />
-                </div>
-                
-                <h3 className="text-xl font-medium text-white mb-3">Universal Liquidity Access</h3>
-                <p className="text-sm text-gray-400 leading-7 mb-6">
-                  Powered by Jupiter Aggregator, StellAlpha accesses 100% of Solana's liquidity. 
-                  Whether it's Raydium, Orca, or Meteora, your vault executes at the best possible price, atomic and slippage-protected.
+          {/* Roadmap */}
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.6 }}
+          >
+            <span className="text-[9px] font-mono tracking-widest mb-6 block" style={{ color: COLORS.data }}>
+              DEVELOPMENT ROADMAP
+            </span>
+            
+            <div className="space-y-8 border-l pl-6 ml-1" style={{ borderColor: COLORS.structure }}>
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.5, delay: 0.1 }}
+                className="relative"
+              >
+                <motion.div 
+                  initial={{ scale: 0 }}
+                  whileInView={{ scale: 1 }}
+                  viewport={{ once: true }}
+                  transition={{ duration: 0.5, delay: 0.2 }}
+                  className="absolute -left-[27px] top-2 w-2 h-2 rounded-full" 
+                  style={{ backgroundColor: COLORS.brand, boxShadow: `0 0 8px ${COLORS.brand}` }}
+                />
+                <span className="text-[10px] font-mono mb-1 block" style={{ color: COLORS.brand }}>
+                  DEC 2025 — IN PROGRESS
+                </span>
+                <h4 className="text-sm font-medium mb-1.5" style={{ color: COLORS.text }}>Solana Migration</h4>
+                <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
+                  Anchor program deployment and PDA vault architecture. Full mainnet beta launch.
                 </p>
+              </motion.div>
 
-                {/* Route Visualization */}
-                <div className="mt-auto rounded-lg bg-black/50 border border-white/5 p-4 flex items-center justify-between gap-2">
-                   <div className="flex flex-col items-center gap-1">
-                      <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-white">SOL</div>
-                   </div>
-                   <div className="h-px flex-1 bg-gradient-to-r from-transparent via-purple-500 to-transparent relative">
-                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[#08080A] px-2 text-[9px] text-gray-500 font-mono">
-                        JUPITER ROUTE
-                      </div>
-                   </div>
-                   <div className="flex flex-col items-center gap-1">
-                      <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-white">USDC</div>
-                   </div>
-                </div>
-              </div>
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.5, delay: 0.2 }}
+                className="relative opacity-60"
+              >
+                <div className="absolute -left-[27px] top-2 w-2 h-2 rounded-full" 
+                     style={{ backgroundColor: COLORS.structure }} />
+                <span className="text-[10px] font-mono mb-1 block" style={{ color: COLORS.data }}>
+                  Q1 2026 — PLANNED
+                </span>
+                <h4 className="text-sm font-medium mb-1.5" style={{ color: COLORS.text }}>Token Generation</h4>
+                <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
+                  TGE, centralized exchange listings, and community incentive programs.
+                </p>
+              </motion.div>
+
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.5, delay: 0.3 }}
+                className="relative opacity-40"
+              >
+                <div className="absolute -left-[27px] top-2 w-2 h-2 rounded-full" 
+                     style={{ backgroundColor: COLORS.structure }} />
+                <span className="text-[10px] font-mono mb-1 block" style={{ color: COLORS.data }}>
+                  Q2 2026 — RESEARCH
+                </span>
+                <h4 className="text-sm font-medium mb-1.5" style={{ color: COLORS.text }}>Automation Suite</h4>
+                <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
+                  Grid trading, DCA modules, and advanced conditional triggers.
+                </p>
+              </motion.div>
             </div>
-
-          </div>
-
-          {/* Secondary Features List */}
-          <div className="mt-8 grid md:grid-cols-3 gap-px bg-white/5 border border-white/5 rounded-xl overflow-hidden">
-             <div className="bg-[#08080A] p-6 flex items-center gap-4 hover:bg-[#0C0C0E] transition-colors">
-                <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                <div>
-                   <h4 className="text-sm font-medium text-white">Zero Key Sharing</h4>
-                   <p className="text-xs text-gray-500 mt-1">Your private keys never leave your wallet.</p>
-                </div>
-             </div>
-             <div className="bg-[#08080A] p-6 flex items-center gap-4 hover:bg-[#0C0C0E] transition-colors">
-                <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                <div>
-                   <h4 className="text-sm font-medium text-white">Gasless Transactions</h4>
-                   <p className="text-xs text-gray-500 mt-1">Relayer covers SOL fees for all vault ops.</p>
-                </div>
-             </div>
-             <div className="bg-[#08080A] p-6 flex items-center gap-4 hover:bg-[#0C0C0E] transition-colors">
-                <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                <div>
-                   <h4 className="text-sm font-medium text-white">Verifiable On-Chain</h4>
-                   <p className="text-xs text-gray-500 mt-1">Every trade is auditable via block explorers.</p>
-                </div>
-             </div>
-          </div>
+          </motion.div>
 
         </div>
       </section>
-      <TechStack />
 
-      {/* Security Architecture / Risk Management Engine */}
-      <section className="relative py-32 px-4 bg-[#050508] border-b border-white/5 overflow-hidden">
-        
-        <div className="relative z-10 max-w-6xl mx-auto">
-          
-          {/* Header */}
-          <div className="mb-20 max-w-3xl">
-            <p className="text-[11px] font-mono text-emerald-500 uppercase tracking-widest mb-3">
-              Risk Management Engine
-            </p>
-            <h2 className="text-3xl md:text-4xl font-medium text-white tracking-tight font-[family-name:var(--font-space-grotesk)] mb-6">
-              Trustless by Design.
+      {/* --- 5. TEAM --- */}
+      <section className="py-24 px-6 border-b" style={{ borderColor: COLORS.structure }}>
+        <div className="max-w-7xl mx-auto">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.6 }}
+            className="mb-12"
+          >
+            <h2 className="text-3xl font-medium mb-3 tracking-tight" style={{ color: COLORS.text }}>
+              Core Contributors
             </h2>
-            <p className="text-lg text-gray-400 leading-relaxed font-light text-balance">
-              StellAlpha eliminates the single point of failure inherent in traditional trading bots. 
-              Security is enforced mathematically by the Solana runtime, not by trusting our backend.
+            <p className="text-sm font-mono tracking-widest" style={{ color: COLORS.data }}>
+              PROTOCOL DEVELOPMENT TEAM
             </p>
-          </div>
+          </motion.div>
 
-          {/* Security Grid */}
-          <div className="grid md:grid-cols-2 gap-6">
-            
-            {/* Card 1: PDA Sovereignty */}
-            <div className="p-8 rounded-xl bg-[#08080A] border border-white/5 hover:border-white/10 transition-all group">
-               <div className="w-12 h-12 rounded-lg bg-white/5 flex items-center justify-center mb-6 text-white group-hover:text-cyan-400 transition-colors">
-                 <Lock className="w-6 h-6" />
-               </div>
-               <h3 className="text-lg font-medium text-white mb-3">Cryptographic Sovereignty</h3>
-               <p className="text-sm text-gray-400 leading-7 mb-6">
-                 Your vault is a <strong>Program Derived Address (PDA)</strong>. By protocol definition, it has no private key. 
-                 Only the <code>stellalpha_vault</code> program can authorize transfers, and only when strictly defined constraints are met.
-               </p>
-               <div className="p-3 rounded bg-black/50 border border-white/5 font-mono text-[10px] text-gray-500">
-                 <span>constraint = vault.owner == user.key()</span>
-               </div>
-            </div>
-
-            {/* Card 2: Execution Bounds */}
-            <div className="p-8 rounded-xl bg-[#08080A] border border-white/5 hover:border-white/10 transition-all group">
-               <div className="w-12 h-12 rounded-lg bg-white/5 flex items-center justify-center mb-6 text-white group-hover:text-purple-400 transition-colors">
-                 <Shield className="w-6 h-6" />
-               </div>
-               <h3 className="text-lg font-medium text-white mb-3">Deterministic Execution</h3>
-               <p className="text-sm text-gray-400 leading-7 mb-6">
-                 Every trade instruction carries hard-coded slippage and price impact limits. 
-                 The on-chain program verifies these parameters <em>before</em> invoking Jupiter. If the market moves against you, the transaction reverts instantly.
-               </p>
-               <div className="p-3 rounded bg-black/50 border border-white/5 font-mono text-[10px] text-gray-500">
-                 <span>require!(slippage &lt;= settings.max_slippage)</span>
-               </div>
-            </div>
-
-            {/* Card 3: Visibility */}
-            <div className="p-8 rounded-xl bg-[#08080A] border border-white/5 hover:border-white/10 transition-all group">
-               <div className="w-12 h-12 rounded-lg bg-white/5 flex items-center justify-center mb-6 text-white group-hover:text-emerald-400 transition-colors">
-                 <Eye className="w-6 h-6" />
-               </div>
-               <h3 className="text-lg font-medium text-white mb-3">Total Observability</h3>
-               <p className="text-sm text-gray-400 leading-7 mb-6">
-                 Unlike opaque CEX order books, every StellAlpha action emits a verifiable on-chain event. 
-                 Auditors and users can reconstruct the entire trading history directly from the Solana ledger.
-               </p>
-               <div className="p-3 rounded bg-black/50 border border-white/5 font-mono text-[10px] text-gray-500">
-                 <span>emit!(CopyTradeExecutedEvent &#123; ... &#125;)</span>
-               </div>
-            </div>
-
-            {/* Card 4: Fee Abstraction */}
-            <div className="p-8 rounded-xl bg-[#08080A] border border-white/5 hover:border-white/10 transition-all group">
-               <div className="w-12 h-12 rounded-lg bg-white/5 flex items-center justify-center mb-6 text-white group-hover:text-blue-400 transition-colors">
-                 <FileCode className="w-6 h-6" />
-               </div>
-               <h3 className="text-lg font-medium text-white mb-3">Permissioned Relayer</h3>
-               <p className="text-sm text-gray-400 leading-7 mb-6">
-                 The Relayer service acts strictly as a <strong>Fee Payer</strong>. It holds the SOL required for network fees but holds 
-                 <strong> zero authority</strong> to withdraw assets or alter strategy parameters.
-               </p>
-               <div className="p-3 rounded bg-black/50 border border-white/5 font-mono text-[10px] text-gray-500">
-                 <span>tx.feePayer = relayer.publicKey</span>
-               </div>
-            </div>
-
-          </div>
-
-          {/* Operational Status Banner */}
-          <div className="mt-16 p-6 rounded-lg border border-yellow-500/20 bg-yellow-500/5 flex flex-col md:flex-row items-start gap-6">
-             <div className="p-3 rounded-full bg-yellow-500/10 text-yellow-500">
-                <AlertTriangle className="w-5 h-5" />
-             </div>
-             <div>
-                <h4 className="text-sm font-medium text-white mb-2 uppercase tracking-wide">Devnet Environment Active</h4>
-                <p className="text-sm text-gray-400 leading-relaxed max-w-2xl">
-                   The protocol is currently deployed on <strong>Solana Devnet</strong> for stress testing. 
-                   Smart contracts are pending final audit. Please do not deposit Mainnet assets until the 
-                   <strong> v1.0.0-stable</strong> release tag is published.
-                </p>
-             </div>
-             <div className="md:ml-auto flex items-center gap-4 pt-2">
-                <div className="flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase tracking-wider">
-                   <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse"></span>
-                   Audit: Pending
+          <div className="grid md:grid-cols-2 gap-4">
+            {TEAM_MEMBERS.map((member, idx) => (
+              <motion.div 
+                key={member.name}
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.5, delay: idx * 0.1 }}
+                className="p-6 border group relative overflow-hidden"
+                style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}
+              >
+                <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500" 
+                     style={{ background: `linear-gradient(135deg, ${COLORS.brand}05 0%, transparent 100%)` }} />
+                
+                <div className="relative z-10 flex items-start justify-between">
+                  <div>
+                    <h4 className="text-base font-medium mb-1" style={{ color: COLORS.text }}>
+                      {member.name}
+                    </h4>
+                    <p className="text-xs font-mono mb-3" style={{ color: COLORS.data }}>
+                      {member.role}
+                    </p>
+                    <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
+                      {member.context}
+                    </p>
+                  </div>
+                  <a href={member.link} target="_blank" rel="noopener noreferrer" 
+                     className="transition-all duration-300 group-hover:rotate-0"
+                     style={{ color: COLORS.data }}>
+                    <ArrowRight size={14} className="-rotate-45 group-hover:rotate-0 transition-transform duration-300 hover:text-brand" />
+                  </a>
                 </div>
-             </div>
+              </motion.div>
+            ))}
           </div>
-
         </div>
       </section>
+
+      {/* --- 6. FINAL CTA --- */}
+      <section className="py-24 px-6">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.6 }}
+          className="max-w-3xl mx-auto text-center"
+        >
+          <h2 className="text-3xl font-medium mb-4 tracking-tight" style={{ color: COLORS.text }}>
+            Open Source. Verifiable.
+          </h2>
+          <p className="text-sm leading-relaxed mb-10 max-w-xl mx-auto" style={{ color: COLORS.data }}>
+            Our smart contracts and execution logic are publicly available. Review our cryptographic 
+            constraints and security architecture on GitHub before deploying capital.
+          </p>
+          <div className="flex justify-center gap-4">
+            <a href="https://github.com/akm2006/stellalpha" target="_blank" rel="noopener noreferrer">
+              <Button variant="outline" className="h-11 px-7 text-xs font-mono border hover:border-brand/50 hover:text-brand group">
+                <Github size={14} className="mr-2 group-hover:rotate-12 transition-transform duration-300" />
+                VIEW_SOURCE_CODE
+              </Button>
+            </a>
+            <a href="#" target="_blank" rel="noopener noreferrer">
+              <Button variant="outline" className="h-11 px-7 text-xs font-mono border hover:border-brand/50 hover:text-brand group">
+                <Code2 size={14} className="mr-2 group-hover:scale-110 transition-transform duration-300" />
+                API_DOCUMENTATION
+              </Button>
+            </a>
+          </div>
+        </motion.div>
+      </section>
+
       <Footer />
     </div>
   );
