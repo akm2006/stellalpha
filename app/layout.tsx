@@ -6,7 +6,7 @@ import ModernHeader from "@/components/modern-header"
 import { GlobalToastRenderer } from "@/components/toast"
 import { WalletProvider } from "@/contexts/WalletContext"
 
-import { ChatAgent } from "@/components/chat-agent";
+import ChatAgentWrapper from "@/components/chat-agent-wrapper";
 import { BeamsBackground } from "@/components/ui/beams-background";
 
 const inter = Inter({
@@ -38,7 +38,7 @@ export default function RootLayout({
           <BeamsBackground>
             <ModernHeader />
             <main className="relative z-10">{children}</main>
-            <ChatAgent />
+            <ChatAgentWrapper />
           </BeamsBackground>
           <GlobalToastRenderer />
         </WalletProvider>
