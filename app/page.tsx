@@ -7,7 +7,7 @@ import {
   Zap, 
   Terminal, 
   Lock, 
-  Cpu, 
+  Cpu, FileText,
   Server,Coins,
   Activity,
   ShieldCheck,
@@ -18,15 +18,7 @@ import {
   Code2
 } from "lucide-react";
 
-// --- BRAND COLORS ---
-const COLORS = {
-  canvas: '#050505',
-  surface: '#0A0A0A',
-  structure: '#262626',
-  brand: '#10B981',
-  text: '#E5E5E5',
-  data: '#A3A3A3',
-};
+import { COLORS } from "@/lib/theme";
 
 // --- CONSTANTS & DATA ---
 const TERMINAL_LOGS = [
@@ -108,7 +100,7 @@ const LiveTerminal = () => {
   }, []);
 
   return (
-    <div className="w-full h-full bg-canvas border border-structure rounded-none font-mono text-[10px] p-5 flex flex-col shadow-2xl">
+    <div className="w-full h-full bg-canvas border border-structure rounded-none font-mono text-[10px] md:text-xs p-3 md:p-5 flex flex-col shadow-2xl">
       <div className="flex items-center justify-between mb-4 border-b border-structure pb-3 select-none">
         <div className="flex gap-2">
           <div className="w-2 h-2 rounded-full bg-structure" />
@@ -122,24 +114,38 @@ const LiveTerminal = () => {
           <span className="text-[9px] tracking-wider font-medium">LIVE_FEED :: SOLANA_DEVNET</span>
         </div>
       </div>
-      <div className="space-y-2 flex-1 overflow-y-auto scrollbar-hide">
+      
+      {/* FIX: Added `min-w-0` to the parent container is implicit via flex, 
+         but ensuring the children handle wrap correctly is key.
+      */}
+      <div className="space-y-3 flex-1 overflow-y-auto scrollbar-hide">
         {logs.map((log, i) => (
           <motion.div 
             key={i} 
             initial={{ opacity: 0, x: -10 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.2 }}
-            className="flex gap-3 items-start"
+            // FIX: Added min-w-0 here. This allows flex children to shrink/wrap.
+            className="flex gap-2 md:gap-3 items-start min-w-0"
           >
-            <span className="shrink-0" style={{ color: COLORS.data }}>[{log.time}]</span>
-            <span className={`shrink-0 w-14 font-semibold text-[9px]`} style={{ 
+            {/* Time: Prevent wrap */}
+            <span className="shrink-0 whitespace-nowrap opacity-60" style={{ color: COLORS.data }}>
+              [{log.time}]
+            </span>
+            
+            {/* Type: Fixed width */}
+            <span className={`shrink-0 w-12 md:w-14 font-semibold text-[9px]`} style={{ 
               color: log.type === 'SUCCESS' ? COLORS.brand : 
                      log.type === 'WARN' ? '#F59E0B' : 
                      log.type === 'EXEC' ? '#3B82F6' : COLORS.data
             }}>
               {log.type}
             </span>
-            <span className="truncate" style={{ color: COLORS.text }}>{log.msg}</span>
+            
+            {/* Msg: Changed 'truncate' to 'break-words' so it wraps on mobile instead of breaking layout */}
+            <span className="break-words min-w-0 leading-tight" style={{ color: COLORS.text }}>
+              {log.msg}
+            </span>
           </motion.div>
         ))}
         {logs.length < TERMINAL_LOGS.length && (
@@ -280,80 +286,125 @@ const Footer = () => (
 
 export default function HomePage() {
   return (
-    <div className="min-h-screen font-sans" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
+    <div className="min-h-screen font-sans overflow-x-hidden" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
       
-      {/* --- 1. HERO SECTION --- */}
-      <section className="relative pt-24 pb-20 px-6 border-b" style={{ borderColor: COLORS.structure }}>
-        <BGPattern />
+       <section className="relative pt-16 md:pt-24 pb-12 md:pb-20 px-6 border-b" style={{ borderColor: COLORS.structure }}>
+      <BGPattern />
+      
+      <div className="max-w-7xl mx-auto relative z-10">
         
-        <div className="max-w-7xl mx-auto relative z-10">
+        {/* Status Badge */}
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          className="inline-flex items-center gap-2.5 px-3 py-2 border mb-8 md:mb-12"
+          style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}
+        >
+          <span className="flex h-1.5 w-1.5 relative">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" 
+                  style={{ backgroundColor: COLORS.brand }}></span>
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5" 
+                  style={{ backgroundColor: COLORS.brand }}></span>
+          </span>
+          <span className="text-[9px] font-mono font-medium tracking-widest" style={{ color: COLORS.data }}>
+            MIGRATION TO SOLANA SVM ACTIVE
+          </span>
+        </motion.div>
+
+        {/* FIX: Changed `gap-20` to `gap-12 lg:gap-20` for better mobile spacing.
+          FIX: Added `grid-cols-1` explicitly for mobile.
+        */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center">
           
-          {/* Status Badge */}
+          {/* Left Content */}
           <motion.div 
-            initial={{ opacity: 0, y: -10 }}
+            initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="inline-flex items-center gap-2.5 px-3 py-2 border mb-12"
-            style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}
+            transition={{ duration: 0.6, delay: 0.1 }}
+            className="space-y-6 md:space-y-8"
           >
-            <span className="flex h-1.5 w-1.5 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" 
-                    style={{ backgroundColor: COLORS.brand }}></span>
-              <span className="relative inline-flex rounded-full h-1.5 w-1.5" 
-                    style={{ backgroundColor: COLORS.brand }}></span>
-            </span>
-            <span className="text-[9px] font-mono font-medium tracking-widest" style={{ color: COLORS.data }}>
-              MIGRATION TO SOLANA SVM ACTIVE
-            </span>
+            <div className="space-y-4">
+              <h1 className="display text-4xl sm:text-5xl md:text-6xl font-medium tracking-tight leading-[1.1]" 
+                  style={{ color: COLORS.text }}>
+                Non-Custodial Copy Trading for Solana
+              </h1>
+              <div className="h-px w-16" style={{ backgroundColor: COLORS.brand }}></div>
+            </div>
+            
+            <p className="text-sm md:text-base leading-relaxed max-w-xl" style={{ color: COLORS.data }}>
+              Mirror star traders instantly without compromising security. 
+              Your keys, your funds, our execution.
+            </p>
+
+            <div className="flex flex-wrap gap-3">
+              <a href="/dashboard">
+                <Button className="h-11 px-7 text-sm font-medium hover:opacity-90 w-full sm:w-auto">
+                  LAUNCH_TERMINAL
+                  <ArrowRight size={14} className="ml-2" />
+                </Button>
+              </a>
+              <a href="/whitepaper.pdf" target="_blank" rel="noopener noreferrer">
+                <button 
+                  className="h-11 px-7 text-sm font-medium border transition-all hover:opacity-80 w-full sm:w-auto"
+                  style={{ 
+                    borderColor: COLORS.structure, 
+                    backgroundColor: COLORS.surface,
+                    color: COLORS.text 
+                  }}
+                >
+                  <span className="flex items-center justify-center gap-2">
+                    <FileText size={14} />
+                    VIEW_WHITEPAPER
+                  </span>
+                </button>
+              </a>
+            </div>
+
+            {/* Powered By Section */}
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.5 }}
+              className="pt-8 mt-8 border-t"
+              style={{ borderColor: COLORS.structure }}
+            >
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6">
+                <span className="text-xs font-mono tracking-wider opacity-60" style={{ color: COLORS.data }}>
+                  POWERED BY
+                </span>
+                <div className="flex items-center gap-5">
+                  {/* Solana Logo */}
+                  <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
+                    <img src="/solana.png" alt="Solana" className="h-5 w-5 object-contain" />
+                    <span className="text-sm font-medium" style={{ color: COLORS.text }}>Solana</span>
+                  </div>
+                  
+                  {/* Jupiter Logo */}
+                  <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
+                    <img src="/jupiter.png" alt="Jupiter" className="h-5 w-5 object-contain" />
+                    <span className="text-sm font-medium" style={{ color: COLORS.text }}>Jupiter</span>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
           </motion.div>
 
-          <div className="grid lg:grid-cols-2 gap-20 items-center">
-            
-            {/* Left Content */}
-            <motion.div 
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.1 }}
-              className="space-y-8"
-            >
-              <div className="space-y-4">
-                <h1 className="text-5xl md:text-6xl font-medium tracking-tight leading-[1.1]" 
-                    style={{ color: COLORS.text }}>
-                  Non-Custodial Copy Trading for Solana
-                </h1>
-                <div className="h-px w-16" style={{ backgroundColor: COLORS.brand }}></div>
-              </div>
-              
-              <p className="text-base leading-relaxed max-w-xl" style={{ color: COLORS.data }}>
-                Mirror star traders instantly without compromising security. 
-                Your keys, your funds, our execution.
-              </p>
-
-              <div className="flex flex-wrap gap-3">
-                <a href="/dashboard">
-                  <Button className="h-11 px-7 text-sm font-medium hover:opacity-90">
-                    LAUNCH_TERMINAL
-                    <ArrowRight size={14} className="ml-2" />
-                  </Button>
-                </a>
-              </div>
-            </motion.div>
-
-            {/* Right Content (Terminal) */}
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.98 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.6, delay: 0.3 }}
-              className="relative h-[460px] w-full"
-            >
-              <div className="absolute -inset-px opacity-20 pointer-events-none" 
-                   style={{ background: `linear-gradient(to bottom, ${COLORS.structure}, transparent)` }} />
-              <LiveTerminal />
-            </motion.div>
-          </div>
+          {/* Right Content (Terminal) */}
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.6, delay: 0.3 }}
+            // FIX: Changed fixed height to responsive height `h-[320px] md:h-[460px]`
+            className="relative h-[320px] md:h-[460px] w-full"
+          >
+            <div className="absolute -inset-px opacity-20 pointer-events-none" 
+                 style={{ background: `linear-gradient(to bottom, ${COLORS.structure}, transparent)` }} />
+            <LiveTerminal />
+          </motion.div>
         </div>
-      </section>
-
+      </div>
+    </section>
       {/* --- 2. METRICS OVERVIEW (Truthful Data) --- */}
       <section className="py-16 px-6 border-b" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
         <div className="max-w-7xl mx-auto">
