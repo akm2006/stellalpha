@@ -60,7 +60,7 @@ const FEATURES = [
 ];
 
 const METRICS = [
-  { label: "Network", value: "Solana", change: "Migration Active" },
+  { label: "Network", value: "Solana", change: "Integration Active" },
   { label: "Block Time", value: "~400ms", change: "Sub-second Finality" },
   { label: "Architecture", value: "Non-Custodial", change: "Anchor Framework" },
   { label: "Status", value: "Beta", change: "Devnet Live" },
@@ -70,14 +70,14 @@ const TEAM_MEMBERS = [
   {
     name: "Aakash Mandal",
     role: "Founder & Protocol Lead",
-    context: "Core protocol design, relational architecture, and rapid DApp prototyping.",
+    context: "Core protocol design,EVM integration, relational architecture, and rapid DApp prototyping.",
     handle: "@aakashbeyond",
     link: "https://x.com/aakashbeyond"
   },
   {
     name: "Manobendra Mandal",
     role: "Co-Founder & Architect",
-    context: "Backend systems, EVM to Solana migration, & Anchor Program development.",
+    context: "Backend systems, Solana integration, & Anchor Program development.",
     handle: "@manovmandal",
     link: "https://x.com/manovmandal" 
   },
@@ -252,7 +252,7 @@ const Footer = () => (
         <div className="max-w-md">
           <h3 className="text-lg font-medium mb-2" style={{ color: COLORS.text }}>StellAlpha</h3>
           <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
-            Non-custodial autonomous trading infrastructure for Solana. Execute algorithmic strategies without compromising key security.
+            Non-custodial autonomous copy trading infrastructure . Copy high performance traders without compromising key security.
           </p>
         </div>
         <div className="flex gap-4">
@@ -261,7 +261,7 @@ const Footer = () => (
              style={{ borderColor: COLORS.structure, color: COLORS.data }}>
             <Github size={16} />
           </a>
-          <a href="https://x.com/AakashM88827113" target="_blank" rel="noopener noreferrer"
+          <a href="https://x.com/stellphatrade" target="_blank" rel="noopener noreferrer"
              className="p-2.5 border transition-colors hover:border-brand/50"
              style={{ borderColor: COLORS.structure, color: COLORS.data }}>
             <ExternalLink size={16} />
@@ -308,7 +308,7 @@ export default function HomePage() {
                   style={{ backgroundColor: COLORS.brand }}></span>
           </span>
           <span className="text-[9px] font-mono font-medium tracking-widest" style={{ color: COLORS.data }}>
-            MIGRATION TO SOLANA SVM ACTIVE
+            SOLANA SVM INTEGRATION ACTIVE
           </span>
         </motion.div>
 
@@ -327,7 +327,7 @@ export default function HomePage() {
             <div className="space-y-4">
               <h1 className="display text-4xl sm:text-5xl md:text-6xl font-medium tracking-tight leading-[1.1]" 
                   style={{ color: COLORS.text }}>
-                Non-Custodial Copy Trading for Solana
+                Autonomous Copy Trading without Custody
               </h1>
               <div className="h-px w-16" style={{ backgroundColor: COLORS.brand }}></div>
             </div>
@@ -362,7 +362,7 @@ export default function HomePage() {
             </div>
 
             {/* Powered By Section */}
-            <motion.div 
+            {/* <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.5 }}
@@ -372,23 +372,23 @@ export default function HomePage() {
               <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6">
                 <span className="text-xs font-mono tracking-wider opacity-60" style={{ color: COLORS.data }}>
                   POWERED BY
-                </span>
-                <div className="flex items-center gap-5">
+                </span> */}
+                {/* <div className="flex items-center gap-5"> */}
                   {/* Solana Logo */}
-                  <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
+                  {/* <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
                     <img src="/solana.png" alt="Solana" className="h-5 w-5 object-contain" />
                     <span className="text-sm font-medium" style={{ color: COLORS.text }}>Solana</span>
                   </div>
-                  
+                   */}
                   {/* Jupiter Logo */}
-                  <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
+                  {/* <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
                     <img src="/jupiter.png" alt="Jupiter" className="h-5 w-5 object-contain" />
                     <span className="text-sm font-medium" style={{ color: COLORS.text }}>Jupiter</span>
                   </div>
                 </div>
               </div>
-            </motion.div>
-          </motion.div>
+            </motion.div>*/}
+          </motion.div> 
 
           {/* Right Content (Terminal) */}
           <motion.div 
@@ -551,7 +551,7 @@ export default function HomePage() {
                 <span className="text-[10px] font-mono mb-1 block" style={{ color: COLORS.brand }}>
                   DEC 2025 — IN PROGRESS
                 </span>
-                <h4 className="text-sm font-medium mb-1.5" style={{ color: COLORS.text }}>Solana Migration</h4>
+                <h4 className="text-sm font-medium mb-1.5" style={{ color: COLORS.text }}>Solana Integration</h4>
                 <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
                   Anchor program deployment and PDA vault architecture. Full mainnet beta launch.
                 </p>

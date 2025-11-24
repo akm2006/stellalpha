@@ -44,7 +44,17 @@ export default function ModernHeader() {
 
   return (
     <header className="fixed inset-x-4 top-6 z-50 flex items-center justify-center">
-      <div className="w-full md:w-auto max-w-7xl glass-header px-6 py-3 flex items-center gap-6 md:gap-8 rounded-none" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+      <div
+  className="w-full md:w-auto max-w-7xl glass-header px-6 py-3 flex items-center gap-6 md:gap-8 rounded-none"
+  style={{
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.structure,
+    borderWidth: "2px",
+    borderStyle: "solid",
+    boxShadow: "0 #050505", 
+  }}
+>
+
         {/* Left: Logo */}
         <Link href="/" aria-label="Stellalpha home" className="group">
           <div className="relative flex-shrink-0">
