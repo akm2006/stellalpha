@@ -1,4 +1,3 @@
-// components/modern-header.tsx
 "use client";
 
 import { useState } from "react";
@@ -6,7 +5,8 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { useWallet } from "@/contexts/WalletContext";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { WalletConnectButton } from "@/components/WalletConnectButton";
 import { Home, Settings, Menu, X, LogOut, Replace, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { COLORS } from "@/lib/theme";
@@ -34,12 +34,7 @@ export default function ModernHeader() {
   const pathname = usePathname();
 
   const {
-    isConnected,
-    connectedWallet,
-    agentBalance,
-    handleConnectMetaMask,
-    handleDisconnectWallet,
-    handleChangeWallet,
+    connected,
   } = useWallet();
 
   return (
@@ -83,43 +78,7 @@ export default function ModernHeader() {
         </nav>
 
         <div className="ml-auto flex items-center gap-4">
-          {/* Wallet area */}
-          {isConnected && connectedWallet ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  className="glass-button px-3 py-2 rounded-none flex items-center gap-3 cursor-pointer"
-                    style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}
-                >
-                  <div className="flex items-center gap-3">
-                    <Image src="/avax.png" alt="AVAX" width={20} height={20} />
-                    <div className="text-right">
-                      <div className="text-sm font-mono" style={{ color: COLORS.text }}>{connectedWallet.slice(0, 6)}...{connectedWallet.slice(-4)}</div>
-                      <div className="text-xs" style={{ color: COLORS.brand }}>{agentBalance} AVAX</div>
-                    </div>
-                  </div>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent className="glass-card mr-6" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-                <DropdownMenuItem onClick={handleChangeWallet} className="cursor-pointer">
-                  <Replace className="w-4 h-4 mr-2" /> <span>Change Wallet</span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={handleDisconnectWallet} className="cursor-pointer text-red-400">
-                  <LogOut className="w-4 h-4 mr-2" /> <span>Disconnect</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-              <button
-                onClick={handleConnectMetaMask}
-                className="glass-button flex items-center gap-3 px-4 py-2 rounded-none md:text-sm font-medium"
-                style={{ backgroundColor: COLORS.brand, color: COLORS.canvas, borderColor: COLORS.brand, fontFamily: 'var(--font-space-grotesk), var(--font-sans)' }}
-              >
-                <Wallet className="w-4 h-4" />
-                <span className="hidden md:inline">Connect Wallet</span>
-              </button>
-          )}
+          <WalletConnectButton />
 
           {/* Mobile menu toggle */}
           <button
@@ -148,26 +107,9 @@ export default function ModernHeader() {
             </nav>
 
             <div className="mt-4 border-t pt-4 flex flex-col gap-2">
-              {isConnected && connectedWallet ? (
-                <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-gray-300">{connectedWallet.slice(0, 6)}...{connectedWallet.slice(-4)}</span>
-                    <span className="text-sm electric-cyan">{agentBalance} AVAX</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button variant="ghost" className="flex-1" onClick={() => { handleChangeWallet(); setIsMobileOpen(false); }}>
-                      <Replace className="w-4 h-4 mr-2" /> Change
-                    </Button>
-                    <Button variant="ghost" className="flex-1 text-red-400" onClick={() => { handleDisconnectWallet(); setIsMobileOpen(false); }}>
-                      <LogOut className="w-4 h-4 mr-2" /> Disconnect
-                    </Button>
-                  </div>
-                </>
-              ) : (
-                <Button onClick={() => { handleConnectMetaMask(); setIsMobileOpen(false); }} className="w-full" style={{ fontFamily: 'var(--font-space-grotesk), var(--font-sans)' }}>
-                  <Wallet className="w-4 h-4 mr-2" /> Connect Wallet
-                </Button>
-              )}
+              <div className="mt-4 border-t pt-4">
+                <WalletConnectButton />
+              </div>
             </div>
           </div>
         )}

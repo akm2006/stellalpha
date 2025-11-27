@@ -362,7 +362,7 @@ export default function HomePage() {
             </div>
 
             {/* Powered By Section */}
-            {/* <motion.div 
+             <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.5 }}
@@ -372,22 +372,22 @@ export default function HomePage() {
               <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6">
                 <span className="text-xs font-mono tracking-wider opacity-60" style={{ color: COLORS.data }}>
                   POWERED BY
-                </span> */}
-                {/* <div className="flex items-center gap-5"> */}
+                </span> 
+                <div className="flex items-center gap-5"> 
                   {/* Solana Logo */}
-                  {/* <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
+                   <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
                     <img src="/solana.png" alt="Solana" className="h-5 w-5 object-contain" />
                     <span className="text-sm font-medium" style={{ color: COLORS.text }}>Solana</span>
                   </div>
-                   */}
+                   
                   {/* Jupiter Logo */}
-                  {/* <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
+                 <div className="flex items-center gap-2.5 opacity-70 hover:opacity-100 transition-opacity cursor-pointer">
                     <img src="/jupiter.png" alt="Jupiter" className="h-5 w-5 object-contain" />
                     <span className="text-sm font-medium" style={{ color: COLORS.text }}>Jupiter</span>
                   </div>
                 </div>
               </div>
-            </motion.div>*/}
+            </motion.div>
           </motion.div> 
 
           {/* Right Content (Terminal) */}
