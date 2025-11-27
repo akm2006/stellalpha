@@ -4,9 +4,8 @@ import { Inter, Space_Grotesk } from "next/font/google"
 import "./globals.css"
 import ModernHeader from "@/components/modern-header"
 import { GlobalToastRenderer } from "@/components/toast"
-import { WalletProvider } from "@/contexts/WalletContext"
+import { SolanaProviders } from "@/components/providers/SolanaProviders"
 
-import ChatAgentWrapper from "@/components/chat-agent-wrapper";
 import { BeamsBackground } from "@/components/ui/beams-background";
 
 const inter = Inter({
@@ -34,14 +33,13 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${spaceGrotesk.variable} antialiased`}>
       <body>
-        <WalletProvider>
+        <SolanaProviders>
           <BeamsBackground>
             <ModernHeader />
             <main className="relative z-10">{children}</main>
-            <ChatAgentWrapper />
           </BeamsBackground>
           <GlobalToastRenderer />
-        </WalletProvider>
+        </SolanaProviders>
       </body>
     </html>
   )
