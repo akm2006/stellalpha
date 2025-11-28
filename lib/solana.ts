@@ -1,6 +1,10 @@
 import { Connection, PublicKey, ParsedTransactionWithMeta } from "@solana/web3.js";
 
-const HELIUS_API_KEY = process.env.NEXT_PUBLIC_HELIUS_API_KEY || "c2972a48-f95b-433f-b8c2-62baec72d474";
+const HELIUS_API_KEY = process.env.NEXT_PUBLIC_HELIUS_API_KEY;
+
+if (!HELIUS_API_KEY) {
+    console.warn("⚠️ NEXT_PUBLIC_HELIUS_API_KEY environment variable is not set. Helius features may not work.");
+}
 const RPC_ENDPOINT = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 const connection = new Connection(RPC_ENDPOINT, "confirmed");
 

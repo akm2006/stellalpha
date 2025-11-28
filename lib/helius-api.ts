@@ -1,6 +1,10 @@
 import NodeCache from "node-cache";
 
-const HELIUS_API_KEY = process.env.NEXT_PUBLIC_HELIUS_API_KEY || "c2972a48-f95b-433f-b8c2-62baec72d474";
+const HELIUS_API_KEY = process.env.NEXT_PUBLIC_HELIUS_API_KEY;
+
+if (!HELIUS_API_KEY) {
+    console.warn("⚠️ NEXT_PUBLIC_HELIUS_API_KEY environment variable is not set. Helius features may not work.");
+}
 const BASE_URL = "https://api.helius.xyz/v0";
 
 // Cache for 1 minute to respect rate limits
@@ -18,6 +22,11 @@ interface TransactionOptions {
  * Can fetch by address or by transaction type
  */
 export async function fetchTransactions(address: string, options: TransactionOptions = {}) {
+    if (!HELIUS_API_KEY) {
+        console.error("HELIUS_API_KEY is not set. Cannot fetch transactions.");
+        return [];
+    }
+
     const cacheKey = `txs-${address}-${JSON.stringify(options)}`;
     const cached = cache.get(cacheKey);
     if (cached) {

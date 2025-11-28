@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Search, Filter, ArrowUpRight, TrendingUp, Users, Activity } from "lucide-react";
 import { COLORS } from "@/lib/theme";
-import { fetchTopTraders, Trader } from "@/lib/apify";
+import { Trader } from "@/lib/apify";
 import { TraderCard } from "@/components/TraderCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TrendingTokens } from "@/components/TrendingTokens";
@@ -31,6 +31,9 @@ export default function TopTradersPage() {
     const [loading, setLoading] = useState(true);
     const [selectedToken, setSelectedToken] = useState<SelectedToken | null>(null);
 
+    // Note: SOL selection is handled by TrendingTokens component
+    // A token will always be selected (default: SOL)
+
     useEffect(() => {
         async function load() {
             try {
@@ -42,24 +45,48 @@ export default function TopTradersPage() {
                         const data = await response.json();
                         setTraders(data);
                     } else {
-                        console.error("Failed to fetch token traders");
+                        const errorData = await response.json().catch(() => ({}));
+                        console.error("Failed to fetch token traders:", errorData.error || response.statusText);
                         // Fallback to all traders
-                        const data = await fetchTopTraders();
-                        setTraders(data);
+                        const fallbackResponse = await fetch("/api/traders");
+                        if (fallbackResponse.ok) {
+                            const data = await fallbackResponse.json();
+                            setTraders(data);
+                        } else {
+                            const fallbackError = await fallbackResponse.json().catch(() => ({}));
+                            console.error("Failed to fetch all traders:", fallbackError.error || fallbackResponse.statusText);
+                            setTraders([]);
+                        }
                     }
                 } else {
-                    // Fetch all traders
-                    const data = await fetchTopTraders();
-                    setTraders(data);
+                    // Shouldn't happen - a token should always be selected
+                    // But as fallback, fetch all traders
+                    const response = await fetch("/api/traders");
+                    if (response.ok) {
+                        const data = await response.json();
+                        setTraders(data);
+                    } else {
+                        const errorData = await response.json().catch(() => ({}));
+                        console.error("Failed to fetch all traders:", errorData.error || response.statusText);
+                        setTraders([]);
+                    }
                 }
             } catch (e) {
-                console.error(e);
+                console.error("Error fetching traders:", e);
                 // Fallback to all traders on error
                 try {
-                    const data = await fetchTopTraders();
-                    setTraders(data);
+                    const fallbackResponse = await fetch("/api/traders");
+                    if (fallbackResponse.ok) {
+                        const data = await fallbackResponse.json();
+                        setTraders(data);
+                    } else {
+                        const errorData = await fallbackResponse.json().catch(() => ({}));
+                        console.error("Failed to fetch traders:", errorData.error || fallbackResponse.statusText);
+                        setTraders([]);
+                    }
                 } catch (fallbackError) {
                     console.error("Failed to fetch traders:", fallbackError);
+                    setTraders([]);
                 }
             } finally {
                 setLoading(false);
@@ -124,15 +151,7 @@ export default function TopTradersPage() {
                                             <ChevronDown size={14} style={{ color: COLORS.data }} />
                                         </span>
                                     </button>
-                                    {selectedToken && (
-                                        <button
-                                            onClick={() => setSelectedToken(null)}
-                                            className="absolute -top-6 right-0 text-[10px] font-mono hover:text-brand transition-colors"
-                                            style={{ color: COLORS.data }}
-                                        >
-                                            CLEAR
-                                        </button>
-                                    )}
+                                    {/* Remove CLEAR button - token must always be selected */}
                                 </div>
 
                                 {/* Search */}
@@ -208,8 +227,11 @@ export default function TopTradersPage() {
                             ) : traders.length === 0 ? (
                                 <div className="text-center py-16 border" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
                                     <Users size={48} className="mx-auto mb-4 opacity-20" style={{ color: COLORS.data }} />
-                                    <p className="text-sm font-mono" style={{ color: COLORS.data }}>
+                                    <p className="text-sm font-mono mb-2" style={{ color: COLORS.data }}>
                                         {selectedToken ? `No traders found for ${selectedToken.symbol}` : 'No traders found'}
+                                    </p>
+                                    <p className="text-xs font-mono opacity-60" style={{ color: COLORS.data }}>
+                                        {!selectedToken && 'Make sure APIFY_API_TOKEN is configured in your environment variables'}
                                     </p>
                                 </div>
                             ) : (
@@ -225,8 +247,23 @@ export default function TopTradersPage() {
                         <div className="w-full lg:w-80 shrink-0">
                             <div className="sticky top-24">
                                 <TrendingTokens 
-                                    onTokenSelect={(token) => setSelectedToken(token)}
-                                    selectedToken={selectedToken}
+                                    onTokenSelect={(token) => {
+                                        if (token) {
+                                            setSelectedToken({
+                                                address: token.address,
+                                                symbol: token.symbol,
+                                                name: token.name
+                                            });
+                                        }
+                                    }}
+                                    selectedToken={selectedToken ? {
+                                        address: selectedToken.address,
+                                        symbol: selectedToken.symbol,
+                                        name: selectedToken.name,
+                                        logoURI: "",
+                                        price: 0,
+                                        daily_volume: 0
+                                    } : null}
                                 />
                             </div>
                         </div>

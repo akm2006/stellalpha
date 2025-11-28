@@ -5,42 +5,85 @@ import { useParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
     ArrowLeft,
-    ShieldCheck,
-    Users,
     TrendingUp,
     DollarSign,
     Activity,
+    ExternalLink,
     Copy,
     Share2,
-    Star,
-    Info
+    BarChart3,
+    TrendingDown,
+    ArrowUpRight,
+    ArrowDownRight,
+    User
 } from "lucide-react";
 import Link from "next/link";
 import { COLORS } from "@/lib/theme";
-import { fetchTraderDetails, Trader } from "@/lib/apify";
-import {
-    AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-    PieChart, Pie, Cell, Legend
-} from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
+
+const BGPattern = () => (
+    <div 
+        className="absolute inset-0 opacity-[0.015]"
+        style={{
+            backgroundImage: `linear-gradient(${COLORS.structure} 1px, transparent 1px), linear-gradient(90deg, ${COLORS.structure} 1px, transparent 1px)`,
+            backgroundSize: '32px 32px'
+        }}
+    />
+);
+
+interface ExtendedTraderData {
+    wallet: string;
+    sol_scan_url: string;
+    buy_usd_amount: number;
+    sell_usd_amount: number;
+    pnl: number;
+    buy_token_amount: number;
+    buy_txns: number;
+    sell_token_amount: number;
+    sell_txns: number;
+    roi: number;
+    totalTrades: number;
+    totalVolume: number;
+    netPosition: number;
+    token?: string;
+}
+
+const formatCurrency = (value: number) => {
+    if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
+    if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
+    if (value >= 1e3) return `$${(value / 1e3).toFixed(2)}K`;
+    return `$${value.toFixed(2)}`;
+};
+
+const formatNumber = (value: number, decimals: number = 2) => {
+    if (value >= 1e9) return `${(value / 1e9).toFixed(decimals)}B`;
+    if (value >= 1e6) return `${(value / 1e6).toFixed(decimals)}M`;
+    if (value >= 1e3) return `${(value / 1e3).toFixed(decimals)}K`;
+    return value.toFixed(decimals);
+};
+
+const formatAddress = (address: string) => {
+    if (address.length <= 12) return address;
+    return `${address.slice(0, 6)}...${address.slice(-6)}`;
+};
 
 export default function TraderDetailsPage() {
     const params = useParams();
     const router = useRouter();
     const id = params?.id as string;
-    const [trader, setTrader] = useState<Trader | undefined>(undefined);
+    const [trader, setTrader] = useState<ExtendedTraderData | null>(null);
     const [loading, setLoading] = useState(true);
-    const [activeTab, setActiveTab] = useState<'ROI' | 'PnL'>('ROI');
     const [checkingToken, setCheckingToken] = useState(false);
 
     useEffect(() => {
         async function load() {
             if (!id) return;
             
-            // First, try to fetch trader details
+            // First, try to fetch detailed trader data
             try {
-                const data = await fetchTraderDetails(id);
-                if (data) {
+                const response = await fetch(`/api/traders/${id}`);
+                if (response.ok) {
+                    const data = await response.json();
                     setTrader(data);
                     setLoading(false);
                     return;
@@ -49,13 +92,12 @@ export default function TraderDetailsPage() {
                 console.error("Failed to fetch trader:", e);
             }
             
-            // If trader fetch failed, check if it's a token mint by trying to fetch traders for that token
+            // If trader fetch failed, check if it's a token mint
             setCheckingToken(true);
             try {
                 const tokenResponse = await fetch(`/api/traders/token?mint=${id}`);
                 if (tokenResponse.ok) {
                     const tokenTraders = await tokenResponse.json();
-                    // If we got traders back, this is a token mint - redirect
                     if (tokenTraders && tokenTraders.length >= 0) {
                         router.replace(`/top-traders/token/${id}`);
                         return;
@@ -73,270 +115,343 @@ export default function TraderDetailsPage() {
 
     if (loading || checkingToken) {
         return (
-            <div className="min-h-screen bg-canvas pt-24 px-6 flex justify-center">
-                <div className="max-w-7xl w-full space-y-8">
-                    <Skeleton className="h-32 w-full bg-white/5 rounded-xl" />
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                        <Skeleton className="h-64 bg-white/5 rounded-xl" />
-                        <Skeleton className="h-64 bg-white/5 rounded-xl" />
+            <div className="min-h-screen font-sans overflow-x-hidden" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
+                <section className="relative pt-16 md:pt-24 pb-12 px-6 border-b" style={{ borderColor: COLORS.structure }}>
+                    <BGPattern />
+                    <div className="max-w-7xl mx-auto relative z-10">
+                        <Skeleton className="h-32 w-full mb-8" style={{ backgroundColor: `${COLORS.structure}40` }} />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <Skeleton className="h-64" style={{ backgroundColor: `${COLORS.structure}40` }} />
+                            <Skeleton className="h-64" style={{ backgroundColor: `${COLORS.structure}40` }} />
+                        </div>
                     </div>
-                </div>
+                </section>
             </div>
         );
     }
 
     if (!trader) {
         return (
-            <div className="min-h-screen bg-canvas pt-24 px-6 flex flex-col items-center justify-center text-center">
-                <h2 className="text-2xl font-medium text-white mb-4">Trader Not Found</h2>
+            <div className="min-h-screen font-sans overflow-x-hidden flex flex-col items-center justify-center text-center px-6" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
+                <h2 className="text-2xl font-medium mb-4" style={{ color: COLORS.text }}>Trader Not Found</h2>
+                <p className="text-sm mb-6" style={{ color: COLORS.data }}>Unable to find trader with the provided address</p>
                 <Link href="/top-traders">
-                    <button className="px-6 py-2 bg-white/10 rounded-lg text-sm hover:bg-white/20 transition-colors">
-                        Back to List
+                    <button 
+                        className="h-11 px-7 border text-sm font-mono transition-all hover:border-brand/50"
+                        style={{ 
+                            borderColor: COLORS.structure, 
+                            backgroundColor: COLORS.surface,
+                            color: COLORS.text 
+                        }}
+                    >
+                        BACK_TO_TRADERS
                     </button>
                 </Link>
             </div>
         );
     }
 
-    // Mock detailed chart data based on the weeklyPnl
-    const chartData = trader.weeklyPnl.map((val, i) => ({
-        date: `Day ${i + 1}`,
-        value: activeTab === 'ROI' ? (val / 1000) * 100 : val * 100 // Mock scaling
-    }));
+    const isPositivePnL = trader.pnl >= 0;
+    const buySellRatio = trader.buy_txns > 0 ? (trader.sell_txns / trader.buy_txns) : 0;
+    const avgBuyAmount = trader.buy_txns > 0 ? trader.buy_usd_amount / trader.buy_txns : 0;
+    const avgSellAmount = trader.sell_txns > 0 ? trader.sell_usd_amount / trader.sell_txns : 0;
 
     return (
-        <div className="min-h-screen font-sans bg-canvas text-text pb-20">
-            <div className="pt-24 px-6 max-w-7xl mx-auto space-y-8">
-
-                {/* Breadcrumb / Back */}
-                <Link href="/top-traders" className="inline-flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors">
-                    <ArrowLeft size={16} />
-                    Back to Copy Trading
-                </Link>
-
-                {/* Header Profile Card */}
-                <div className="glass-card p-8 relative overflow-hidden">
-                    <div className="absolute inset-0 bg-gradient-to-r from-brand/5 to-transparent pointer-events-none" />
-
-                    <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-                        <div className="flex items-center gap-6">
-                            <div className="relative">
-                                <img
-                                    src={trader.avatarUrl}
-                                    alt={trader.name}
-                                    className="w-20 h-20 rounded-full border-2 border-white/10"
-                                />
-                                <div className="absolute -bottom-2 -right-2 bg-surface border border-structure px-2 py-0.5 rounded-full text-[10px] font-mono text-brand">
-                                    RANK #{trader.rank}
-                                </div>
-                            </div>
-
-                            <div>
-                                <div className="flex items-center gap-3 mb-2">
-                                    <h1 className="text-2xl font-bold text-white">{trader.name}</h1>
-                                    <ShieldCheck size={18} className="text-yellow-500" />
-                                    <div className="px-2 py-0.5 rounded bg-white/10 text-[10px] text-gray-300">
-                                        API Connected
-                                    </div>
-                                </div>
-                                <p className="text-sm text-gray-400 max-w-lg">
-                                    Public domain trading is more conservative, while private domain trading is more aggressive.
-                                    Follow their trades based on your own financial situation.
-                                </p>
-                            </div>
-                        </div>
-
-                        <div className="flex gap-3 w-full md:w-auto">
-                            <button className="flex-1 md:flex-none h-10 px-6 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-medium text-white transition-colors">
-                                Mock Copy
+        <div className="min-h-screen font-sans overflow-x-hidden" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
+            {/* Header Section */}
+            <section className="relative pt-16 md:pt-24 pb-12 px-6 border-b" style={{ borderColor: COLORS.structure }}>
+                <BGPattern />
+                <div className="max-w-7xl mx-auto relative z-10">
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.6 }}
+                    >
+                        {/* Back Button */}
+                        <Link href="/top-traders">
+                            <button 
+                                className="inline-flex items-center gap-2 mb-8 text-sm transition-all hover:opacity-80"
+                                style={{ color: COLORS.data }}
+                            >
+                                <ArrowLeft size={16} />
+                                <span className="font-mono">BACK_TO_TRADERS</span>
                             </button>
-                            <button className="flex-1 md:flex-none h-10 px-6 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-black text-sm font-bold transition-colors shadow-[0_0_20px_rgba(234,179,8,0.3)]">
-                                Copy Trader
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                        </Link>
 
-                {/* Overview & Assets Grid */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-
-                    {/* Lead Trader Overview */}
-                    <div className="glass-card p-6">
-                        <h3 className="text-lg font-medium text-white mb-6">Lead Trader Overview</h3>
-                        <div className="space-y-5">
-                            <div className="flex justify-between items-center pb-4 border-b border-white/5">
-                                <span className="text-sm text-gray-400">AUM</span>
-                                <span className="text-sm font-medium text-white">${trader.aum.toLocaleString()} USDT</span>
-                            </div>
-                            <div className="flex justify-between items-center pb-4 border-b border-white/5">
-                                <span className="text-sm text-gray-400">Profit Sharing</span>
-                                <span className="text-sm font-medium text-white">10.00%</span>
-                            </div>
-                            <div className="flex justify-between items-center pb-4 border-b border-white/5">
-                                <span className="text-sm text-gray-400">Leading Margin Balance</span>
-                                <span className="text-sm font-medium text-white">${(trader.aum * 0.2).toLocaleString()} USDT</span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                                <span className="text-sm text-gray-400">Minimum Copy Amount</span>
-                                <span className="text-sm font-medium text-white">1000/1000 USDT</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Asset Preferences */}
-                    <div className="glass-card p-6">
-                        <div className="flex items-center gap-2 mb-6">
-                            <h3 className="text-lg font-medium text-white">Asset Preferences</h3>
-                            <Info size={14} className="text-gray-500" />
-                        </div>
-                        <div className="h-[200px] w-full flex items-center justify-center">
-                            {trader.assets.length > 0 ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <PieChart>
-                                        <Pie
-                                            data={trader.assets}
-                                            cx="50%"
-                                            cy="50%"
-                                            innerRadius={60}
-                                            outerRadius={80}
-                                            paddingAngle={5}
-                                            dataKey="value"
-                                        >
-                                            {trader.assets.map((entry, index) => (
-                                                <Cell key={`cell-${index}`} fill={entry.color} stroke="rgba(0,0,0,0.5)" />
-                                            ))}
-                                        </Pie>
-                                        <Tooltip
-                                            contentStyle={{ backgroundColor: '#0A0A0A', borderColor: '#262626', borderRadius: '8px' }}
-                                            itemStyle={{ color: '#fff' }}
+                        {/* Trader Header Card */}
+                        <div className="border p-8 mb-8 relative overflow-hidden group" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500" 
+                                 style={{ background: `linear-gradient(135deg, ${COLORS.brand}05 0%, transparent 100%)` }} />
+                            
+                            <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                                <div className="flex items-center gap-6 flex-1">
+                                    <div className="relative">
+                                        <img
+                                            src={`https://api.dicebear.com/7.x/identicon/svg?seed=${trader.wallet}`}
+                                            alt={trader.wallet}
+                                            className="w-20 h-20 rounded-full border-2"
+                                            style={{ borderColor: COLORS.structure }}
                                         />
-                                        <Legend
-                                            layout="vertical"
-                                            verticalAlign="middle"
-                                            align="right"
-                                            formatter={(value, entry: any) => (
-                                                <span className="text-xs text-gray-300 ml-2">{value}</span>
-                                            )}
-                                        />
-                                    </PieChart>
-                                </ResponsiveContainer>
-                            ) : (
-                                <div className="text-sm text-gray-500">No asset data available</div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-
-                {/* Performance Chart */}
-                <div className="glass-card p-6 h-[400px] flex flex-col">
-                    <div className="flex items-center justify-between mb-6">
-                        <h3 className="text-lg font-medium text-white">Performance</h3>
-                        <div className="flex bg-white/5 rounded-lg p-1">
-                            {(['ROI', 'PnL'] as const).map((tab) => (
-                                <button
-                                    key={tab}
-                                    onClick={() => setActiveTab(tab)}
-                                    className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${activeTab === tab
-                                        ? 'bg-white/10 text-white shadow-sm'
-                                        : 'text-gray-400 hover:text-white'
-                                        }`}
-                                >
-                                    {tab}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div className="flex-1 w-full min-h-0 flex items-center justify-center">
-                        {chartData.length > 0 ? (
-                            <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={chartData}>
-                                    <defs>
-                                        <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor={COLORS.brand} stopOpacity={0.3} />
-                                            <stop offset="95%" stopColor={COLORS.brand} stopOpacity={0} />
-                                        </linearGradient>
-                                    </defs>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                                    <XAxis
-                                        dataKey="date"
-                                        stroke="#525252"
-                                        fontSize={10}
-                                        tickLine={false}
-                                        axisLine={false}
-                                    />
-                                    <YAxis
-                                        stroke="#525252"
-                                        fontSize={10}
-                                        tickLine={false}
-                                        axisLine={false}
-                                        tickFormatter={(val) => activeTab === 'ROI' ? `${val}%` : `$${val}`}
-                                    />
-                                    <Tooltip
-                                        contentStyle={{ backgroundColor: '#0A0A0A', borderColor: '#262626', borderRadius: '8px' }}
-                                        itemStyle={{ color: '#fff' }}
-                                    />
-                                    <Area
-                                        type="monotone"
-                                        dataKey="value"
-                                        stroke={COLORS.brand}
-                                        fill="url(#chartGradient)"
-                                        strokeWidth={2}
-                                    />
-                                </AreaChart>
-                            </ResponsiveContainer>
-                        ) : (
-                            <div className="text-sm text-gray-500">No performance history available</div>
-                        )}
-                    </div>
-                </div>
-
-                {/* Latest Records */}
-                <div className="glass-card p-6">
-                    <div className="flex items-center gap-6 mb-6 border-b border-white/10 pb-4">
-                        <h3 className="text-lg font-medium text-white border-b-2 border-brand pb-4 -mb-4.5">Latest Records</h3>
-                        <h3 className="text-lg font-medium text-gray-500 pb-4 -mb-4.5 cursor-pointer hover:text-gray-300">Positions</h3>
-                        <h3 className="text-lg font-medium text-gray-500 pb-4 -mb-4.5 cursor-pointer hover:text-gray-300">Transfer History</h3>
-                    </div>
-
-                    <div className="space-y-4">
-                        {trader.recentTrades.length > 0 ? (
-                            trader.recentTrades.map((trade, i) => (
-                                <div key={i} className="flex flex-col md:flex-row md:items-center justify-between p-4 rounded-lg bg-white/5 border border-white/5 hover:border-white/10 transition-colors">
-                                    <div className="flex items-start gap-4 mb-4 md:mb-0">
-                                        <div className="flex flex-col items-center gap-2">
-                                            <div className="text-[10px] text-gray-500 font-mono">{trade.date.split(',')[0]}</div>
-                                            <div className="h-full w-px bg-white/10 min-h-[20px]" />
-                                        </div>
-                                        <div>
-                                            <div className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium mb-1 ${trade.type.includes('Open') ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'
-                                                }`}>
-                                                {trade.type}
-                                            </div>
-                                            <div className="text-sm text-gray-300">
-                                                {trade.type} position of <span className="text-white font-medium underline decoration-dotted">{trade.symbol}</span> at price of <span className="text-white">{trade.price} USDT</span>
-                                            </div>
+                                        <div className="absolute -bottom-2 -right-2 px-3 py-1 border text-[10px] font-mono font-medium"
+                                             style={{ borderColor: COLORS.brand, backgroundColor: COLORS.brand, color: COLORS.canvas }}>
+                                            RANK #1
                                         </div>
                                     </div>
-                                    <div className="text-right">
-                                        {trade.pnl && (
-                                            <div className={`text-sm font-medium ${parseFloat(trade.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                                {parseFloat(trade.pnl) >= 0 ? '+' : ''}{trade.pnl} USDT
+
+                                    <div className="flex-1">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <h1 className="text-3xl font-medium tracking-tight" style={{ color: COLORS.text }}>
+                                                {formatAddress(trader.wallet)}
+                                            </h1>
+                                            <a
+                                                href={trader.sol_scan_url}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="opacity-70 hover:opacity-100 transition-opacity"
+                                                style={{ color: COLORS.data }}
+                                            >
+                                                <ExternalLink size={18} />
+                                            </a>
+                                        </div>
+                                        <p className="text-sm mb-4" style={{ color: COLORS.data }}>
+                                            Solana wallet address • Active trader
+                                        </p>
+                                        <div className="flex items-center gap-4 flex-wrap">
+                                            <div className="flex items-center gap-2 px-3 py-1 border text-xs font-mono"
+                                                 style={{ borderColor: COLORS.structure, color: COLORS.data }}>
+                                                <Activity size={12} />
+                                                {trader.totalTrades} TRADES
                                             </div>
-                                        )}
-                                        <div className="text-xs text-gray-500">
-                                            Value: {trade.value} USDT
+                                            <div className={`flex items-center gap-2 px-3 py-1 border text-xs font-mono ${
+                                                isPositivePnL ? 'text-emerald-400' : 'text-red-400'
+                                            }`}
+                                                 style={{ borderColor: COLORS.structure }}>
+                                                <TrendingUp size={12} />
+                                                {trader.roi.toFixed(2)}% ROI
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
-                            ))
-                        ) : (
-                            <div className="text-center py-8 text-sm text-gray-500">No recent trades found</div>
-                        )}
+
+                                <div className="flex gap-3 w-full md:w-auto">
+                                    <button 
+                                        className="h-11 px-6 border text-sm font-mono transition-all hover:border-brand/50 flex-1 md:flex-none"
+                                        style={{ 
+                                            borderColor: COLORS.structure, 
+                                            backgroundColor: COLORS.surface,
+                                            color: COLORS.text 
+                                        }}
+                                    >
+                                        COPY_TRADER
+                                    </button>
+                                    <button 
+                                        className="h-11 px-6 text-sm font-mono font-medium transition-all hover:opacity-90 flex-1 md:flex-none"
+                                        style={{ 
+                                            backgroundColor: COLORS.brand, 
+                                            color: COLORS.canvas 
+                                        }}
+                                    >
+                                        FOLLOW
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Key Metrics Grid */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                            <div className="border p-6" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                                <div className="text-[10px] font-mono tracking-widest mb-2" style={{ color: COLORS.data }}>
+                                    PROFIT/LOSS
+                                </div>
+                                <div className={`text-2xl font-medium ${isPositivePnL ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {isPositivePnL ? '+' : ''}{formatCurrency(trader.pnl)}
+                                </div>
+                            </div>
+                            <div className="border p-6" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                                <div className="text-[10px] font-mono tracking-widest mb-2" style={{ color: COLORS.data }}>
+                                    TOTAL VOLUME
+                                </div>
+                                <div className="text-2xl font-medium" style={{ color: COLORS.text }}>
+                                    {formatCurrency(trader.totalVolume)}
+                                </div>
+                            </div>
+                            <div className="border p-6" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                                <div className="text-[10px] font-mono tracking-widest mb-2" style={{ color: COLORS.data }}>
+                                    ROI
+                                </div>
+                                <div className={`text-2xl font-medium ${isPositivePnL ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {isPositivePnL ? '+' : ''}{trader.roi.toFixed(2)}%
+                                </div>
+                            </div>
+                            <div className="border p-6" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                                <div className="text-[10px] font-mono tracking-widest mb-2" style={{ color: COLORS.data }}>
+                                    TOTAL TRADES
+                                </div>
+                                <div className="text-2xl font-medium" style={{ color: COLORS.text }}>
+                                    {trader.totalTrades}
+                                </div>
+                            </div>
+                        </div>
+                    </motion.div>
+                </div>
+            </section>
+
+            {/* Content Section */}
+            <section className="py-16 px-6 relative" style={{ backgroundColor: COLORS.canvas }}>
+                <div className="max-w-7xl mx-auto">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                        {/* Trading Activity */}
+                        <div className="border p-6" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                            <div className="flex items-center gap-2 mb-6">
+                                <BarChart3 size={18} style={{ color: COLORS.brand }} />
+                                <span className="text-[9px] font-mono tracking-widest" style={{ color: COLORS.data }}>
+                                    TRADING_ACTIVITY
+                                </span>
+                            </div>
+                            <div className="space-y-4">
+                                <div className="flex justify-between items-center pb-4 border-b" style={{ borderColor: COLORS.structure }}>
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Buy Transactions</span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {trader.buy_txns}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center pb-4 border-b" style={{ borderColor: COLORS.structure }}>
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Sell Transactions</span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {trader.sell_txns}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center pb-4 border-b" style={{ borderColor: COLORS.structure }}>
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Buy/Sell Ratio</span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {buySellRatio.toFixed(2)}x
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Net Position</span>
+                                    <span className={`text-sm font-medium font-mono ${
+                                        trader.netPosition >= 0 ? 'text-emerald-400' : 'text-red-400'
+                                    }`}>
+                                        {trader.netPosition >= 0 ? '+' : ''}{formatNumber(trader.netPosition, 4)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Volume Breakdown */}
+                        <div className="border p-6" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                            <div className="flex items-center gap-2 mb-6">
+                                <DollarSign size={18} style={{ color: COLORS.brand }} />
+                                <span className="text-[9px] font-mono tracking-widest" style={{ color: COLORS.data }}>
+                                    VOLUME_BREAKDOWN
+                                </span>
+                            </div>
+                            <div className="space-y-4">
+                                <div className="flex justify-between items-center pb-4 border-b" style={{ borderColor: COLORS.structure }}>
+                                    <span className="text-sm flex items-center gap-2" style={{ color: COLORS.data }}>
+                                        <ArrowUpRight size={14} className="text-emerald-400" />
+                                        Buy Volume
+                                    </span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {formatCurrency(trader.buy_usd_amount)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center pb-4 border-b" style={{ borderColor: COLORS.structure }}>
+                                    <span className="text-sm flex items-center gap-2" style={{ color: COLORS.data }}>
+                                        <ArrowDownRight size={14} className="text-red-400" />
+                                        Sell Volume
+                                    </span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {formatCurrency(trader.sell_usd_amount)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center pb-4 border-b" style={{ borderColor: COLORS.structure }}>
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Avg Buy Amount</span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {formatCurrency(avgBuyAmount)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Avg Sell Amount</span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {formatCurrency(avgSellAmount)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Token Amounts */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                        <div className="border p-6" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                            <div className="flex items-center gap-2 mb-6">
+                                <TrendingUp size={18} style={{ color: COLORS.brand }} />
+                                <span className="text-[9px] font-mono tracking-widest" style={{ color: COLORS.data }}>
+                                    TOKEN_AMOUNTS
+                                </span>
+                            </div>
+                            <div className="space-y-4">
+                                <div className="flex justify-between items-center pb-4 border-b" style={{ borderColor: COLORS.structure }}>
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Buy Token Amount</span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {formatNumber(trader.buy_token_amount, 4)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Sell Token Amount</span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {formatNumber(trader.sell_token_amount, 4)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Performance Summary */}
+                        <div className="border p-6" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                            <div className="flex items-center gap-2 mb-6">
+                                <Activity size={18} style={{ color: COLORS.brand }} />
+                                <span className="text-[9px] font-mono tracking-widest" style={{ color: COLORS.data }}>
+                                    PERFORMANCE_SUMMARY
+                                </span>
+                            </div>
+                            <div className="space-y-4">
+                                <div className="flex justify-between items-center pb-4 border-b" style={{ borderColor: COLORS.structure }}>
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Total PnL</span>
+                                    <span className={`text-sm font-medium font-mono ${isPositivePnL ? 'text-emerald-400' : 'text-red-400'}`}>
+                                        {isPositivePnL ? '+' : ''}{formatCurrency(trader.pnl)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center pb-4 border-b" style={{ borderColor: COLORS.structure }}>
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Total Volume (AUM)</span>
+                                    <span className="text-sm font-medium font-mono" style={{ color: COLORS.text }}>
+                                        {formatCurrency(trader.totalVolume)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-sm" style={{ color: COLORS.data }}>Return on Investment</span>
+                                    <span className={`text-sm font-medium font-mono ${isPositivePnL ? 'text-emerald-400' : 'text-red-400'}`}>
+                                        {isPositivePnL ? '+' : ''}{trader.roi.toFixed(2)}%
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Wallet Link */}
+                    <div className="border p-6 text-center" style={{ borderColor: COLORS.structure, backgroundColor: COLORS.surface }}>
+                        <a
+                            href={trader.sol_scan_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 text-sm font-mono transition-all hover:opacity-80"
+                            style={{ color: COLORS.brand }}
+                        >
+                            <ExternalLink size={16} />
+                            VIEW_ON_SOLSCAN
+                        </a>
                     </div>
                 </div>
-
-            </div>
+            </section>
         </div>
     );
 }
