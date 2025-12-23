@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-stellalpha_vault = "66JmdAQSiB4BH6feb88kK9sU3n2fNM91QxGjYd99E3A6"
+stellalpha_vault = "64XogE2RvY7g4fDp8XxWZxFTycANjDK37n88GZizm5nx"
 
 [programs.localnet]
 stellalpha_vault = "AtJ1j39GKPLutkFBLe3xkBsSuTG2GfwmN3833mATEwaj"
