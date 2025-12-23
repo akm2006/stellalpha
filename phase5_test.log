@@ -1,0 +1,140 @@
+    Finished `release` profile [optimized] target(s) in 1.27s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.80s
+     Running unittests src/lib.rs (/home/akash/projects/new-stellalpha/stellalpha/anchor/target/debug/deps/stellalpha_vault-e6b73550f61b34f6)
+Deploying cluster: https://api.devnet.solana.com
+Upgrade authority: /home/akash/.config/solana/devnet-wallet.json
+Deploying program "stellalpha_vault"...
+Program path: /home/akash/projects/new-stellalpha/stellalpha/anchor/target/deploy/stellalpha_vault.so...
+Program Id: 66JmdAQSiB4BH6feb88kK9sU3n2fNM91QxGjYd99E3A6
+
+Signature: 5bh7UMxvZ7zuW75vGQS9Rjb2PEcqPmmqapKcD57aSjT9DiaxdBC4HBsTgKfeEZqkPkanm5pghQdsPgF1Y5igf22o
+
+Deploy success
+
+Found a 'test' script in the Anchor.toml. Running it as a test suite!
+
+Running test suite: "/home/akash/projects/new-stellalpha/stellalpha/anchor/Anchor.toml"
+
+yarn run v1.22.22
+$ /home/akash/projects/new-stellalpha/stellalpha/anchor/node_modules/.bin/ts-mocha -p ./tsconfig.json -t 1000000 'tests/**/*.ts'
+(node:9152) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/akash/projects/new-stellalpha/stellalpha/anchor/tests/phase1_global_config.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/akash/projects/new-stellalpha/stellalpha/anchor/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+  Phase 1: Global Config
+Global Config might be already initialized
+Global Config Admin: 6Dp9hp9FLoeTRjogLywxcNL448cQ1Wcm6yFm3nN3hjcA
+Platform Fee BPS: 10
+Performance Fee BPS: 2000
+    ✔ Is initialized! (2782ms)
+    ✔ Enforces Singleton (Cannot Initialize Twice) (746ms)
+
+  Phase 2B: TraderState Lifecycle
+Starting setup...
+Creating Mint...
+Mint created: AjFsNRy47yfRXVvSxkLqYrF4uTo3hkvWZkTftzVeYX26
+Creating Token Account...
+Token Account created: DTRpAYiac9AnuQfb8JnEUWDPjV7JBevGVGuj3BtqGEfm
+Minting tokens...
+Tokens minted.
+Initializing Vault...
+Vault might be already initialized or failed: Simulation failed. 
+Message: Transaction simulation failed: Error processing Instruction 0: custom program error: 0x0. 
+Logs: 
+[
+  "Program 66JmdAQSiB4BH6feb88kK9sU3n2fNM91QxGjYd99E3A6 invoke [1]",
+  "Program log: Instruction: InitializeVault",
+  "Program 11111111111111111111111111111111 invoke [2]",
+  "Allocate: account Address { address: CVMM3JDpb8poAA32Ua2qPZBRViXfLJatQSTgjU2AsdBS, base: None } already in use",
+  "Program 11111111111111111111111111111111 failed: custom program error: 0x0",
+  "Program 66JmdAQSiB4BH6feb88kK9sU3n2fNM91QxGjYd99E3A6 consumed 4864 of 200000 compute units",
+  "Program 66JmdAQSiB4BH6feb88kK9sU3n2fNM91QxGjYd99E3A6 failed: custom program error: 0x0"
+]. 
+Catch the `SendTransactionError` and call `getLogs()` on it for full details.
+Creating Vault ATA...
+Funding Vault...
+Vault funded.
+    1) Creates TraderState and Funds it
+    2) Pauses and Resumes TraderState
+    3) Fails to Close if Not Paused
+    4) Closes TraderState and Refunds
+
+  Phase 3: Execute Trader Swap
+Setting up Phase 3 test environment...
+Payer: 6Dp9hp9FLoeTRjogLywxcNL448cQ1Wcm6yFm3nN3hjcA
+Vault Owner (Ephemeral): C4EmQNkdHqADrxiGJfbmQ4A2YNCea7qNbQyyxz9W4vSr
+Vault Initialized
+    ✔ Executes Trader Swap (Happy Path) (4332ms)
+    ✔ Fails if Paused (7273ms)
+
+  Phase 4: TraderState Accounting
+Setting up Phase 4 test environment...
+    5) "before all" hook for "Does NOT update current_value when swapping Base -> Token"
+
+  Phase 5: Settlement & Withdrawals
+Setting up Phase 5 test environment...
+    6) "before all" hook for "Fails to Settle if Not Paused"
+
+
+  4 passing (2m)
+  6 failing
+
+  1) Phase 2B: TraderState Lifecycle
+       Creates TraderState and Funds it:
+     Error: AnchorError caused by account: mint. Error Code: ConstraintAddress. Error Number: 2012. Error Message: An address constraint was violated.
+Program log: Left:
+Program log: AjFsNRy47yfRXVvSxkLqYrF4uTo3hkvWZkTftzVeYX26
+Program log: Right:
+Program log: GnebaRQXSciSLqFvyUANPiVkTeRXCQfPEQPZxghKXFNG
+      at AnchorError.parse (node_modules/@coral-xyz/anchor/src/error.ts:168:14)
+      at translateError (node_modules/@coral-xyz/anchor/src/error.ts:277:35)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:35:29)
+      at processTicksAndRejections (node:internal/process/task_queues:105:5)
+
+  2) Phase 2B: TraderState Lifecycle
+       Pauses and Resumes TraderState:
+     Error: AnchorError caused by account: trader_state. Error Code: AccountNotInitialized. Error Number: 3012. Error Message: The program expected this account to be already initialized.
+      at AnchorError.parse (node_modules/@coral-xyz/anchor/src/error.ts:168:14)
+      at translateError (node_modules/@coral-xyz/anchor/src/error.ts:277:35)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:35:29)
+      at processTicksAndRejections (node:internal/process/task_queues:105:5)
+
+  3) Phase 2B: TraderState Lifecycle
+       Fails to Close if Not Paused:
+     AssertionError: expected 'AnchorError caused by account: trader…' to include 'TraderState must be paused'
+      at /home/akash/projects/new-stellalpha/stellalpha/anchor/tests/phase2b_lifecycle.ts:220:16
+      at Generator.throw (<anonymous>)
+      at rejected (tests/phase2b_lifecycle.ts:39:65)
+      at processTicksAndRejections (node:internal/process/task_queues:105:5)
+
+  4) Phase 2B: TraderState Lifecycle
+       Closes TraderState and Refunds:
+     Error: AnchorError caused by account: trader_state. Error Code: AccountNotInitialized. Error Number: 3012. Error Message: The program expected this account to be already initialized.
+      at AnchorError.parse (node_modules/@coral-xyz/anchor/src/error.ts:168:14)
+      at translateError (node_modules/@coral-xyz/anchor/src/error.ts:277:35)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:35:29)
+      at processTicksAndRejections (node:internal/process/task_queues:105:5)
+
+  5) Phase 4: TraderState Accounting
+       "before all" hook for "Does NOT update current_value when swapping Base -> Token":
+     TransactionExpiredTimeoutError: Transaction was not confirmed in 30.00 seconds. It is unknown if it succeeded or failed. Check signature 63bRCezyxKWR4uDnCu4oN3Y4hEPVsmPLFLbiuF1zoMJN9NsVMqz7gePvFutaPGYVD7ViyRB3EDivAvzafLzMBPT using the Solana Explorer or CLI tools.
+      at Connection.confirmTransactionUsingLegacyTimeoutStrategy (node_modules/@solana/web3.js/src/connection.ts:4248:15)
+      at Connection.confirmTransaction (node_modules/@solana/web3.js/src/connection.ts:3859:14)
+      at sendAndConfirmRawTransaction (node_modules/@coral-xyz/anchor/src/provider.ts:420:11)
+      at AnchorProvider.sendAndConfirm (node_modules/@coral-xyz/anchor/src/provider.ts:167:14)
+      at MethodsBuilder.rpc [as _rpcFn] (node_modules/@coral-xyz/anchor/src/program/namespace/rpc.ts:29:16)
+
+  6) Phase 5: Settlement & Withdrawals
+       "before all" hook for "Fails to Settle if Not Paused":
+     Error: failed to get recent blockhash: TypeError: fetch failed
+      at Connection.getLatestBlockhash (node_modules/@solana/web3.js/src/connection.ts:4705:13)
+      at processTicksAndRejections (node:internal/process/task_queues:105:5)
+      at Connection._pollNewBlockhash (node_modules/@solana/web3.js/src/connection.ts:5704:33)
+      at Connection._blockhashWithExpiryBlockHeight (node_modules/@solana/web3.js/src/connection.ts:5689:12)
+      at Connection.sendTransaction (node_modules/@solana/web3.js/src/connection.ts:5972:11)
+      at Object.sendAndConfirmTransaction (node_modules/@solana/web3.js/src/utils/send-and-confirm-transaction.ts:36:21)
+
+
+
