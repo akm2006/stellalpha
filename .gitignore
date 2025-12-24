@@ -35,12 +35,17 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
-.env*
+.env
+.env.local
+.env.production
+.env.development
+# Allow .env.example to be committed as a template
+!.env.example
 
 # vercel
 .vercel
 
 # typescript
 *.tsbuildinfo
+package-lock.json
 next-env.d.ts
-.env
