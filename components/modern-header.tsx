@@ -4,19 +4,9 @@ import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { useWallet } from "@solana/wallet-adapter-react";
-import { WalletConnectButton } from "@/components/WalletConnectButton";
-import { Home, Settings, Menu, X, LogOut, Replace, Wallet } from "lucide-react";
+import { Home, Settings, Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { COLORS } from "@/lib/theme";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
 
 interface NavItem {
   href: string;
@@ -32,10 +22,6 @@ const navigationItems: NavItem[] = [
 export default function ModernHeader() {
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const pathname = usePathname();
-
-  const {
-    connected,
-  } = useWallet();
 
   return (
     <header className="fixed inset-x-4 top-6 z-50 flex items-center justify-center">
@@ -78,7 +64,7 @@ export default function ModernHeader() {
         </nav>
 
         <div className="ml-auto flex items-center gap-4">
-          <WalletConnectButton />
+         
 
           {/* Mobile menu toggle */}
           <button
@@ -108,7 +94,6 @@ export default function ModernHeader() {
 
             <div className="mt-4 border-t pt-4 flex flex-col gap-2">
               <div className="mt-4 border-t pt-4">
-                <WalletConnectButton />
               </div>
             </div>
           </div>
