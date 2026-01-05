@@ -22,8 +22,8 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 
-// Import types
-import type { StellalphaVault } from "../anchor/target/types/stellalpha_vault";
+// Import types from local copy (anchor folder is gitignored)
+import type { StellalphaVault } from "./types/stellalpha_vault";
 
 // ============================================================================
 // Configuration
@@ -85,14 +85,8 @@ let cachedIdl: any = null;
 export function loadIdl(): any {
   if (cachedIdl) return cachedIdl;
   
-  try {
-    // Try relative path from project root
-    cachedIdl = require("../anchor/target/idl/stellalpha_vault.json");
-  } catch {
-    // Fallback to absolute path
-    const idlPath = process.cwd() + "/anchor/target/idl/stellalpha_vault.json";
-    cachedIdl = JSON.parse(fs.readFileSync(idlPath, "utf-8"));
-  }
+  // Use local IDL copy (anchor folder is gitignored)
+  cachedIdl = require("./types/stellalpha_vault.json");
   
   // Override address for localnet
   cachedIdl.address = STELLALPHA_PROGRAM_ID.toBase58();
