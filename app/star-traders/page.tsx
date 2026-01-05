@@ -280,7 +280,7 @@ export default function StarTradersPage() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/trades?wallet=${selectedTrader.address}&limit=20`);
+      const response = await fetch(`/api/trades?wallet=${selectedTrader.address}&limit=100`);
       const data = await response.json();
       if (data.error) {
         setError(data.error);
