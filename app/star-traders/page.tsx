@@ -48,6 +48,10 @@ const STAR_TRADERS: Trader[] = [
   {
     address: '2ySF5KLP8WQW1FLVTY5xZEnoJgM6xMpZnhFtoXjadYar',
     name: 'Alpha Trader'
+  },
+  {
+    address: 'TestTrader111111111111111111111111111111111',
+    name: 'Test Trader'
   }
 ];
 
