@@ -270,6 +270,13 @@ export async function POST(request: NextRequest) {
       if (!error) {
         inserted++;
         console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0,8)}... | Latency: ${latencyMs}ms`);
+        
+        // Auto-add new wallet to star_traders table (ignore if already exists)
+        await supabase.from('star_traders').upsert({
+          address: trade.wallet,  // Use 'address' column
+          name: `Trader ${trade.wallet.slice(0, 6)}`,
+          created_at: new Date().toISOString()
+        }, { onConflict: 'address', ignoreDuplicates: true });
       }
     }
     
