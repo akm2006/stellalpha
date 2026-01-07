@@ -23,7 +23,43 @@ const KNOWN_TOKENS: Record<string, string> = {
   'So11111111111111111111111111111111111111112': 'SOL',
   'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB': 'USD1',
   'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
+  'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 'Bonk',
 };
+
+const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
+
+// Cache for token decimals to avoid repeated API calls
+const decimalsCache = new Map<string, number>();
+
+// Fetch token decimals from Jupiter Price API v3 (returns decimals in response)
+async function getTokenDecimals(mint: string): Promise<number> {
+  // Check cache first
+  if (decimalsCache.has(mint)) {
+    return decimalsCache.get(mint)!;
+  }
+  
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+    
+    const response = await fetch(`https://api.jup.ag/price/v3?ids=${mint}`, { headers });
+    if (response.ok) {
+      const data = await response.json();
+      const tokenData = data[mint];
+      if (tokenData && typeof tokenData.decimals === 'number') {
+        decimalsCache.set(mint, tokenData.decimals);
+        return tokenData.decimals;
+      }
+    }
+  } catch (error) {
+    console.warn(`Failed to fetch decimals for ${mint}:`, error);
+  }
+  
+  // Default: stablecoins use 6, most SPL tokens use 9
+  const defaultDecimals = STABLECOIN_MINTS.has(mint) ? 6 : 9;
+  decimalsCache.set(mint, defaultDecimals);
+  return defaultDecimals;
+}
 
 function getUsdValue(mint: string, amount: number): number {
   if (STABLECOIN_MINTS.has(mint)) return amount;
@@ -61,10 +97,9 @@ function detectTrade(tx: any, wallet: string): RawTrade | null {
   const solChangeNet = (solChange + fee) / 1e9;
   
   const relevant = t.filter((x: any) => x.fromUserAccount === fp || x.toUserAccount === fp);
-  const nonWSol = relevant.filter((x: any) => x.mint !== WSOL);
-  
-  const tokensSent = nonWSol.filter((x: any) => x.fromUserAccount === fp);
-  const tokensReceived = nonWSol.filter((x: any) => x.toUserAccount === fp);
+  // Don't filter out wSOL - we want to track SOL swaps too
+  const tokensSent = relevant.filter((x: any) => x.fromUserAccount === fp);
+  const tokensReceived = relevant.filter((x: any) => x.toUserAccount === fp);
   
   let type: 'buy' | 'sell' = 'buy';
   let tokenMint = '';
@@ -89,12 +124,14 @@ function detectTrade(tx: any, wallet: string): RawTrade | null {
     const inIsBase = BASE_MINTS.has(inToken.mint);
     const outIsBase = BASE_MINTS.has(outToken.mint);
     
-    // Skip stablecoin-to-stablecoin swaps (not a trade for PnL purposes)
+    // Base-to-base swaps (USDC→SOL, SOL→USDC, etc): treat as buy/sell for the output token
+    // This allows copying without PnL (both are base assets at $1 or SOL price)
     if (inIsBase && outIsBase) {
-      return null;
-    }
-    
-    if (inIsBase && !outIsBase) {
+      type = 'buy';  // Use 'buy' for DB compatibility, PnL handled separately
+      tokenMint = outToken.mint;
+      tokenAmount = outToken.tokenAmount;
+      baseAmount = getUsdValue(inToken.mint, inToken.tokenAmount);
+    } else if (inIsBase && !outIsBase) {
       type = 'buy';
       tokenMint = outToken.mint;
       tokenAmount = outToken.tokenAmount;
@@ -212,6 +249,300 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
   return { realizedPnl, avgCostBasis: avgCost };
 }
 
+// ============ COPY TRADE ENGINE ============
+// Canonical algorithm: Source-asset ratio sizing
+// Each TraderState has its own positions (like on-chain ATAs)
+const MIN_TRADE_THRESHOLD_USD = 0.10;
+
+async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
+  const starTrader = trade.wallet;
+  const sourceMint = trade.tokenInMint;
+  const destMint = trade.tokenOutMint;
+  
+  console.log(`[COPY] Star trader: ${starTrader.slice(0, 20)}... | Source: ${sourceMint?.slice(0,6)} → Dest: ${destMint?.slice(0,6)}`);
+  
+  if (!sourceMint || !destMint) {
+    console.log(`[COPY] Missing sourceMint or destMint, skipping`);
+    return;
+  }
+  
+  // 1. Find all trader states following this star trader
+  // Positions now belong to trader_state, not vault
+  const { data: followers, error: followersError } = await supabase
+    .from('demo_trader_states')
+    .select(`
+      *,
+      positions:demo_positions(*)
+    `)
+    .eq('star_trader', starTrader)
+    .eq('is_initialized', true)
+    .eq('is_paused', false);
+  
+  if (followersError) {
+    console.log(`[COPY] DB error fetching followers:`, followersError.message);
+    return;
+  }
+  
+  if (!followers || followers.length === 0) {
+    console.log(`[COPY] No initialized followers found for ${starTrader.slice(0, 20)}...`);
+    return; // No followers to copy trade for
+  }
+  
+  console.log(`[COPY] Found ${followers.length} trader state(s) following ${starTrader.slice(0, 8)}...`);
+  
+  for (const traderState of followers) {
+    const traderStateId = traderState.id;
+    const positions = traderState.positions || [];
+    
+    // 2. Get this trader state's balance of SOURCE asset
+    const sourcePosition = positions.find(
+      (p: any) => p.token_mint === sourceMint
+    );
+    const sourceBalance = Number(sourcePosition?.size || 0);
+    
+    if (sourceBalance <= 0) {
+      console.log(`  TS ${traderStateId.slice(0,8)}: No ${sourceMint.slice(0,6)} balance, skipping`);
+      continue;
+    }
+    
+    // 3. Compute leader's source-asset ratio
+    const leaderTradeAmount = trade.tokenInAmount;
+    const leaderBeforeBalance = leaderTradeAmount * 2; // Approximate
+    const tradeRatio = leaderTradeAmount / leaderBeforeBalance;
+    
+    // 4. Compute copy amount
+    let copyAmount = sourceBalance * tradeRatio;
+    copyAmount = Math.min(copyAmount, sourceBalance);
+    
+    const copyUsdValue = getUsdValue(sourceMint, copyAmount) || copyAmount;
+    
+    if (copyUsdValue < MIN_TRADE_THRESHOLD_USD) {
+      console.log(`  TS ${traderStateId.slice(0,8)}: Copy $${copyUsdValue.toFixed(2)} below threshold, skipping`);
+      continue;
+    }
+    
+    // 5. Get Jupiter QUOTE using correct API endpoint (api.jup.ag/swap/v1/quote)
+    try {
+      // Get input token decimals for correct amount conversion
+      const inputDecimals = await getTokenDecimals(sourceMint);
+      const rawInputAmount = Math.floor(copyAmount * Math.pow(10, inputDecimals));
+      
+      const quoteUrl = new URL('https://api.jup.ag/swap/v1/quote');
+      quoteUrl.searchParams.append('inputMint', sourceMint);
+      quoteUrl.searchParams.append('outputMint', destMint);
+      quoteUrl.searchParams.append('amount', rawInputAmount.toString());
+      quoteUrl.searchParams.append('slippageBps', '100');
+      
+      const quoteResponse = await fetch(quoteUrl.toString(), {
+        headers: {
+          'x-api-key': JUPITER_API_KEY || '',
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!quoteResponse.ok) {
+        console.log(`  TS ${traderStateId.slice(0,8)}: Jupiter quote failed with status ${quoteResponse.status}`);
+        continue;
+      }
+      
+      const quote = await quoteResponse.json();
+      // Use token-specific decimals for output amount (fetched from Jupiter Price API v3)
+      const outputDecimals = await getTokenDecimals(destMint);
+      const quoteOutAmount = Number(quote.outAmount || 0) / Math.pow(10, outputDecimals);
+      const priceImpact = Number(quote.priceImpactPct || 0);
+      
+      // 6. Store trade (IDEMPOTENT via trader_state_id + signature)
+      const copyTradeTimestamp = Date.now();
+      const latencyDiff = copyTradeTimestamp - (trade.timestamp * 1000);
+      
+      const { error: insertError } = await supabase.from('demo_trades').upsert({
+        trader_state_id: traderStateId,  // Linked to trader state, not vault
+        star_trade_signature: trade.signature,
+        type: trade.type,
+        token_in_mint: sourceMint,
+        token_in_symbol: getTokenSymbol(sourceMint),
+        token_in_amount: copyAmount,
+        token_out_mint: destMint,
+        token_out_symbol: getTokenSymbol(destMint),
+        token_out_amount: quoteOutAmount,
+        usd_value: copyUsdValue,
+        quote_in_amount: copyAmount,
+        quote_out_amount: quoteOutAmount,
+        price_impact: priceImpact,
+        star_trade_timestamp: trade.timestamp,
+        copy_trade_timestamp: Math.floor(copyTradeTimestamp / 1000),
+        latency_diff_ms: latencyDiff
+      }, { onConflict: 'trader_state_id,star_trade_signature', ignoreDuplicates: true });
+      
+      if (insertError) {
+        console.log(`  TS ${traderStateId.slice(0,8)}: Trade already processed or error`);
+        continue;
+      }
+      
+      // ================================================================
+      // 7. AUTHORITATIVE ACCOUNTING (per user spec)
+      // - Cost basis is stateful
+      // - PnL is derived (never stored as primary)
+      // - Realized PnL updates trader_state.realized_pnl_usd cumulatively
+      // ================================================================
+      
+      const isBuy = STABLECOIN_MINTS.has(sourceMint);  // USDC → Token
+      const isSell = STABLECOIN_MINTS.has(destMint);   // Token → USDC
+      
+      let realizedPnl: number | null = null;
+      
+      if (isBuy) {
+        // ============ BUY (USDC → TOKEN) ============
+        // amount += token_received
+        // cost_basis_usd += usd_spent
+        // avg_cost_usd = cost_basis_usd / amount
+        // ✔ No PnL generated on buy
+        
+        const usdSpent = copyAmount; // Source is stablecoin
+        const tokenReceived = quoteOutAmount;
+        
+        // Decrease source (stablecoin) position
+        await supabase.from('demo_positions').update({
+          size: sourceBalance - copyAmount,
+          cost_usd: sourceBalance - copyAmount, // For stablecoins, cost = size
+          avg_cost: 1,
+          updated_at: new Date().toISOString()
+        }).eq('trader_state_id', traderStateId).eq('token_mint', sourceMint);
+        
+        // Increase/create destination (token) position
+        const destPosition = positions.find((p: any) => p.token_mint === destMint);
+        const oldAmount = Number(destPosition?.size || 0);
+        const oldCostBasis = Number(destPosition?.cost_usd || 0);
+        
+        const newAmount = oldAmount + tokenReceived;
+        const newCostBasis = oldCostBasis + usdSpent;
+        const newAvgCost = newAmount > 0 ? newCostBasis / newAmount : 0;
+        
+        if (destPosition) {
+          await supabase.from('demo_positions').update({
+            size: newAmount,
+            cost_usd: newCostBasis,
+            avg_cost: newAvgCost,
+            updated_at: new Date().toISOString()
+          }).eq('trader_state_id', traderStateId).eq('token_mint', destMint);
+        } else {
+          await supabase.from('demo_positions').insert({
+            trader_state_id: traderStateId,
+            token_mint: destMint,
+            token_symbol: getTokenSymbol(destMint),
+            size: newAmount,
+            cost_usd: newCostBasis,
+            avg_cost: newAvgCost
+          });
+        }
+        
+      } else if (isSell) {
+        // ============ SELL (TOKEN → USDC) ============
+        // Step 1: Proportional cost removal
+        //   sell_ratio = token_sold / old_amount
+        //   cost_removed = cost_basis_usd * sell_ratio
+        // Step 2: Update position
+        //   amount -= token_sold
+        //   cost_basis_usd -= cost_removed
+        //   avg_cost_usd = amount > 0 ? cost_basis_usd / amount : 0
+        // Step 3: Realized PnL
+        //   realized_pnl = usd_received - cost_removed
+        //   trader_state.realized_pnl_usd += realized_pnl
+        
+        const tokenSold = copyAmount;
+        const usdReceived = quoteOutAmount;
+        
+        const oldAmount = sourceBalance;
+        const oldCostBasis = Number(sourcePosition.cost_usd) || 0;
+        
+        // Step 1: Proportional cost removal
+        const sellRatio = oldAmount > 0 ? tokenSold / oldAmount : 0;
+        const costRemoved = oldCostBasis * sellRatio;
+        
+        // Step 2: Update source (token) position
+        const remainingAmount = oldAmount - tokenSold;
+        const remainingCostBasis = oldCostBasis - costRemoved;
+        const newAvgCost = remainingAmount > 0 ? remainingCostBasis / remainingAmount : 0;
+        
+        await supabase.from('demo_positions').update({
+          size: remainingAmount,
+          cost_usd: remainingCostBasis,
+          avg_cost: newAvgCost,
+          updated_at: new Date().toISOString()
+        }).eq('trader_state_id', traderStateId).eq('token_mint', sourceMint);
+        
+        // Step 3: Calculate realized PnL
+        realizedPnl = usdReceived - costRemoved;
+        
+        // Update cumulative realized_pnl_usd on trader_state
+        const currentRealizedPnl = Number(traderState.realized_pnl_usd) || 0;
+        await supabase.from('demo_trader_states').update({
+          realized_pnl_usd: currentRealizedPnl + realizedPnl
+        }).eq('id', traderStateId);
+        
+        // Increase destination (stablecoin) position
+        const destPosition = positions.find((p: any) => p.token_mint === destMint);
+        if (destPosition) {
+          const newSize = Number(destPosition.size) + usdReceived;
+          await supabase.from('demo_positions').update({
+            size: newSize,
+            cost_usd: newSize, // For stablecoins, cost = size
+            avg_cost: 1,
+            updated_at: new Date().toISOString()
+          }).eq('trader_state_id', traderStateId).eq('token_mint', destMint);
+        } else {
+          await supabase.from('demo_positions').insert({
+            trader_state_id: traderStateId,
+            token_mint: destMint,
+            token_symbol: getTokenSymbol(destMint),
+            size: usdReceived,
+            cost_usd: usdReceived,
+            avg_cost: 1
+          });
+        }
+        
+      } else {
+        // Token → Token swap (rare case) - no proper cost tracking possible
+        console.log(`  TS ${traderStateId.slice(0,8)}: Token→Token swap, no USD cost tracking`);
+        
+        await supabase.from('demo_positions').update({
+          size: sourceBalance - copyAmount,
+          updated_at: new Date().toISOString()
+        }).eq('trader_state_id', traderStateId).eq('token_mint', sourceMint);
+        
+        const destPosition = positions.find((p: any) => p.token_mint === destMint);
+        if (destPosition) {
+          await supabase.from('demo_positions').update({
+            size: Number(destPosition.size) + quoteOutAmount,
+            updated_at: new Date().toISOString()
+          }).eq('trader_state_id', traderStateId).eq('token_mint', destMint);
+        } else {
+          await supabase.from('demo_positions').insert({
+            trader_state_id: traderStateId,
+            token_mint: destMint,
+            token_symbol: getTokenSymbol(destMint),
+            size: quoteOutAmount,
+            cost_usd: 0,
+            avg_cost: 0
+          });
+        }
+      }
+      
+      // Update trade with realized PnL for record (derived, for display only)
+      if (realizedPnl !== null) {
+        await supabase.from('demo_trades').update({
+          realized_pnl: realizedPnl
+        }).eq('trader_state_id', traderStateId).eq('star_trade_signature', trade.signature);
+      }
+      
+      console.log(`  TS ${traderStateId.slice(0,8)}: Copied ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} → ${quoteOutAmount.toFixed(4)} ${getTokenSymbol(destMint)} | PnL: ${realizedPnl !== null ? '$' + realizedPnl.toFixed(2) : 'N/A'} | Latency: ${latencyDiff}ms`);
+      
+    } catch (quoteError) {
+      console.error(`  TS ${traderStateId.slice(0,8)}: Quote error`, quoteError);
+    }
+  }
+}
+
 export async function POST(request: NextRequest) {
   const receivedAt = Date.now();
   
@@ -270,6 +601,18 @@ export async function POST(request: NextRequest) {
       if (!error) {
         inserted++;
         console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0,8)}... | Latency: ${latencyMs}ms`);
+        
+        // COPY TRADE ENGINE: Execute copy trades FIRST
+        await executeCopyTrades(trade, receivedAt);
+        
+        // Auto-add new wallet to star_traders table (ignore if already exists)
+        await supabase.from('star_traders').upsert({
+          address: trade.wallet,  // Use 'address' column
+          name: `Trader ${trade.wallet.slice(0, 6)}`,
+          created_at: new Date().toISOString()
+        }, { onConflict: 'address', ignoreDuplicates: true });
+      } else {
+        console.log(`Trade insert error for ${trade.signature}:`, error.message);
       }
     }
     

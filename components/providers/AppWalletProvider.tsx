@@ -15,17 +15,21 @@ import {
 // Default styles that can be overridden by your app
 import "@solana/wallet-adapter-react-ui/styles.css";
 
+// IDENTITY-ONLY: Wallet adapter used for reading publicKey only
+// No signing, no transactions - demo vault is fully database-backed
+
 export default function AppWalletProvider({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const network = WalletAdapterNetwork.Devnet;
-  const endpoint = "http://127.0.0.1:8899"; // Localnet for verification
+  // Use Helius mainnet for wallet connection (identity-only)
+  const endpoint = process.env.NEXT_PUBLIC_HELIUS_RPC_URL || 
+    "https://mainnet.helius-rpc.com/?api-key=demo";
 
   const wallets = useMemo(
     () => [new PhantomWalletAdapter(), new SolflareWalletAdapter()],
-    [network]
+    []
   );
 
   return (
