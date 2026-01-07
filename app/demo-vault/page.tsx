@@ -1,0 +1,446 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { COLORS } from '@/lib/theme';
+import { 
+  Wallet, 
+  TrendingUp, 
+  RefreshCw, 
+  Plus,
+  Trash2,
+  Clock,
+  AlertCircle,
+  CheckCircle,
+  Pause,
+  StopCircle,
+  ArrowRight,
+  DollarSign
+} from 'lucide-react';
+
+interface Position {
+  token_mint: string;
+  token_symbol: string;
+  size: number;
+  cost_usd: number;
+}
+
+interface TraderState {
+  id: string;
+  star_trader: string;
+  allocated_usd: number;
+  is_syncing: boolean;
+  is_initialized: boolean;
+  is_paused: boolean;
+  is_settled: boolean;
+  positions: Position[];
+  totalValue: number;
+  positionCount: number;
+}
+
+interface DemoVault {
+  id: string;
+  user_wallet: string;
+  balance_usd: number;
+}
+
+function formatUsd(amount: number): string {
+  if (amount >= 1000000) return '$' + (amount / 1000000).toFixed(2) + 'M';
+  if (amount >= 1000) return '$' + (amount / 1000).toFixed(2) + 'K';
+  return '$' + amount.toFixed(2);
+}
+
+export default function DemoVaultPage() {
+  const { publicKey, connected } = useWallet();
+  const [vault, setVault] = useState<DemoVault | null>(null);
+  const [traderStates, setTraderStates] = useState<TraderState[]>([]);
+  const [starTraders, setStarTraders] = useState<{ address: string; name: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [deploying, setDeploying] = useState(false);
+  const [following, setFollowing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showFollowModal, setShowFollowModal] = useState(false);
+  const [selectedTrader, setSelectedTrader] = useState<string | null>(null);
+  const [allocationUsd, setAllocationUsd] = useState(500);
+  
+  const walletAddress = publicKey?.toBase58() || null;
+  
+  const fetchVault = useCallback(async () => {
+    if (!walletAddress) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/demo-vault?wallet=${walletAddress}`);
+      const data = await response.json();
+      
+      if (data.exists) {
+        setVault(data.vault);
+        setTraderStates(data.traderStates || []);
+      } else {
+        setVault(null);
+        setTraderStates([]);
+      }
+    } catch {
+      setError('Failed to fetch vault');
+    } finally {
+      setLoading(false);
+    }
+  }, [walletAddress]);
+  
+  const fetchStarTraders = useCallback(async () => {
+    try {
+      const response = await fetch('/api/star-traders');
+      const data = await response.json();
+      setStarTraders((data.traders || []).map((t: any) => ({ address: t.wallet, name: t.name })));
+    } catch {
+      console.error('Failed to fetch star traders');
+    }
+  }, []);
+  
+  useEffect(() => {
+    if (connected && walletAddress) {
+      fetchVault();
+      fetchStarTraders();
+    }
+  }, [connected, walletAddress, fetchVault, fetchStarTraders]);
+  
+  const deployVault = async () => {
+    if (!walletAddress) return;
+    
+    setDeploying(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('/api/demo-vault', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wallet: walletAddress })
+      });
+      
+      const data = await response.json();
+      
+      if (data.error) {
+        setError(data.error);
+      } else {
+        await fetchVault();
+      }
+    } catch {
+      setError('Failed to deploy vault');
+    } finally {
+      setDeploying(false);
+    }
+  };
+  
+  const followTrader = async () => {
+    if (!walletAddress || !selectedTrader) return;
+    
+    setFollowing(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('/api/demo-vault/follow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          wallet: walletAddress, 
+          starTrader: selectedTrader,
+          allocationUsd
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (data.error) {
+        setError(data.error);
+      } else {
+        setShowFollowModal(false);
+        setSelectedTrader(null);
+        await fetchVault();
+      }
+    } catch {
+      setError('Failed to create trader state');
+    } finally {
+      setFollowing(false);
+    }
+  };
+  
+  const deleteVault = async () => {
+    if (!walletAddress || !confirm('Delete entire demo vault?')) return;
+    
+    try {
+      await fetch(`/api/demo-vault?wallet=${walletAddress}`, { method: 'DELETE' });
+      setVault(null);
+      setTraderStates([]);
+    } catch {
+      setError('Failed to delete vault');
+    }
+  };
+  
+  // Calculate totals
+  const unallocated = Number(vault?.balance_usd || 0);
+  const totalAllocated = traderStates.reduce((sum, ts) => sum + Number(ts.allocated_usd || 0), 0);
+  const totalValue = traderStates.reduce((sum, ts) => sum + Number(ts.totalValue || 0), 0);
+  const totalPnl = totalValue - totalAllocated;
+  
+  return (
+    <div className="min-h-screen font-sans" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
+      <main className="max-w-6xl mx-auto px-6 py-12">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${COLORS.brand}20` }}>
+              <Wallet size={24} style={{ color: COLORS.brand }} />
+            </div>
+            <div>
+              <h1 className="text-2xl font-semibold" style={{ color: COLORS.text }}>Demo Vault</h1>
+              <p className="text-sm" style={{ color: COLORS.data }}>Simulated copy trading (no real funds)</p>
+            </div>
+          </div>
+          <WalletMultiButton />
+        </div>
+        
+        {/* Not Connected */}
+        {!connected && (
+          <div className="border p-12 text-center" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+            <Wallet size={48} className="mx-auto mb-4 opacity-50" />
+            <h2 className="text-xl font-medium mb-2">Connect Your Wallet</h2>
+            <p className="text-sm mb-6" style={{ color: COLORS.data }}>Connect to create a demo vault with $1,000 virtual USD</p>
+            <WalletMultiButton />
+          </div>
+        )}
+        
+        {/* No Vault */}
+        {connected && !vault && !loading && (
+          <div className="border p-12 text-center" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+            <TrendingUp size={48} className="mx-auto mb-4" style={{ color: COLORS.brand }} />
+            <h2 className="text-xl font-medium mb-2">Deploy Demo Vault</h2>
+            <p className="text-sm mb-6" style={{ color: COLORS.data }}>Start with $1,000 virtual USD</p>
+            <button
+              onClick={deployVault}
+              disabled={deploying}
+              className="px-6 py-3 font-medium transition-opacity hover:opacity-90 disabled:opacity-50"
+              style={{ backgroundColor: COLORS.brand, color: '#000' }}
+            >
+              {deploying ? 'Deploying...' : 'Deploy Vault ($1,000 USD)'}
+            </button>
+          </div>
+        )}
+        
+        {/* Loading */}
+        {loading && (
+          <div className="flex items-center justify-center py-16">
+            <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
+          </div>
+        )}
+        
+        {/* Error */}
+        {error && (
+          <div className="border p-4 mb-6 flex items-center gap-3" style={{ borderColor: '#EF4444', color: '#EF4444' }}>
+            <AlertCircle size={20} />
+            {error}
+            <button onClick={() => setError(null)} className="ml-auto">×</button>
+          </div>
+        )}
+        
+        {/* Vault Dashboard */}
+        {connected && vault && (
+          <>
+            {/* Stats */}
+            <div className="grid grid-cols-5 gap-4 mb-8">
+              <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+                <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Unallocated</div>
+                <div className="text-xl font-semibold" style={{ color: COLORS.text }}>{formatUsd(unallocated)}</div>
+              </div>
+              <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+                <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Allocated</div>
+                <div className="text-xl font-semibold" style={{ color: COLORS.brand }}>{formatUsd(totalAllocated)}</div>
+              </div>
+              <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+                <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Total Value</div>
+                <div className="text-xl font-semibold" style={{ color: COLORS.brand }}>{formatUsd(totalValue + unallocated)}</div>
+              </div>
+              <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+                <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>PnL</div>
+                <div className="text-xl font-semibold" style={{ color: totalPnl >= 0 ? '#10B981' : '#EF4444' }}>
+                  {totalPnl >= 0 ? '+' : ''}{formatUsd(totalPnl)}
+                </div>
+              </div>
+              <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+                <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Trader States</div>
+                <div className="text-xl font-semibold" style={{ color: COLORS.text }}>{traderStates.length}</div>
+              </div>
+            </div>
+            
+            {/* Actions */}
+            <div className="flex gap-3 mb-8">
+              <button
+                onClick={() => { setShowFollowModal(true); setAllocationUsd(Math.min(500, unallocated)); }}
+                disabled={unallocated < 10}
+                className="px-4 py-2 text-sm font-medium flex items-center gap-2 transition-opacity hover:opacity-90 disabled:opacity-50"
+                style={{ backgroundColor: COLORS.brand, color: '#000' }}
+              >
+                <Plus size={16} /> Create Trader State
+              </button>
+              <button
+                onClick={fetchVault}
+                className="px-4 py-2 text-sm font-medium flex items-center gap-2 border transition-opacity hover:opacity-90"
+                style={{ borderColor: COLORS.structure, color: COLORS.text }}
+              >
+                <RefreshCw size={16} /> Refresh
+              </button>
+              <button
+                onClick={deleteVault}
+                className="px-4 py-2 text-sm font-medium flex items-center gap-2 border transition-opacity hover:opacity-90 ml-auto"
+                style={{ borderColor: '#EF4444', color: '#EF4444' }}
+              >
+                <Trash2 size={16} /> Delete Vault
+              </button>
+            </div>
+            
+            {/* Trader States List */}
+            <div className="border overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+              <div className="px-6 py-4 border-b" style={{ borderColor: COLORS.structure }}>
+                <h2 className="font-medium" style={{ color: COLORS.text }}>Trader States</h2>
+                <p className="text-xs" style={{ color: COLORS.data }}>Each state follows a different star trader with isolated funds</p>
+              </div>
+              
+              <div className="grid grid-cols-7 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
+                <div>Star Trader</div>
+                <div>Allocated</div>
+                <div>Current Value</div>
+                <div>PnL</div>
+                <div>Positions</div>
+                <div>Status</div>
+                <div>Actions</div>
+              </div>
+              
+              {traderStates.length === 0 ? (
+                <div className="text-center py-12" style={{ color: COLORS.data }}>
+                  No trader states. Create one to start copy trading.
+                </div>
+              ) : (
+                traderStates.map(ts => {
+                  const pnl = ts.totalValue - Number(ts.allocated_usd);
+                  const pnlPercent = ts.allocated_usd > 0 ? (pnl / ts.allocated_usd) * 100 : 0;
+                  
+                  return (
+                    <Link 
+                      key={ts.id} 
+                      href={`/demo-vault/${ts.id}`}
+                      className="grid grid-cols-7 gap-4 items-center px-6 py-4 hover:bg-white/[0.02] transition-colors border-b cursor-pointer"
+                      style={{ borderColor: COLORS.structure }}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold" style={{ backgroundColor: COLORS.structure, color: COLORS.text }}>
+                          {ts.star_trader.charAt(0)}
+                        </div>
+                        <div>
+                          <div className="font-mono text-sm" style={{ color: COLORS.text }}>
+                            {ts.star_trader.slice(0, 8)}...
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ color: COLORS.text }}>{formatUsd(ts.allocated_usd)}</div>
+                      <div style={{ color: COLORS.brand }} className="font-medium">{formatUsd(ts.totalValue)}</div>
+                      <div style={{ color: pnl >= 0 ? '#10B981' : '#EF4444' }} className="font-medium">
+                        {pnl >= 0 ? '+' : ''}{formatUsd(pnl)} ({pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(1)}%)
+                      </div>
+                      <div style={{ color: COLORS.text }}>{ts.positionCount}</div>
+                      <div>
+                        {ts.is_settled ? (
+                          <span className="text-xs text-gray-400 flex items-center gap-1"><StopCircle size={12} /> Settled</span>
+                        ) : ts.is_paused ? (
+                          <span className="text-xs text-yellow-400 flex items-center gap-1"><Pause size={12} /> Paused</span>
+                        ) : ts.is_initialized ? (
+                          <span className="text-xs text-green-400 flex items-center gap-1"><CheckCircle size={12} /> Active</span>
+                        ) : ts.is_syncing ? (
+                          <span className="text-xs text-blue-400 flex items-center gap-1"><RefreshCw size={12} className="animate-spin" /> Syncing</span>
+                        ) : (
+                          <span className="text-xs text-orange-400 flex items-center gap-1"><Clock size={12} /> Uninitialized</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1" style={{ color: COLORS.brand }}>
+                        View <ArrowRight size={14} />
+                      </div>
+                    </Link>
+                  );
+                })
+              )}
+            </div>
+          </>
+        )}
+        
+        {/* Create Trader State Modal */}
+        {showFollowModal && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+            <div className="w-full max-w-md p-6 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+              <h2 className="text-xl font-medium mb-2" style={{ color: COLORS.text }}>Create Trader State</h2>
+              <p className="text-sm mb-4" style={{ color: COLORS.data }}>
+                Allocate USD to follow a star trader. Each state has isolated funds.
+              </p>
+              
+              <div className="mb-4">
+                <label className="block text-sm mb-2" style={{ color: COLORS.data }}>Star Trader</label>
+                <select
+                  value={selectedTrader || ''}
+                  onChange={(e) => setSelectedTrader(e.target.value)}
+                  className="w-full p-3 border rounded"
+                  style={{ backgroundColor: COLORS.canvas, borderColor: COLORS.structure, color: COLORS.text }}
+                >
+                  <option value="">Select trader...</option>
+                  {starTraders
+                    .filter(t => !traderStates.some(ts => ts.star_trader === t.address))
+                    .map(t => (
+                      <option key={t.address} value={t.address}>{t.name} ({t.address.slice(0, 8)}...)</option>
+                    ))}
+                </select>
+              </div>
+              
+              <div className="mb-6">
+                <label className="block text-sm mb-2" style={{ color: COLORS.data }}>Allocation (USD)</label>
+                <div className="flex items-center gap-2">
+                  <DollarSign size={16} style={{ color: COLORS.text }} />
+                  <input
+                    type="number"
+                    min="10"
+                    max={unallocated}
+                    step="10"
+                    value={allocationUsd}
+                    onChange={(e) => setAllocationUsd(Math.min(Number(e.target.value), unallocated))}
+                    className="flex-1 p-3 border rounded"
+                    style={{ backgroundColor: COLORS.canvas, borderColor: COLORS.structure, color: COLORS.text }}
+                  />
+                </div>
+                <p className="text-xs mt-1" style={{ color: COLORS.data }}>
+                  Available: {formatUsd(unallocated)} • Min: $10
+                </p>
+              </div>
+              
+              <div className="flex gap-3">
+                <button
+                  onClick={followTrader}
+                  disabled={!selectedTrader || following || allocationUsd > unallocated || allocationUsd < 10}
+                  className="flex-1 py-3 font-medium transition-opacity hover:opacity-90 disabled:opacity-50"
+                  style={{ backgroundColor: COLORS.brand, color: '#000' }}
+                >
+                  {following ? 'Creating...' : `Allocate ${formatUsd(allocationUsd)}`}
+                </button>
+                <button
+                  onClick={() => { setShowFollowModal(false); setSelectedTrader(null); }}
+                  className="px-6 py-3 border transition-opacity hover:opacity-90"
+                  style={{ borderColor: COLORS.structure, color: COLORS.text }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
