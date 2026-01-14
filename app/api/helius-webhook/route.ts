@@ -314,16 +314,8 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
     let copyAmount = sourceBalance * tradeRatio;
     copyAmount = Math.min(copyAmount, sourceBalance);
     
-    const copyUsdValue = getUsdValue(sourceMint, copyAmount) || copyAmount;
-    
-    if (copyUsdValue < MIN_TRADE_THRESHOLD_USD) {
-      console.log(`  TS ${traderStateId.slice(0,8)}: Copy $${copyUsdValue.toFixed(2)} below threshold, skipping`);
-      continue;
-    }
-    
-    // 5. Get Jupiter QUOTE using correct API endpoint (api.jup.ag/swap/v1/quote)
+    // 5. Get Jupiter QUOTE
     try {
-      // Get input token decimals for correct amount conversion
       const inputDecimals = await getTokenDecimals(sourceMint);
       const rawInputAmount = Math.floor(copyAmount * Math.pow(10, inputDecimals));
       
@@ -346,11 +338,54 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
       }
       
       const quote = await quoteResponse.json();
-      // Use token-specific decimals for output amount (fetched from Jupiter Price API v3)
+      
+      if (!quote.outAmount) {
+         console.error(`  TS ${traderStateId.slice(0,8)}: No quote output amount found`);
+         continue;
+      }
+
+      // Use token-specific decimals for output amount
       const outputDecimals = await getTokenDecimals(destMint);
       const quoteOutAmount = Number(quote.outAmount || 0) / Math.pow(10, outputDecimals);
       const priceImpact = Number(quote.priceImpactPct || 0);
+
+      // ============ FIX: ROBUST BUY/SELL DETECTION ============
+      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      const isStableSource = STABLECOIN_MINTS.has(sourceMint);
+      const isSolSource = sourceMint === SOL_MINT || sourceMint === WSOL;
       
+      const isStableDest = STABLECOIN_MINTS.has(destMint);
+      const isSolDest = destMint === SOL_MINT || destMint === WSOL;
+
+      // Buy = Spending "Money" (SOL or USDC) to get "Tokens"
+      const isBuy = isStableSource || isSolSource;
+      
+      // Sell = Spending "Tokens" to get "Money" (SOL or USDC)
+      const isSell = isStableDest || isSolDest;
+
+      // ============ FIX: ACCURATE USD VALUE CALCULATION ============
+      // We must calculate value based on the "Money" side of the trade, not the volatile token side.
+      let tradeUsdValue = 0;
+
+      if (isSell) {
+        // We received SOL or USDC. Calculate value from the OUTPUT.
+        // getUsdValue MUST handle SOL conversion (Amount * SolPrice)
+        tradeUsdValue = getUsdValue(destMint, quoteOutAmount);
+      } else if (isBuy) {
+        // We spent SOL or USDC. Calculate value from the INPUT.
+        tradeUsdValue = getUsdValue(sourceMint, copyAmount);
+      } else {
+        // Token -> Token swap. Try to value the output if it's a known token, otherwise 0
+        // (This matches getUsdValue logic which handles stable/SOL, returns 0 otherwise)
+        tradeUsdValue = getUsdValue(destMint, quoteOutAmount);
+      }
+
+      // Safety check for threshold
+      if (tradeUsdValue < MIN_TRADE_THRESHOLD_USD) {
+         console.log(`  TS ${traderStateId.slice(0,8)}: Trade value $${tradeUsdValue.toFixed(2)} below threshold, skipping`);
+         continue;
+      }
+
       // 6. Store trade (IDEMPOTENT via trader_state_id + signature)
       const copyTradeTimestamp = Date.now();
       const latencyDiff = copyTradeTimestamp - (trade.timestamp * 1000);
@@ -365,7 +400,7 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         token_out_mint: destMint,
         token_out_symbol: getTokenSymbol(destMint),
         token_out_amount: quoteOutAmount,
-        usd_value: copyUsdValue,
+        usd_value: tradeUsdValue,
         quote_in_amount: copyAmount,
         quote_out_amount: quoteOutAmount,
         price_impact: priceImpact,
@@ -386,26 +421,23 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
       // - Realized PnL updates trader_state.realized_pnl_usd cumulatively
       // ================================================================
       
-      const isBuy = STABLECOIN_MINTS.has(sourceMint);  // USDC → Token
-      const isSell = STABLECOIN_MINTS.has(destMint);   // Token → USDC
-      
       let realizedPnl: number | null = null;
       
       if (isBuy) {
-        // ============ BUY (USDC → TOKEN) ============
+        // ============ BUY (USDC/SOL → TOKEN) ============
         // amount += token_received
         // cost_basis_usd += usd_spent
         // avg_cost_usd = cost_basis_usd / amount
         // ✔ No PnL generated on buy
         
-        const usdSpent = copyAmount; // Source is stablecoin
+        const usdSpent = tradeUsdValue; // Source is stablecoin/SOL -> calculated USD value
         const tokenReceived = quoteOutAmount;
         
-        // Decrease source (stablecoin) position
+        // Decrease source (stablecoin/SOL) position
         await supabase.from('demo_positions').update({
           size: sourceBalance - copyAmount,
-          cost_usd: sourceBalance - copyAmount, // For stablecoins, cost = size
-          avg_cost: 1,
+          cost_usd: getUsdValue(sourceMint, sourceBalance - copyAmount), // Re-calc cost based on new size
+          avg_cost: isSolSource ? SOL_PRICE_USD : 1, // Reset avg cost for money assets
           updated_at: new Date().toISOString()
         }).eq('trader_state_id', traderStateId).eq('token_mint', sourceMint);
         
