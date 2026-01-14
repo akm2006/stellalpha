@@ -160,13 +160,17 @@ export default function TraderDetailPage() {
     try {
       const response = await fetch(`/api/tokens?mints=${mints.join(',')}`);
       const data = await response.json();
-      if (data.tokens) {
-        data.tokens['SOL'] = {
-          symbol: 'SOL',
-          name: 'Solana',
-          logoURI: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png'
-        };
-        setTokenMeta(prev => ({ ...prev, ...data.tokens }));
+      if (data) {
+        // Ensure SOL is present if needed (though API might return it)
+        if (!data['SOL']) {
+          data['SOL'] = {
+            symbol: 'SOL',
+            name: 'Solana',
+            logoURI: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png',
+            decimals: 9 // Add missing decimals property to match TokenMeta
+          };
+        }
+        setTokenMeta(prev => ({ ...prev, ...data }));
       }
     } catch (err) {
       console.error('Failed to fetch token metadata:', err);
