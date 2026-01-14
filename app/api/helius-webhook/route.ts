@@ -80,6 +80,7 @@ interface RawTrade {
   baseAmount: number;
   tokenInMint: string;
   tokenInAmount: number;
+  tokenInPreBalance: number;  // NEW: Leader's pre-trade balance for ratio calculation
   tokenOutMint: string;
   tokenOutAmount: number;
   timestamp: number;
@@ -188,6 +189,9 @@ function detectTrade(tx: any, wallet: string): RawTrade | null {
     baseAmount,
     tokenInMint,
     tokenInAmount,
+    tokenInPreBalance: tokensSent.length > 0 
+      ? Number(tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b).preTokenBalance || 0)
+      : 0,
     tokenOutMint,
     tokenOutAmount,
     timestamp: tx.timestamp,
@@ -258,16 +262,16 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
   const starTrader = trade.wallet;
   const sourceMint = trade.tokenInMint;
   const destMint = trade.tokenOutMint;
-  
+  const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
   console.log(`[COPY] Star trader: ${starTrader.slice(0, 20)}... | Source: ${sourceMint?.slice(0,6)} → Dest: ${destMint?.slice(0,6)}`);
-  
+
   if (!sourceMint || !destMint) {
     console.log(`[COPY] Missing sourceMint or destMint, skipping`);
     return;
   }
-  
+
   // 1. Find all trader states following this star trader
-  // Positions now belong to trader_state, not vault
   const { data: followers, error: followersError } = await supabase
     .from('demo_trader_states')
     .select(`
@@ -277,121 +281,128 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
     .eq('star_trader', starTrader)
     .eq('is_initialized', true)
     .eq('is_paused', false);
-  
+
   if (followersError) {
     console.log(`[COPY] DB error fetching followers:`, followersError.message);
     return;
   }
-  
+
   if (!followers || followers.length === 0) {
     console.log(`[COPY] No initialized followers found for ${starTrader.slice(0, 20)}...`);
-    return; // No followers to copy trade for
+    return;
   }
-  
+
   console.log(`[COPY] Found ${followers.length} trader state(s) following ${starTrader.slice(0, 8)}...`);
-  
+
   for (const traderState of followers) {
     const traderStateId = traderState.id;
     const positions = traderState.positions || [];
-    
+
     // 2. Get this trader state's balance of SOURCE asset
-    const sourcePosition = positions.find(
-      (p: any) => p.token_mint === sourceMint
-    );
+    const sourcePosition = positions.find((p: any) => p.token_mint === sourceMint);
     const sourceBalance = Number(sourcePosition?.size || 0);
-    
+
     if (sourceBalance <= 0) {
       console.log(`  TS ${traderStateId.slice(0,8)}: No ${sourceMint.slice(0,6)} balance, skipping`);
       continue;
     }
-    
-    // 3. Compute leader's source-asset ratio
+
+    // ============ FIX 1: DYNAMIC RATIO CALCULATION ============
     const leaderTradeAmount = trade.tokenInAmount;
-    const leaderBeforeBalance = leaderTradeAmount * 2; // Approximate
-    const tradeRatio = leaderTradeAmount / leaderBeforeBalance;
     
-    // 4. Compute copy amount
+    // Use pre-balance from webhook if available, fallback to "Trade is 100% of bag" (safer)
+    const leaderBeforeBalance = trade.tokenInPreBalance && trade.tokenInPreBalance > 0 
+        ? trade.tokenInPreBalance 
+        : leaderTradeAmount;
+    
+    // Calculate Ratio (Clamp to 0-1 range)
+    let tradeRatio = leaderBeforeBalance > 0 ? leaderTradeAmount / leaderBeforeBalance : 1;
+    tradeRatio = Math.min(Math.max(tradeRatio, 0), 1);
+
+    console.log(`  TS ${traderStateId.slice(0,8)}: Ratio=${(tradeRatio*100).toFixed(1)}% (Leader: ${leaderTradeAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)})`);
+
+    // Apply Ratio to Our Balance
     let copyAmount = sourceBalance * tradeRatio;
     copyAmount = Math.min(copyAmount, sourceBalance);
-    
-    // 5. Get Jupiter QUOTE
+
+    if (copyAmount <= 0) {
+      console.log(`  TS ${traderStateId.slice(0,8)}: Copy amount 0, skipping`);
+      continue;
+    }
+
+    // ============ FIX 2: JUPITER QUOTE ============
     try {
-      const inputDecimals = await getTokenDecimals(sourceMint);
-      const rawInputAmount = Math.floor(copyAmount * Math.pow(10, inputDecimals));
-      
+      const sourceDecimals = await getTokenDecimals(sourceMint);
+      const destDecimals = await getTokenDecimals(destMint);
+      const rawInputAmount = Math.floor(copyAmount * Math.pow(10, sourceDecimals));
+
       const quoteUrl = new URL('https://api.jup.ag/swap/v1/quote');
       quoteUrl.searchParams.append('inputMint', sourceMint);
       quoteUrl.searchParams.append('outputMint', destMint);
       quoteUrl.searchParams.append('amount', rawInputAmount.toString());
       quoteUrl.searchParams.append('slippageBps', '100');
-      
+
       const quoteResponse = await fetch(quoteUrl.toString(), {
         headers: {
           'x-api-key': JUPITER_API_KEY || '',
           'Content-Type': 'application/json'
         }
       });
-      
+
       if (!quoteResponse.ok) {
         console.log(`  TS ${traderStateId.slice(0,8)}: Jupiter quote failed with status ${quoteResponse.status}`);
         continue;
       }
-      
+
       const quote = await quoteResponse.json();
-      
+
       if (!quote.outAmount) {
-         console.error(`  TS ${traderStateId.slice(0,8)}: No quote output amount found`);
-         continue;
+        console.error(`  TS ${traderStateId.slice(0,8)}: No quote output amount found`);
+        continue;
       }
 
-      // Use token-specific decimals for output amount
-      const outputDecimals = await getTokenDecimals(destMint);
-      const quoteOutAmount = Number(quote.outAmount || 0) / Math.pow(10, outputDecimals);
+      const quoteOutAmount = Number(quote.outAmount) / Math.pow(10, destDecimals);
       const priceImpact = Number(quote.priceImpactPct || 0);
 
-      // ============ FIX: ROBUST BUY/SELL DETECTION ============
-      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      // ============ FIX 3: ROBUST BUY/SELL DETECTION ============
       const isStableSource = STABLECOIN_MINTS.has(sourceMint);
       const isSolSource = sourceMint === SOL_MINT || sourceMint === WSOL;
       
       const isStableDest = STABLECOIN_MINTS.has(destMint);
       const isSolDest = destMint === SOL_MINT || destMint === WSOL;
 
-      // Buy = Spending "Money" (SOL or USDC) to get "Tokens"
+      // Buy = Spending Money (SOL/USDC) to get Tokens
       const isBuy = isStableSource || isSolSource;
       
-      // Sell = Spending "Tokens" to get "Money" (SOL or USDC)
+      // Sell = Spending Tokens to get Money (SOL/USDC)
       const isSell = isStableDest || isSolDest;
 
-      // ============ FIX: ACCURATE USD VALUE CALCULATION ============
-      // We must calculate value based on the "Money" side of the trade, not the volatile token side.
+      // ============ FIX 4: ACCURATE USD VALUE CALCULATION ============
       let tradeUsdValue = 0;
 
       if (isSell) {
-        // We received SOL or USDC. Calculate value from the OUTPUT.
-        // getUsdValue MUST handle SOL conversion (Amount * SolPrice)
+        // We Recv Money. Value = OUTPUT (SOL/USDC)
         tradeUsdValue = getUsdValue(destMint, quoteOutAmount);
       } else if (isBuy) {
-        // We spent SOL or USDC. Calculate value from the INPUT.
+        // We Spend Money. Value = INPUT (SOL/USDC)
         tradeUsdValue = getUsdValue(sourceMint, copyAmount);
       } else {
-        // Token -> Token swap. Try to value the output if it's a known token, otherwise 0
-        // (This matches getUsdValue logic which handles stable/SOL, returns 0 otherwise)
+        // Token->Token: try to value the output
         tradeUsdValue = getUsdValue(destMint, quoteOutAmount);
       }
 
-      // Safety check for threshold
-      if (tradeUsdValue < MIN_TRADE_THRESHOLD_USD) {
-         console.log(`  TS ${traderStateId.slice(0,8)}: Trade value $${tradeUsdValue.toFixed(2)} below threshold, skipping`);
-         continue;
+      // Sanity Check
+      if (!tradeUsdValue || isNaN(tradeUsdValue) || tradeUsdValue < MIN_TRADE_THRESHOLD_USD) {
+        console.log(`  TS ${traderStateId.slice(0,8)}: Trade value $${tradeUsdValue?.toFixed(2) || 0} below threshold or invalid, skipping`);
+        continue;
       }
 
-      // 6. Store trade (IDEMPOTENT via trader_state_id + signature)
+      // ============ INSERT TRADE RECORD ============
       const copyTradeTimestamp = Date.now();
       const latencyDiff = copyTradeTimestamp - (trade.timestamp * 1000);
-      
+
       const { error: insertError } = await supabase.from('demo_trades').upsert({
-        trader_state_id: traderStateId,  // Linked to trader state, not vault
+        trader_state_id: traderStateId,
         star_trade_signature: trade.signature,
         type: trade.type,
         token_in_mint: sourceMint,
@@ -408,48 +419,37 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         copy_trade_timestamp: Math.floor(copyTradeTimestamp / 1000),
         latency_diff_ms: latencyDiff
       }, { onConflict: 'trader_state_id,star_trade_signature', ignoreDuplicates: true });
-      
+
       if (insertError) {
         console.log(`  TS ${traderStateId.slice(0,8)}: Trade already processed or error`);
         continue;
       }
-      
-      // ================================================================
-      // 7. AUTHORITATIVE ACCOUNTING (per user spec)
-      // - Cost basis is stateful
-      // - PnL is derived (never stored as primary)
-      // - Realized PnL updates trader_state.realized_pnl_usd cumulatively
-      // ================================================================
-      
+
+      // ============ POSITION & PNL UPDATES ============
       let realizedPnl: number | null = null;
-      
+
       if (isBuy) {
-        // ============ BUY (USDC/SOL → TOKEN) ============
-        // amount += token_received
-        // cost_basis_usd += usd_spent
-        // avg_cost_usd = cost_basis_usd / amount
-        // ✔ No PnL generated on buy
-        
-        const usdSpent = tradeUsdValue; // Source is stablecoin/SOL -> calculated USD value
+        // ============ BUY LOGIC (Weighted Average Cost) ============
+        const usdSpent = tradeUsdValue;
         const tokenReceived = quoteOutAmount;
-        
+
         // Decrease source (stablecoin/SOL) position
         await supabase.from('demo_positions').update({
           size: sourceBalance - copyAmount,
-          cost_usd: getUsdValue(sourceMint, sourceBalance - copyAmount), // Re-calc cost based on new size
-          avg_cost: isSolSource ? SOL_PRICE_USD : 1, // Reset avg cost for money assets
+          cost_usd: getUsdValue(sourceMint, sourceBalance - copyAmount),
+          avg_cost: isSolSource ? SOL_PRICE_USD : 1,
           updated_at: new Date().toISOString()
         }).eq('trader_state_id', traderStateId).eq('token_mint', sourceMint);
-        
+
         // Increase/create destination (token) position
         const destPosition = positions.find((p: any) => p.token_mint === destMint);
         const oldAmount = Number(destPosition?.size || 0);
         const oldCostBasis = Number(destPosition?.cost_usd || 0);
-        
+
         const newAmount = oldAmount + tokenReceived;
         const newCostBasis = oldCostBasis + usdSpent;
         const newAvgCost = newAmount > 0 ? newCostBasis / newAmount : 0;
-        
+
         if (destPosition) {
           await supabase.from('demo_positions').update({
             size: newAmount,
@@ -467,54 +467,43 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
             avg_cost: newAvgCost
           });
         }
-        
+
       } else if (isSell) {
-        // ============ SELL (TOKEN → USDC) ============
-        // Step 1: Use existing Average Cost to determine cost of sold tokens
-        const tokenSold = copyAmount;
-        const usdReceived = quoteOutAmount;
+        // ============ SELL LOGIC (Realize PnL - WAC Method) ============
+        // FIX 5: Use tradeUsdValue (correct USD), not quoteOutAmount (raw SOL)
+        const usdReceived = tradeUsdValue;
         
-        const oldAmount = Number(sourcePosition.size) || 0;
-        // FIX: Use avg_cost for calculations to match Star Trader logic
-        const currentAvgCost = Number(sourcePosition.avg_cost) || 0;
-        
-        // Cost of the specific tokens being sold (Cost Basis Reduction)
-        const costRemoved = currentAvgCost * tokenSold;
-        
-        // Step 2: Update source (token) position
-        const remainingAmount = oldAmount - tokenSold;
-        
-        // FIX: Derive new total cost from the preserved Average Cost
-        // This prevents "drift" between cost_usd and avg_cost
-        const remainingCostBasis = currentAvgCost * remainingAmount;
-        
-        // FIX: Do NOT recalculate avg_cost. It stays the same unless we sold everything.
-        const newAvgCost = remainingAmount > 0 ? currentAvgCost : 0;
-        
+        const currentAvgCost = Number(sourcePosition?.avg_cost || 0);
+        const costRemoved = currentAvgCost * copyAmount;
+
+        // Realized PnL = USD Received - Cost of Tokens Sold
+        realizedPnl = usdReceived - costRemoved;
+
+        // Update Source Position (preserve avg_cost per WAC)
+        const remainingAmount = sourceBalance - copyAmount;
+        const remainingCostBasis = remainingAmount * currentAvgCost;
+
         await supabase.from('demo_positions').update({
           size: remainingAmount,
-          cost_usd: remainingCostBasis, // Now perfectly synced with avg_cost * size
-          avg_cost: newAvgCost,
+          cost_usd: remainingCostBasis,
+          avg_cost: remainingAmount > 0 ? currentAvgCost : 0,
           updated_at: new Date().toISOString()
         }).eq('trader_state_id', traderStateId).eq('token_mint', sourceMint);
-        
-        // Step 3: Calculate realized PnL
-        realizedPnl = usdReceived - costRemoved;
-        
-        // Update cumulative realized_pnl_usd on trader_state
+
+        // Update Trader State PnL
         const currentRealizedPnl = Number(traderState.realized_pnl_usd) || 0;
         await supabase.from('demo_trader_states').update({
           realized_pnl_usd: currentRealizedPnl + realizedPnl
         }).eq('id', traderStateId);
-        
-        // Increase destination (stablecoin) position
+
+        // Increase destination (stablecoin/SOL) position
         const destPosition = positions.find((p: any) => p.token_mint === destMint);
         if (destPosition) {
-          const newSize = Number(destPosition.size) + usdReceived;
+          const newSize = Number(destPosition.size) + quoteOutAmount;
           await supabase.from('demo_positions').update({
             size: newSize,
-            cost_usd: newSize, // For stablecoins, cost = size
-            avg_cost: 1,
+            cost_usd: getUsdValue(destMint, newSize),
+            avg_cost: isSolDest ? SOL_PRICE_USD : 1,
             updated_at: new Date().toISOString()
           }).eq('trader_state_id', traderStateId).eq('token_mint', destMint);
         } else {
@@ -522,21 +511,21 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
             trader_state_id: traderStateId,
             token_mint: destMint,
             token_symbol: getTokenSymbol(destMint),
-            size: usdReceived,
-            cost_usd: usdReceived,
-            avg_cost: 1
+            size: quoteOutAmount,
+            cost_usd: getUsdValue(destMint, quoteOutAmount),
+            avg_cost: isSolDest ? SOL_PRICE_USD : 1
           });
         }
-        
+
       } else {
-        // Token → Token swap (rare case) - no proper cost tracking possible
+        // Token → Token swap (rare) - no proper cost tracking
         console.log(`  TS ${traderStateId.slice(0,8)}: Token→Token swap, no USD cost tracking`);
-        
+
         await supabase.from('demo_positions').update({
           size: sourceBalance - copyAmount,
           updated_at: new Date().toISOString()
         }).eq('trader_state_id', traderStateId).eq('token_mint', sourceMint);
-        
+
         const destPosition = positions.find((p: any) => p.token_mint === destMint);
         if (destPosition) {
           await supabase.from('demo_positions').update({
@@ -554,16 +543,16 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
           });
         }
       }
-      
-      // Update trade with realized PnL for record (derived, for display only)
+
+      // Update trade with realized PnL
       if (realizedPnl !== null) {
         await supabase.from('demo_trades').update({
           realized_pnl: realizedPnl
         }).eq('trader_state_id', traderStateId).eq('star_trade_signature', trade.signature);
       }
-      
-      console.log(`  TS ${traderStateId.slice(0,8)}: Copied ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} → ${quoteOutAmount.toFixed(4)} ${getTokenSymbol(destMint)} | PnL: ${realizedPnl !== null ? '$' + realizedPnl.toFixed(2) : 'N/A'} | Latency: ${latencyDiff}ms`);
-      
+
+      console.log(`  TS ${traderStateId.slice(0,8)}: Copied ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} → ${quoteOutAmount.toFixed(4)} ${getTokenSymbol(destMint)} | USD: $${tradeUsdValue.toFixed(2)} | PnL: ${realizedPnl !== null ? '$' + realizedPnl.toFixed(2) : 'N/A'} | Latency: ${latencyDiff}ms`);
+
     } catch (quoteError) {
       console.error(`  TS ${traderStateId.slice(0,8)}: Quote error`, quoteError);
     }

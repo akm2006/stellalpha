@@ -9,19 +9,20 @@ interface TokenMeta {
   name: string;
   logoURI: string | null;
   decimals: number;
+  usdPrice?: number | null;  // NEW: Price from Jupiter
 }
 
 // In-memory cache for current session
 const memoryCache = new Map<string, TokenMeta>();
 
-// Search for a token by mint address using Jupiter v2 API
+// Search for a token by mint address using Jupiter Tokens API v2
 async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
   try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {};
     if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
     
     const response = await fetch(
-      `https://lite-api.jup.ag/tokens/v2/search?query=${mint}`,
+      `https://api.jup.ag/tokens/v2/search?query=${encodeURIComponent(mint)}`,
       { headers }
     );
     
@@ -35,12 +36,50 @@ async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
       symbol: token.symbol,
       name: token.name,
       logoURI: token.icon || null,
-      decimals: token.decimals
+      decimals: token.decimals,
+      usdPrice: token.usdPrice ?? null
     };
   } catch (err) {
     console.error('Jupiter API error:', err);
     return null;
   }
+}
+
+// Batch fetch multiple tokens using Jupiter Tokens API v2
+async function fetchManyFromJupiter(mints: string[]): Promise<Record<string, TokenMeta>> {
+  const result: Record<string, TokenMeta> = {};
+  if (mints.length === 0) return result;
+  
+  try {
+    const headers: Record<string, string> = {};
+    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+    
+    // API supports comma-separated mints in query
+    const query = mints.map(m => encodeURIComponent(m)).join(',');
+    const response = await fetch(
+      `https://api.jup.ag/tokens/v2/search?query=${query}`,
+      { headers }
+    );
+    
+    if (!response.ok) return result;
+    
+    const tokens = await response.json();
+    for (const token of tokens) {
+      if (mints.includes(token.id)) {
+        result[token.id] = {
+          symbol: token.symbol,
+          name: token.name,
+          logoURI: token.icon || null,
+          decimals: token.decimals,
+          usdPrice: token.usdPrice ?? null
+        };
+      }
+    }
+  } catch (err) {
+    console.error('Jupiter batch API error:', err);
+  }
+  
+  return result;
 }
 
 // Save token to database
@@ -188,21 +227,25 @@ export async function getTokensMetadata(mints: string[]): Promise<Record<string,
     // Find still missing (not in DB)
     const stillMissing = missingMints.filter(m => !dbResults[m]);
     
-    // Fetch from Jupiter API (with rate limiting)
-    for (const mint of stillMissing) {
-      const jupiterResult = await fetchFromJupiter(mint);
-      if (jupiterResult) {
-        result[mint] = jupiterResult;
-        memoryCache.set(mint, jupiterResult);
-        await saveToDatabase(mint, jupiterResult);
-      } else {
-        // Use fallback
-        result[mint] = {
-          symbol: mint.slice(0, 6),
-          name: 'Unknown Token',
-          logoURI: null,
-          decimals: 6
-        };
+    // Batch fetch from Jupiter API (single request for multiple tokens)
+    if (stillMissing.length > 0) {
+      const jupiterResults = await fetchManyFromJupiter(stillMissing);
+      for (const [mint, meta] of Object.entries(jupiterResults)) {
+        result[mint] = meta;
+        memoryCache.set(mint, meta);
+        await saveToDatabase(mint, meta);
+      }
+      
+      // Use fallback for any still missing
+      for (const mint of stillMissing) {
+        if (!jupiterResults[mint]) {
+          result[mint] = {
+            symbol: mint.slice(0, 6),
+            name: 'Unknown Token',
+            logoURI: null,
+            decimals: 6
+          };
+        }
       }
     }
   }
