@@ -438,35 +438,30 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         
       } else if (isSell) {
         // ============ SELL (TOKEN → USDC) ============
-        // Step 1: Proportional cost removal
-        //   sell_ratio = token_sold / old_amount
-        //   cost_removed = cost_basis_usd * sell_ratio
-        // Step 2: Update position
-        //   amount -= token_sold
-        //   cost_basis_usd -= cost_removed
-        //   avg_cost_usd = amount > 0 ? cost_basis_usd / amount : 0
-        // Step 3: Realized PnL
-        //   realized_pnl = usd_received - cost_removed
-        //   trader_state.realized_pnl_usd += realized_pnl
-        
+        // Step 1: Use existing Average Cost to determine cost of sold tokens
         const tokenSold = copyAmount;
         const usdReceived = quoteOutAmount;
         
-        const oldAmount = sourceBalance;
-        const oldCostBasis = Number(sourcePosition.cost_usd) || 0;
+        const oldAmount = Number(sourcePosition.size) || 0;
+        // FIX: Use avg_cost for calculations to match Star Trader logic
+        const currentAvgCost = Number(sourcePosition.avg_cost) || 0;
         
-        // Step 1: Proportional cost removal
-        const sellRatio = oldAmount > 0 ? tokenSold / oldAmount : 0;
-        const costRemoved = oldCostBasis * sellRatio;
+        // Cost of the specific tokens being sold (Cost Basis Reduction)
+        const costRemoved = currentAvgCost * tokenSold;
         
         // Step 2: Update source (token) position
         const remainingAmount = oldAmount - tokenSold;
-        const remainingCostBasis = oldCostBasis - costRemoved;
-        const newAvgCost = remainingAmount > 0 ? remainingCostBasis / remainingAmount : 0;
+        
+        // FIX: Derive new total cost from the preserved Average Cost
+        // This prevents "drift" between cost_usd and avg_cost
+        const remainingCostBasis = currentAvgCost * remainingAmount;
+        
+        // FIX: Do NOT recalculate avg_cost. It stays the same unless we sold everything.
+        const newAvgCost = remainingAmount > 0 ? currentAvgCost : 0;
         
         await supabase.from('demo_positions').update({
           size: remainingAmount,
-          cost_usd: remainingCostBasis,
+          cost_usd: remainingCostBasis, // Now perfectly synced with avg_cost * size
           avg_cost: newAvgCost,
           updated_at: new Date().toISOString()
         }).eq('trader_state_id', traderStateId).eq('token_mint', sourceMint);
