@@ -16,7 +16,6 @@ import {
   Play,
   StopCircle,
   Trash2,
-  TrendingUp,
   Clock,
   CheckCircle,
   ExternalLink,
@@ -24,25 +23,28 @@ import {
   Loader2
 } from 'lucide-react';
 
+// =============================================================================
+// TYPES
+// =============================================================================
+
 interface Position {
   mint: string;
   symbol: string;
   name: string;
   logoURI: string | null;
   amount: number;
-  costBasis: number;
-  avgCost: number;
+  avgCost: number;           // WAC: Weighted Average Cost (from API)
+  costBasis: number;         // amount × avgCost
   currentPrice: number | null;
   currentValue: number | null;
-  unrealizedPnL: number | null;
+  unrealizedPnL: number | null;  // (currentPrice - avgCost) × amount
   unrealizedPercent: number | null;
   portfolioPercent: number | null;
-  priceStale: boolean;
 }
 
 interface Trade {
   id: string;
-  type: string;
+  type: 'buy' | 'sell';
   token_in_mint: string;
   token_in_symbol: string;
   token_in_amount: number;
@@ -50,9 +52,8 @@ interface Trade {
   token_out_symbol: string;
   token_out_amount: number;
   usd_value: number;
-  price_impact: number;
+  realized_pnl: number | null;  // Only for sells
   latency_diff_ms: number;
-  realized_pnl: number | null;
   star_trade_signature: string;
   created_at: string;
 }
@@ -66,25 +67,23 @@ interface PortfolioData {
   isPaused: boolean;
   isSettled: boolean;
   positions: Position[];
-  
-  // ============================================
-  // METRICS (per authoritative spec)
-  // ============================================
-  portfolioValue: number;       // Σ (currentPrice × amount)
-  totalCostBasis: number;       // Σ position.costBasis
-  
-  // THE SINGLE TRUTH: totalPnL = portfolioValue - allocatedUsd
+  portfolioValue: number;
+  totalCostBasis: number;
   totalPnL: number;
-  totalPnLPercent: number;      // (totalPnL / allocatedUsd) × 100
-  
-  // Split
-  unrealizedPnL: number;        // portfolioValue - totalCostBasis
-  unrealizedPnLPercent: number;
-  
-  // Invariant check
-  invariantValid: boolean;
+  totalPnLPercent: number;
+  unrealizedPnL: number;
   hasStalePrices: boolean;
 }
+
+interface TokenMeta {
+  symbol: string;
+  name: string;
+  logoURI: string | null;
+}
+
+// =============================================================================
+// FORMATTING UTILITIES
+// =============================================================================
 
 function formatAmount(amount: number): string {
   if (Math.abs(amount) >= 1000000) return (amount / 1000000).toFixed(2) + 'M';
@@ -97,11 +96,12 @@ function formatUsd(amount: number | null): string {
   if (amount === null || amount === undefined) return '—';
   if (Math.abs(amount) >= 1000000) return '$' + (amount / 1000000).toFixed(2) + 'M';
   if (Math.abs(amount) >= 1000) return '$' + (amount / 1000).toFixed(2) + 'K';
-  if (Math.abs(amount) < 0.01 && amount !== 0) return '$' + amount.toFixed(4);
+  // Handle very small amounts properly
+  if (Math.abs(amount) < 0.0001 && amount !== 0) return '$' + amount.toExponential(2);
+  if (Math.abs(amount) < 0.01 && amount !== 0) return '$' + amount.toFixed(6);
   return '$' + amount.toFixed(2);
 }
 
-// Format token price - handles small prices like BONK ($0.0000117)
 function formatPrice(price: number | null): string {
   if (price === null || price === undefined) return '—';
   if (price >= 1000) return '$' + (price / 1000).toFixed(2) + 'K';
@@ -113,13 +113,17 @@ function formatPrice(price: number | null): string {
   return '$' + price.toExponential(2);
 }
 
-function formatPnl(pnl: number | null, includeSign = true): { text: string; color: string } {
+function formatPnl(pnl: number | null): { text: string; color: string } {
   if (pnl === null) return { text: '—', color: COLORS.data };
   const isPositive = pnl >= 0;
-  const text = includeSign 
-    ? (isPositive ? `+${formatUsd(pnl)}` : `-${formatUsd(Math.abs(pnl))}`)
-    : formatUsd(Math.abs(pnl));
+  const text = isPositive ? `+${formatUsd(pnl)}` : `-${formatUsd(Math.abs(pnl))}`;
   return { text, color: isPositive ? '#10B981' : '#EF4444' };
+}
+
+function formatLatency(ms: number | null): string {
+  if (ms === null || ms === undefined) return '—';
+  if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
+  return ms.toFixed(0) + 'ms';
 }
 
 function timeAgo(dateStr: string): string {
@@ -132,6 +136,10 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+// =============================================================================
+// TOKEN ICON COMPONENT
+// =============================================================================
+
 function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | null }) {
   const [imgError, setImgError] = useState(false);
   
@@ -140,7 +148,7 @@ function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | nul
       <img 
         src={logoURI}
         alt={symbol}
-        className="w-8 h-8 rounded-full"
+        className="w-6 h-6 rounded-full"
         onError={() => setImgError(true)}
       />
     );
@@ -148,13 +156,17 @@ function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | nul
   
   return (
     <div 
-      className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold"
+      className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
       style={{ backgroundColor: COLORS.structure, color: COLORS.text }}
     >
       {symbol?.charAt(0) || '?'}
     </div>
   );
 }
+
+// =============================================================================
+// MAIN COMPONENT
+// =============================================================================
 
 export default function TraderStateDetailPage() {
   const params = useParams();
@@ -163,19 +175,43 @@ export default function TraderStateDetailPage() {
   const traderStateId = params.id as string;
   const walletAddress = publicKey?.toBase58() || null;
   
+  // State
   const [portfolio, setPortfolio] = useState<PortfolioData | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
-  const [tokenMeta, setTokenMeta] = useState<Record<string, any>>({});
+  const [tokenMeta, setTokenMeta] = useState<Record<string, TokenMeta>>({});
+  const [activeTab, setActiveTab] = useState<'portfolio' | 'trades'>('portfolio');
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   
   // Init Modal State
   const [showInitModal, setShowInitModal] = useState(false);
   const [previewPortfolio, setPreviewPortfolio] = useState<any[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   
-  const [activeTab, setActiveTab] = useState<'portfolio' | 'trades'>('portfolio');
-  const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // =============================================================================
+  // DATA FETCHING
+  // =============================================================================
+  
+  const fetchTokenMetadata = useCallback(async (mints: string[]) => {
+    if (mints.length === 0) return;
+    
+    // Filter out mints we already have
+    const missing = mints.filter(m => !tokenMeta[m] && m !== 'SOL');
+    if (missing.length === 0) return;
+    
+    try {
+      const response = await fetch(`/api/tokens?mints=${missing.join(',')}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && typeof data === 'object') {
+          setTokenMeta(prev => ({ ...prev, ...data }));
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch token metadata:', err);
+    }
+  }, [tokenMeta]);
   
   const fetchData = useCallback(async () => {
     if (!walletAddress || !traderStateId) return;
@@ -184,7 +220,7 @@ export default function TraderStateDetailPage() {
     setError(null);
     
     try {
-      // Fetch portfolio with live prices
+      // Fetch portfolio
       const portfolioRes = await fetch(
         `/api/demo-vault/portfolio?wallet=${walletAddress}&traderStateId=${traderStateId}`
       );
@@ -204,62 +240,34 @@ export default function TraderStateDetailPage() {
       const tradesData = await tradesRes.json();
       setTrades(tradesData.trades || []);
       
+      // Collect all mints for metadata fetching
+      const mints = new Set<string>();
+      portfolioData.positions?.forEach((p: Position) => mints.add(p.mint));
+      tradesData.trades?.forEach((t: Trade) => {
+        if (t.token_in_mint) mints.add(t.token_in_mint);
+        if (t.token_out_mint) mints.add(t.token_out_mint);
+      });
+      
+      if (mints.size > 0) {
+        await fetchTokenMetadata(Array.from(mints));
+      }
+      
     } catch {
       setError('Failed to fetch data');
     } finally {
       setLoading(false);
     }
-  }, [walletAddress, traderStateId]);
-
-  // Separate effect for metadata fetching to avoid infinite loop
-  useEffect(() => {
-    const fetchMetadata = async () => {
-      const uniqueMints = new Set<string>();
-      
-      // Collect mints from trades
-      if (trades.length > 0) {
-        trades.forEach((t: Trade) => {
-          if (t.token_in_mint) uniqueMints.add(t.token_in_mint);
-          if (t.token_out_mint) uniqueMints.add(t.token_out_mint);
-        });
-      }
-      
-      // Collect mints from portfolio
-      if (portfolio) {
-        portfolio.positions.forEach(p => uniqueMints.add(p.mint));
-      }
-      
-      const mints = Array.from(uniqueMints);
-      if (mints.length > 0) {
-        const missing = mints.filter(m => !tokenMeta[m]);
-        
-        if (missing.length > 0) {
-           try {
-             const res = await fetch(`/api/tokens?mints=${missing.join(',')}`);
-             if (res.ok) {
-               const meta = await res.json();
-               if (Object.keys(meta).length > 0) {
-                 setTokenMeta(prev => ({ ...prev, ...meta }));
-               }
-             }
-           } catch (e) {
-             console.error('Failed to fetch token metadata', e);
-           }
-        }
-      }
-    };
-    
-    if (trades.length > 0 || portfolio) {
-      fetchMetadata();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trades, portfolio]);
+  }, [walletAddress, traderStateId, fetchTokenMetadata]);
   
   useEffect(() => {
     if (connected && walletAddress) {
       fetchData();
     }
   }, [connected, walletAddress, fetchData]);
+  
+  // =============================================================================
+  // ACTIONS
+  // =============================================================================
   
   const handleAction = async (action: 'sync' | 'initialize' | 'pause' | 'resume' | 'settle') => {
     if (!walletAddress || !traderStateId) return;
@@ -296,7 +304,6 @@ export default function TraderStateDetailPage() {
       
       const allTokens = [...(data.tokens || [])];
       
-      // Add native SOL if present and significant
       if (data.solBalance && data.solBalance.totalValue > 1) {
         allTokens.unshift({
            mint: 'SOL',
@@ -310,18 +317,16 @@ export default function TraderStateDetailPage() {
       
       setPreviewPortfolio(allTokens);
     } catch {
-      // Just show empty if fail
+      // Empty on fail
     } finally {
       setPreviewLoading(false);
     }
   };
 
   const confirmInit = async () => {
-    // 1. Sync first
     const synced = await handleAction('sync');
     if (!synced) return;
     
-    // 2. Initialize
     const initialized = await handleAction('initialize');
     if (initialized) {
       setShowInitModal(false);
@@ -347,7 +352,10 @@ export default function TraderStateDetailPage() {
     }
   };
   
-  // Loading state
+  // =============================================================================
+  // LOADING / ERROR STATES
+  // =============================================================================
+  
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: COLORS.canvas }}>
@@ -356,7 +364,6 @@ export default function TraderStateDetailPage() {
     );
   }
   
-  // Not connected
   if (!connected || !walletAddress) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
@@ -368,7 +375,6 @@ export default function TraderStateDetailPage() {
     );
   }
   
-  // Error state
   if (error || !portfolio) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
@@ -382,22 +388,33 @@ export default function TraderStateDetailPage() {
     );
   }
   
-  const { 
-    positions, portfolioValue, totalCostBasis, totalPnL, totalPnLPercent, 
-    allocatedUsd, starTrader, isPaused, isSettled, isInitialized, 
-    realizedPnlUsd, unrealizedPnL, hasStalePrices 
-  } = portfolio;
-  const avgLatency = trades.length > 0 ? trades.reduce((s, t) => s + (t.latency_diff_ms || 0), 0) / trades.length : 0;
+  // =============================================================================
+  // COMPUTED VALUES
+  // =============================================================================
   
-  // Win rate calculation (profitable sells / total sells)
+  const { 
+    positions, portfolioValue, totalPnL, totalPnLPercent, 
+    allocatedUsd, starTrader, isPaused, isSettled, isInitialized, 
+    realizedPnlUsd, unrealizedPnL 
+  } = portfolio;
+  
+  const avgLatency = trades.length > 0 
+    ? trades.reduce((s, t) => s + (t.latency_diff_ms || 0), 0) / trades.length 
+    : 0;
+  
+  // Win rate: profitable sells / total sells
   const sellTrades = trades.filter(t => t.type === 'sell');
-  const profitableSells = sellTrades.filter(t => (t as any).realized_pnl > 0).length;
+  const profitableSells = sellTrades.filter(t => t.realized_pnl !== null && t.realized_pnl > 0).length;
   const winRate = sellTrades.length > 0 ? (profitableSells / sellTrades.length) * 100 : 0;
+  
+  // =============================================================================
+  // RENDER
+  // =============================================================================
   
   return (
     <div className="min-h-screen font-sans" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
       <main className="max-w-6xl mx-auto px-6 py-12">
-        {/* Back & Header */}
+        {/* Header */}
         <div className="mb-8">
           <Link 
             href="/demo-vault"
@@ -440,10 +457,8 @@ export default function TraderStateDetailPage() {
               </div>
             </div>
             
-            {/* Actions */}
+            {/* Action Buttons */}
             <div className="flex items-center gap-2">
-              {/* Sync button - show when not initialized */}
-              {/* Initialize button (Syncs & Initializes) */}
               {!isInitialized && !isSettled && (
                 <button 
                   onClick={handleInitClick} 
@@ -455,7 +470,6 @@ export default function TraderStateDetailPage() {
                 </button>
               )}
               
-              {/* Pause/Resume for initialized states */}
               {isInitialized && !isSettled && (
                 isPaused ? (
                   <button onClick={() => handleAction('resume')} disabled={actionLoading} className="px-4 py-2 text-sm flex items-center gap-2 border hover:opacity-80 disabled:opacity-50" style={{ borderColor: COLORS.brand, color: COLORS.brand }}>
@@ -481,7 +495,7 @@ export default function TraderStateDetailPage() {
           </div>
         </div>
         
-        {/* Stats Cards */}
+        {/* Stats Cards - 5 columns */}
         <div className="grid grid-cols-5 gap-4 mb-8">
           <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Allocated</div>
@@ -490,7 +504,6 @@ export default function TraderStateDetailPage() {
           <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Portfolio Value</div>
             <div className="text-xl font-semibold" style={{ color: COLORS.brand }}>{formatUsd(portfolioValue)}</div>
-            {hasStalePrices && <div className="text-xs mt-1 text-yellow-400">⚠️ Some prices stale</div>}
           </div>
           <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Total PnL</div>
@@ -509,7 +522,7 @@ export default function TraderStateDetailPage() {
           </div>
           <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Avg Latency</div>
-            <div className="text-xl font-semibold" style={{ color: COLORS.text }}>{(avgLatency / 1000).toFixed(1)}s</div>
+            <div className="text-xl font-semibold" style={{ color: COLORS.text }}>{formatLatency(avgLatency)}</div>
           </div>
         </div>
         
@@ -542,13 +555,15 @@ export default function TraderStateDetailPage() {
           </button>
         </div>
         
-        {/* Portfolio Tab */}
+        {/* ============================================================================= */}
+        {/* PORTFOLIO TAB */}
+        {/* ============================================================================= */}
         {activeTab === 'portfolio' && (
           <div className="border overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: COLORS.structure }}>
               <div>
                 <h2 className="font-medium" style={{ color: COLORS.text }}>Portfolio</h2>
-                <p className="text-xs" style={{ color: COLORS.data }}>Live prices from Jupiter</p>
+                <p className="text-xs" style={{ color: COLORS.data }}>Live prices from Jupiter • Unrealized PnL = (Price - AvgEntry) × Amount</p>
               </div>
               <div className="text-lg font-medium" style={{ color: COLORS.brand }}>{formatUsd(portfolioValue)}</div>
             </div>
@@ -556,36 +571,34 @@ export default function TraderStateDetailPage() {
             <div className="grid grid-cols-7 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
               <div>Token</div>
               <div>Amount</div>
+              <div>Avg Entry</div>
               <div>Price</div>
               <div>Value</div>
-              <div>Cost Basis</div>
               <div>PnL</div>
               <div>% Portfolio</div>
             </div>
             
             <div className="max-h-[500px] overflow-y-auto">
-              {/* All tokens */}
               {positions.length === 0 ? (
                 <div className="text-center py-12" style={{ color: COLORS.data }}>No positions</div>
               ) : (
                 positions.map(pos => {
+                  const meta = tokenMeta[pos.mint] || { symbol: pos.symbol, name: pos.name, logoURI: pos.logoURI };
                   const pnl = formatPnl(pos.unrealizedPnL);
+                  
                   return (
                     <div key={pos.mint} className="grid grid-cols-7 gap-4 items-center px-6 py-3 hover:bg-white/[0.02] border-b" style={{ borderColor: COLORS.structure }}>
                       <div className="flex items-center gap-2">
-                        <TokenIcon symbol={pos.symbol} logoURI={pos.logoURI} />
+                        <TokenIcon symbol={meta.symbol || pos.symbol} logoURI={meta.logoURI || pos.logoURI} />
                         <div>
-                          <div style={{ color: COLORS.text }} className="font-medium">{pos.symbol}</div>
-                          <div className="text-xs truncate max-w-[100px]" style={{ color: COLORS.data }}>{pos.name}</div>
+                          <div style={{ color: COLORS.text }} className="font-medium">{meta.symbol || pos.symbol}</div>
+                          <div className="text-xs truncate max-w-[100px]" style={{ color: COLORS.data }}>{meta.name || pos.name}</div>
                         </div>
                       </div>
                       <div style={{ color: COLORS.text }}>{formatAmount(pos.amount)}</div>
-                      <div style={{ color: pos.priceStale ? '#EAB308' : COLORS.data }}>
-                        {pos.priceStale ? '—' : formatPrice(pos.currentPrice)}
-                        {pos.priceStale && <span className="text-xs ml-1">⚠️</span>}
-                      </div>
+                      <div style={{ color: COLORS.data }}>{formatPrice(pos.avgCost)}</div>
+                      <div style={{ color: COLORS.data }}>{formatPrice(pos.currentPrice)}</div>
                       <div style={{ color: COLORS.brand }} className="font-medium">{formatUsd(pos.currentValue)}</div>
-                      <div style={{ color: COLORS.data }}>{formatUsd(pos.costBasis)}</div>
                       <div style={{ color: pnl.color }} className="font-medium">
                         {pnl.text}
                         {pos.unrealizedPercent !== null && (
@@ -601,12 +614,14 @@ export default function TraderStateDetailPage() {
           </div>
         )}
         
-        {/* Trades Tab */}
+        {/* ============================================================================= */}
+        {/* TRADES TAB */}
+        {/* ============================================================================= */}
         {activeTab === 'trades' && (
           <div className="border overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <div className="px-6 py-4 border-b" style={{ borderColor: COLORS.structure }}>
               <h2 className="font-medium" style={{ color: COLORS.text }}>Copy Trades</h2>
-              <p className="text-xs" style={{ color: COLORS.data }}>Simulated trades based on Jupiter quotes</p>
+              <p className="text-xs" style={{ color: COLORS.data }}>Simulated trades • PnL shown only for sells (WAC method)</p>
             </div>
             
             <div className="grid grid-cols-8 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
@@ -614,8 +629,8 @@ export default function TraderStateDetailPage() {
               <div className="col-span-2">Token In → Token Out</div>
               <div>USD Value</div>
               <div>Profit</div>
+              <div>Latency</div>
               <div>Age</div>
-              <div>Gas</div>
               <div>Actions</div>
             </div>
             
@@ -624,9 +639,11 @@ export default function TraderStateDetailPage() {
                 <div className="text-center py-12" style={{ color: COLORS.data }}>No trades yet</div>
               ) : (
                 trades.map(trade => {
-                  const tradePnl = formatPnl(trade.realized_pnl);
+                  const isBuy = trade.type === 'buy';
+                  // WAC: Only sells have PnL
+                  const tradePnl = isBuy ? { text: '—', color: COLORS.data } : formatPnl(trade.realized_pnl);
                   
-                  // Use metadata if available, otherwise fallback
+                  // Get token metadata
                   const inMeta = tokenMeta[trade.token_in_mint] || { symbol: trade.token_in_symbol, logoURI: null };
                   const outMeta = tokenMeta[trade.token_out_mint] || { symbol: trade.token_out_symbol, logoURI: null };
                   
@@ -634,30 +651,27 @@ export default function TraderStateDetailPage() {
                     <div key={trade.id} className="grid grid-cols-8 gap-4 items-center px-6 py-3 hover:bg-white/[0.02] border-b" style={{ borderColor: COLORS.structure }}>
                       <div>
                         <span className="px-2.5 py-1 rounded text-xs font-medium" style={{ 
-                          backgroundColor: trade.type === 'buy' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)', 
-                          color: trade.type === 'buy' ? '#10B981' : '#EF4444' 
+                          backgroundColor: isBuy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)', 
+                          color: isBuy ? '#10B981' : '#EF4444' 
                         }}>
-                          {trade.type === 'buy' ? 'Buy' : 'Sell'}
+                          {isBuy ? 'Buy' : 'Sell'}
                         </span>
                       </div>
                       <div className="col-span-2 flex items-center gap-2">
-                        <div className="flex items-center gap-1.5" title={trade.token_in_symbol}>
-                           <TokenIcon symbol={inMeta.symbol} logoURI={inMeta.logoURI} />
-                           <span style={{ color: COLORS.text }}>{formatAmount(trade.token_in_amount)}</span>
+                        <div className="flex items-center gap-1.5">
+                          <TokenIcon symbol={inMeta.symbol || trade.token_in_symbol} logoURI={inMeta.logoURI} />
+                          <span style={{ color: COLORS.text }}>{formatAmount(trade.token_in_amount)}</span>
                         </div>
                         <ArrowRight size={14} style={{ color: COLORS.data }} />
-                         <div className="flex items-center gap-1.5" title={trade.token_out_symbol}>
-                           <TokenIcon symbol={outMeta.symbol} logoURI={outMeta.logoURI} />
-                           <span style={{ color: COLORS.text }}>{formatAmount(trade.token_out_amount)}</span>
+                        <div className="flex items-center gap-1.5">
+                          <TokenIcon symbol={outMeta.symbol || trade.token_out_symbol} logoURI={outMeta.logoURI} />
+                          <span style={{ color: COLORS.text }}>{formatAmount(trade.token_out_amount)}</span>
                         </div>
                       </div>
                       <div style={{ color: COLORS.brand }} className="font-medium">{formatUsd(trade.usd_value)}</div>
                       <div style={{ color: tradePnl.color }} className="font-medium">{tradePnl.text}</div>
+                      <div style={{ color: COLORS.data }}>{formatLatency(trade.latency_diff_ms)}</div>
                       <div style={{ color: COLORS.data }}>{timeAgo(trade.created_at)}</div>
-                      <div style={{ color: COLORS.data }} className="text-xs">
-                         {/* Gasless Copy Trading */}
-                         {'< 0.00001 SOL'}
-                      </div>
                       <div>
                         {trade.star_trade_signature ? (
                            <a 
@@ -681,7 +695,9 @@ export default function TraderStateDetailPage() {
           </div>
         )}
         
-        {/* Init Modal */}
+        {/* ============================================================================= */}
+        {/* INIT MODAL */}
+        {/* ============================================================================= */}
         {showInitModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
             <div className="w-full max-w-md border rounded-lg shadow-xl overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
@@ -696,7 +712,7 @@ export default function TraderStateDetailPage() {
               
               <div className="p-6">
                 <p className="text-sm mb-4" style={{ color: COLORS.data }}>
-                  We will sync your demo vault with the current Star Trader portfolio to ensure accurate tracking.
+                  Sync your demo vault with the Star Trader&apos;s current portfolio.
                 </p>
                 
                 <div className="mb-6">
@@ -708,19 +724,16 @@ export default function TraderStateDetailPage() {
                       </div>
                     ) : (
                       (() => {
-                        // Filter dust (< 0.1% of portfolio)
                         const filtered = previewPortfolio.filter((t: any) => (t.holdingPercent || 0) >= 0.1);
-                        const allocatedUsd = portfolio?.allocatedUsd || 0;
+                        const alloc = allocatedUsd || 0;
                         
                         return filtered.length === 0 ? (
-                          <div className="p-4 text-center text-xs" style={{ color: COLORS.data }}>No assets found matching sync criteria.</div>
+                          <div className="p-4 text-center text-xs" style={{ color: COLORS.data }}>No assets found.</div>
                         ) : (
                           <div className="divide-y" style={{ borderColor: COLORS.structure }}>
                             {filtered.map((token: any) => {
                               const percent = token.holdingPercent || 0;
-                              // Calculate projected value for this vault based on allocation
-                              const projectedValue = (percent / 100) * allocatedUsd;
-                              // Calculate projected balance based on price
+                              const projectedValue = (percent / 100) * alloc;
                               const projectedBalance = token.pricePerToken ? (projectedValue / token.pricePerToken) : 0;
                               
                               return (
@@ -731,16 +744,12 @@ export default function TraderStateDetailPage() {
                                     </div>
                                     <div>
                                       <div style={{ color: COLORS.text }}>{token.symbol}</div>
-                                      <div className="text-[10px]" style={{ color: COLORS.data }}>
-                                        {percent.toFixed(2)}%
-                                      </div>
+                                      <div className="text-[10px]" style={{ color: COLORS.data }}>{percent.toFixed(2)}%</div>
                                     </div>
                                   </div>
                                   <div className="text-right">
                                     <div style={{ color: COLORS.text }}>{formatUsd(projectedValue)}</div>
-                                    <div className="text-[10px]" style={{ color: COLORS.data }}>
-                                      {formatAmount(projectedBalance)}
-                                    </div>
+                                    <div className="text-[10px]" style={{ color: COLORS.data }}>{formatAmount(projectedBalance)}</div>
                                   </div>
                                 </div>
                               );
