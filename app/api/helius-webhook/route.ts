@@ -3,7 +3,38 @@ import { supabase } from '@/lib/supabase';
 
 const HELIUS_WEBHOOK_SECRET = process.env.HELIUS_WEBHOOK_SECRET || 'stellalpha-webhook-secret-2025';
 const WSOL = "So11111111111111111111111111111111111111112";
-const SOL_PRICE_USD = 200;
+
+// Dynamic SOL price cache (refreshed every 60 seconds)
+let solPriceCache: { price: number; timestamp: number } | null = null;
+const SOL_PRICE_CACHE_TTL = 60000; // 60 seconds
+
+async function getSolPrice(): Promise<number> {
+  // Return cached price if still valid
+  if (solPriceCache && Date.now() - solPriceCache.timestamp < SOL_PRICE_CACHE_TTL) {
+    return solPriceCache.price;
+  }
+  
+  try {
+    const headers: Record<string, string> = {};
+    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+    
+    const response = await fetch(`https://api.jup.ag/price/v3?ids=${WSOL}`, { headers });
+    if (response.ok) {
+      const data = await response.json();
+      const price = data[WSOL]?.usdPrice;
+      if (typeof price === 'number' && price > 0) {
+        solPriceCache = { price, timestamp: Date.now() };
+        console.log(`[SOL Price] Fetched: $${price.toFixed(2)}`);
+        return price;
+      }
+    }
+  } catch (error) {
+    console.warn('[SOL Price] Fetch failed:', error);
+  }
+  
+  // Fallback to cached price or default
+  return solPriceCache?.price || 150; // $150 fallback (safer than $200)
+}
 
 const BASE_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
@@ -29,9 +60,12 @@ const KNOWN_TOKENS: Record<string, string> = {
 const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
 
 // Cache for token decimals to avoid repeated API calls
+import { getTokenMetadata } from '@/lib/jupiter-tokens';
+
+// Cache for token decimals to avoid repeated API calls
 const decimalsCache = new Map<string, number>();
 
-// Fetch token decimals from Jupiter Price API v3 (returns decimals in response)
+// Fetch token decimals using shared utility (handles DB + Jupiter API + Fallback)
 async function getTokenDecimals(mint: string): Promise<number> {
   // Check cache first
   if (decimalsCache.has(mint)) {
@@ -39,31 +73,27 @@ async function getTokenDecimals(mint: string): Promise<number> {
   }
   
   try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-    
-    const response = await fetch(`https://api.jup.ag/price/v3?ids=${mint}`, { headers });
-    if (response.ok) {
-      const data = await response.json();
-      const tokenData = data[mint];
-      if (tokenData && typeof tokenData.decimals === 'number') {
-        decimalsCache.set(mint, tokenData.decimals);
-        return tokenData.decimals;
-      }
+    const meta = await getTokenMetadata(mint);
+    if (typeof meta.decimals === 'number') {
+      decimalsCache.set(mint, meta.decimals);
+      return meta.decimals;
     }
   } catch (error) {
     console.warn(`Failed to fetch decimals for ${mint}:`, error);
   }
   
-  // Default: stablecoins use 6, most SPL tokens use 9
+  // Default fallback (should rarely be reached as getTokenMetadata has its own fallback)
   const defaultDecimals = STABLECOIN_MINTS.has(mint) ? 6 : 9;
   decimalsCache.set(mint, defaultDecimals);
   return defaultDecimals;
 }
 
-function getUsdValue(mint: string, amount: number): number {
+async function getUsdValue(mint: string, amount: number): Promise<number> {
   if (STABLECOIN_MINTS.has(mint)) return amount;
-  if (mint === 'SOL' || mint === WSOL) return amount * SOL_PRICE_USD;
+  if (mint === 'SOL' || mint === WSOL) {
+    const solPrice = await getSolPrice();
+    return amount * solPrice;
+  }
   return 0;
 }
 
@@ -88,7 +118,7 @@ interface RawTrade {
   gas: number;
 }
 
-function detectTrade(tx: any, wallet: string): RawTrade | null {
+async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   const t = tx.tokenTransfers || [];
   const fp = wallet;
   
@@ -131,17 +161,17 @@ function detectTrade(tx: any, wallet: string): RawTrade | null {
       type = 'buy';  // Use 'buy' for DB compatibility, PnL handled separately
       tokenMint = outToken.mint;
       tokenAmount = outToken.tokenAmount;
-      baseAmount = getUsdValue(inToken.mint, inToken.tokenAmount);
+      baseAmount = await getUsdValue(inToken.mint, inToken.tokenAmount);
     } else if (inIsBase && !outIsBase) {
       type = 'buy';
       tokenMint = outToken.mint;
       tokenAmount = outToken.tokenAmount;
-      baseAmount = getUsdValue(inToken.mint, inToken.tokenAmount);
+      baseAmount = await getUsdValue(inToken.mint, inToken.tokenAmount);
     } else if (!inIsBase && outIsBase) {
       type = 'sell';
       tokenMint = inToken.mint;
       tokenAmount = inToken.tokenAmount;
-      baseAmount = getUsdValue(outToken.mint, outToken.tokenAmount);
+      baseAmount = await getUsdValue(outToken.mint, outToken.tokenAmount);
     } else {
       // Both non-base: treat as sell of inToken (can't determine USD value)
       type = 'sell';
@@ -156,7 +186,7 @@ function detectTrade(tx: any, wallet: string): RawTrade | null {
     type = 'sell';
     tokenMint = largest.mint;
     tokenAmount = largest.tokenAmount;
-    baseAmount = solChangeNet * SOL_PRICE_USD;
+    baseAmount = (await getSolPrice()) * solChangeNet;
     tokenInMint = largest.mint;
     tokenInAmount = largest.tokenAmount;
     tokenOutMint = 'SOL';
@@ -168,7 +198,7 @@ function detectTrade(tx: any, wallet: string): RawTrade | null {
     type = 'buy';
     tokenMint = largest.mint;
     tokenAmount = largest.tokenAmount;
-    baseAmount = Math.abs(solChangeNet) * SOL_PRICE_USD;
+    baseAmount = (await getSolPrice()) * Math.abs(solChangeNet);
     tokenInMint = 'SOL';
     tokenInAmount = Math.abs(solChangeNet);
     tokenOutMint = largest.mint;
@@ -382,13 +412,13 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 
       if (isSell) {
         // We Recv Money. Value = OUTPUT (SOL/USDC)
-        tradeUsdValue = getUsdValue(destMint, quoteOutAmount);
+        tradeUsdValue = await getUsdValue(destMint, quoteOutAmount);
       } else if (isBuy) {
         // We Spend Money. Value = INPUT (SOL/USDC)
-        tradeUsdValue = getUsdValue(sourceMint, copyAmount);
+        tradeUsdValue = await getUsdValue(sourceMint, copyAmount);
       } else {
         // Token->Token: try to value the output
-        tradeUsdValue = getUsdValue(destMint, quoteOutAmount);
+        tradeUsdValue = await getUsdValue(destMint, quoteOutAmount);
       }
 
       // Sanity Check
@@ -436,8 +466,8 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         // Decrease source (stablecoin/SOL) position
         await supabase.from('demo_positions').update({
           size: sourceBalance - copyAmount,
-          cost_usd: getUsdValue(sourceMint, sourceBalance - copyAmount),
-          avg_cost: isSolSource ? SOL_PRICE_USD : 1,
+          cost_usd: await getUsdValue(sourceMint, sourceBalance - copyAmount),
+          avg_cost: isSolSource ? await getSolPrice() : 1,
           updated_at: new Date().toISOString()
         }).eq('trader_state_id', traderStateId).eq('token_mint', sourceMint);
 
@@ -502,8 +532,8 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
           const newSize = Number(destPosition.size) + quoteOutAmount;
           await supabase.from('demo_positions').update({
             size: newSize,
-            cost_usd: getUsdValue(destMint, newSize),
-            avg_cost: isSolDest ? SOL_PRICE_USD : 1,
+            cost_usd: await getUsdValue(destMint, newSize),
+            avg_cost: isSolDest ? await getSolPrice() : 1,
             updated_at: new Date().toISOString()
           }).eq('trader_state_id', traderStateId).eq('token_mint', destMint);
         } else {
@@ -512,8 +542,8 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
             token_mint: destMint,
             token_symbol: getTokenSymbol(destMint),
             size: quoteOutAmount,
-            cost_usd: getUsdValue(destMint, quoteOutAmount),
-            avg_cost: isSolDest ? SOL_PRICE_USD : 1
+            cost_usd: await getUsdValue(destMint, quoteOutAmount),
+            avg_cost: isSolDest ? await getSolPrice() : 1
           });
         }
 
@@ -581,7 +611,7 @@ export async function POST(request: NextRequest) {
     for (const tx of transactions) {
       if (!tx.signature || !tx.feePayer) continue;
       
-      const trade = detectTrade(tx, tx.feePayer);
+      const trade = await detectTrade(tx, tx.feePayer);
       if (!trade) continue;
       
       processed++;
