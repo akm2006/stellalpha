@@ -94,11 +94,12 @@ function formatAmount(amount: number): string {
 
 function formatUsd(amount: number | null): string {
   if (amount === null || amount === undefined) return '—';
+  // Treat very tiny values as zero (floating point precision fix)
+  if (Math.abs(amount) < 1e-10) return '$0.00';
   if (Math.abs(amount) >= 1000000) return '$' + (amount / 1000000).toFixed(2) + 'M';
   if (Math.abs(amount) >= 1000) return '$' + (amount / 1000).toFixed(2) + 'K';
-  // Handle very small amounts properly
-  if (Math.abs(amount) < 0.0001 && amount !== 0) return '$' + amount.toExponential(2);
-  if (Math.abs(amount) < 0.01 && amount !== 0) return '$' + amount.toFixed(6);
+  // Handle small amounts properly (but real values, not floating point errors)
+  if (Math.abs(amount) < 0.01 && amount !== 0) return '$' + amount.toFixed(4);
   return '$' + amount.toFixed(2);
 }
 

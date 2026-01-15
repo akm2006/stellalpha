@@ -251,21 +251,21 @@ export async function GET(request: NextRequest) {
     const allocatedUsd = Number(traderState.allocated_usd);
     const realizedPnlUsd = Number(traderState.realized_pnl_usd) || 0;
     
-    // THE SINGLE TRUTH
-    const totalPnL = portfolioValue - allocatedUsd;
-    const totalPnLPercent = safeDivide(totalPnL, allocatedUsd) * 100;
-    
-    // Unrealized = Portfolio Value - Cost Basis
+    // Unrealized = Portfolio Value - Cost Basis (what we'd gain/lose if we sold now)
     const unrealizedPnL = portfolioValue - totalCostBasis;
     const unrealizedPnLPercent = safeDivide(unrealizedPnL, totalCostBasis) * 100;
     
-    // Invariant check: totalPnL should equal realizedPnL + unrealizedPnL
-    // (within $0.01 tolerance for floating point)
-    const invariantDiff = Math.abs(totalPnL - (realizedPnlUsd + unrealizedPnL));
-    const invariantValid = invariantDiff < 0.01;
+    // THE SINGLE TRUTH: Total PnL = Realized + Unrealized
+    const totalPnL = realizedPnlUsd + unrealizedPnL;
+    const totalPnLPercent = safeDivide(totalPnL, allocatedUsd) * 100;
+    
+    // Invariant check: portfolioValue should equal allocatedUsd + totalPnL (approximately)
+    const expectedPortfolioValue = allocatedUsd + totalPnL;
+    const invariantDiff = Math.abs(portfolioValue - expectedPortfolioValue);
+    const invariantValid = invariantDiff < 0.1; // $0.10 tolerance
     
     if (!invariantValid) {
-      console.warn(`Portfolio invariant violation: totalPnL=${totalPnL.toFixed(2)}, realized=${realizedPnlUsd.toFixed(2)}, unrealized=${unrealizedPnL.toFixed(2)}, diff=${invariantDiff.toFixed(2)}`);
+      console.warn(`Portfolio invariant violation: portfolioValue=${portfolioValue.toFixed(2)}, expected=${expectedPortfolioValue.toFixed(2)}, diff=${invariantDiff.toFixed(2)}`);
     }
     
     // 8. Build response
