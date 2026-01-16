@@ -15,6 +15,45 @@ interface TokenMeta {
 // In-memory cache for current session
 const memoryCache = new Map<string, TokenMeta>();
 
+// ============ VERCEL OPTIMIZATION: Pre-seed common tokens to avoid cold-start API calls ============
+const COMMON_TOKENS: Record<string, TokenMeta> = {
+  'So11111111111111111111111111111111111111112': {
+    symbol: 'SOL',
+    name: 'Wrapped SOL',
+    logoURI: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png',
+    decimals: 9
+  },
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': {
+    symbol: 'USDC',
+    name: 'USD Coin',
+    logoURI: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png',
+    decimals: 6
+  },
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': {
+    symbol: 'USDT',
+    name: 'USDT',
+    logoURI: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB/logo.svg',
+    decimals: 6
+  },
+  'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': {
+    symbol: 'BONK',
+    name: 'Bonk',
+    logoURI: 'https://arweave.net/hQiPZOsRZXGXBJd_82PhVdlM_hACsT_q6wqwf5cSY7I',
+    decimals: 5
+  },
+  '6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN': {
+    symbol: 'TRUMP',
+    name: 'Official Trump',
+    logoURI: null,
+    decimals: 6
+  }
+};
+
+// Pre-seed cache on module load
+for (const [mint, meta] of Object.entries(COMMON_TOKENS)) {
+  memoryCache.set(mint, meta);
+}
+
 // Search for a token by mint address using Jupiter Tokens API v2
 async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
   try {
@@ -253,4 +292,23 @@ export async function getTokensMetadata(mints: string[]): Promise<Record<string,
   return result;
 }
 
-export default { getTokenMetadata, getTokensMetadata };
+// ============ VERCEL OPTIMIZATION: Fast decimals lookup ============
+// Optimized for quick decimal fetches, uses pre-seeded cache for common tokens
+export async function getDecimals(mint: string): Promise<number> {
+  // Fast path: Check pre-seeded common tokens first (no await!)
+  if (COMMON_TOKENS[mint]) {
+    return COMMON_TOKENS[mint].decimals;
+  }
+  
+  // Check memory cache
+  if (memoryCache.has(mint)) {
+    return memoryCache.get(mint)!.decimals;
+  }
+  
+  // Fall back to full metadata fetch (will cache for next time)
+  const meta = await getTokenMetadata(mint);
+  return meta.decimals;
+}
+
+export default { getTokenMetadata, getTokensMetadata, getDecimals };
+
