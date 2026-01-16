@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { COLORS } from '@/lib/theme';
 import { ArrowUpRight, ArrowRight, ArrowLeft, RefreshCw, Download, TrendingUp, Wallet, BarChart3, AlertTriangle } from 'lucide-react';
 
@@ -136,6 +136,7 @@ function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | nul
 
 export default function TraderDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const wallet = params.wallet as string;
   
   const [traderName, setTraderName] = useState(`Trader ${wallet.slice(0, 6)}`);
@@ -264,16 +265,45 @@ export default function TraderDetailPage() {
   
   return (
     <div className="min-h-screen font-sans" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
-      <main className="max-w-6xl mx-auto px-6 py-12">
-        {/* Back Button & Header */}
+      {/* Fixed Back Button - Top Left */}
+      <Link 
+        href="/star-traders"
+        style={{ 
+          position: 'fixed',
+          top: '16px',
+          left: '16px',
+          zIndex: 9999,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '8px',
+          width: '180px',
+          height: '48px',
+          fontSize: '14px',
+          fontWeight: 500,
+          borderRadius: '8px',
+          border: `1px solid ${COLORS.structure}`,
+          backgroundColor: COLORS.surface,
+          color: COLORS.text,
+          textDecoration: 'none',
+          cursor: 'pointer',
+          transition: 'all 0.2s ease',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.1)';
+          e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.backgroundColor = COLORS.surface;
+          e.currentTarget.style.borderColor = COLORS.structure;
+        }}
+      >
+        <ArrowLeft size={16} /> Back to Traders
+      </Link>
+
+      <main className="max-w-6xl mx-auto px-6 py-12 pt-20">
+        {/* Header */}
         <div className="mb-8">
-          <Link 
-            href="/star-traders"
-            className="inline-flex items-center gap-2 text-sm mb-6 hover:opacity-80 transition-opacity"
-            style={{ color: COLORS.data }}
-          >
-            <ArrowLeft size={16} /> Back to traders
-          </Link>
           
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -298,6 +328,27 @@ export default function TraderDetailPage() {
                   <ArrowUpRight size={14} />
                 </a>
               </div>
+            </div>
+
+            {/* GMGN Link with Info */}
+            <div className="flex flex-col items-end gap-2">
+              <a 
+                href={`https://gmgn.ai/sol/address/${wallet}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border transition-all hover:bg-white/5 hover:border-white/20"
+                style={{ 
+                  borderColor: COLORS.structure, 
+                  backgroundColor: COLORS.surface,
+                }}
+              >
+                <span className="text-sm font-medium" style={{ color: COLORS.text }}>View on</span>
+                <img src="https://gmgn.ai/static/GMGNLogoDark.svg" alt="GMGN" className="h-5 w-auto" />
+                <ArrowUpRight size={14} style={{ color: COLORS.data }} />
+              </a>
+              <p className="text-xs text-right max-w-[200px]" style={{ color: COLORS.data }}>
+                Data shown is from recent trades. For detailed analytics, visit GMGN.
+              </p>
             </div>
           </div>
         </div>

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
-const HELIUS_WEBHOOK_SECRET = process.env.HELIUS_WEBHOOK_SECRET || 'stellalpha-webhook-secret-2025';
+const HELIUS_WEBHOOK_SECRET = process.env.HELIUS_WEBHOOK_SECRET;
 const WSOL = "So11111111111111111111111111111111111111112";
 
 // Dynamic SOL price cache (refreshed every 60 seconds)
