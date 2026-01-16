@@ -823,11 +823,16 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
 export async function POST(request: NextRequest) {
   const receivedAt = Date.now();
   
-  // Verify auth header
+  // Verify auth header - REJECT if invalid
   const authHeader = request.headers.get('authorization');
+  if (!HELIUS_WEBHOOK_SECRET) {
+    console.error('HELIUS_WEBHOOK_SECRET not configured!');
+    return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
+  }
+  
   if (authHeader !== HELIUS_WEBHOOK_SECRET) {
-    console.warn('Webhook auth failed:', authHeader?.slice(0, 20));
-    // Still return 200 to prevent retries, but log the failure
+    console.warn('Webhook auth failed - rejecting request. Header:', authHeader?.slice(0, 10) + '...');
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   
   try {
