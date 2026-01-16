@@ -328,22 +328,113 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 
   console.log(`[PRODUCER] Queueing trade for ${followers.length} trader state(s)`);
 
-  // 2. Insert queued trade for each follower (fast, no complex logic)
+  // 2. FETCH LEADER'S REAL-TIME PORTFOLIO using Helius DAS API
+  // Same method as /api/portfolio route - gets actual on-chain balances
+  // Note: The trade was already confirmed on-chain, so current balance is POST-trade
+  // We reconstruct before-balance by adding back the traded amount
+  let leaderBeforeBalance = 0;
+  const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
+  const SOL_MINT_ADDRESS = 'So11111111111111111111111111111111111111112';
+  
+  try {
+    if (!HELIUS_API_KEY) {
+      throw new Error('Helius API key not configured');
+    }
+
+    const heliusResponse = await fetch(`https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'leader-portfolio',
+        method: 'getAssetsByOwner',
+        params: {
+          ownerAddress: starTrader,
+          page: 1,
+          limit: 1000,
+          displayOptions: {
+            showFungible: true,
+            showNativeBalance: true
+          }
+        }
+      })
+    });
+
+    const heliusData = await heliusResponse.json();
+    
+    if (heliusData.error) {
+      throw new Error(`Helius RPC error: ${heliusData.error.message}`);
+    }
+
+    const result = heliusData.result;
+    let currentBalance = 0;
+
+    // Handle source mint lookup
+    if (sourceMint === 'SOL' || sourceMint === SOL_MINT_ADDRESS) {
+      // Native SOL balance
+      currentBalance = (result.nativeBalance?.lamports || 0) / 1e9;
+    } else {
+      // SPL Token balance
+      for (const item of result.items || []) {
+        if (item.id === sourceMint && (item.interface === 'FungibleToken' || item.interface === 'FungibleAsset')) {
+          const tokenInfo = item.token_info || {};
+          const rawBalance = tokenInfo.balance || 0;
+          const decimals = tokenInfo.decimals || 0;
+          currentBalance = rawBalance / Math.pow(10, decimals);
+          break;
+        }
+      }
+    }
+
+    // Reconstruct "before" balance:
+    // Current balance is POST-trade, so add back the traded amount
+    leaderBeforeBalance = currentBalance + trade.tokenInAmount;
+    
+    console.log(`[PRODUCER] Leader real-time portfolio: current=${currentBalance.toFixed(4)}, before=${leaderBeforeBalance.toFixed(4)} ${getTokenSymbol(sourceMint)}`);
+  } catch (err: any) {
+    console.warn(`[PRODUCER] Helius DAS API failed, using trade amount as fallback:`, err.message);
+    leaderBeforeBalance = trade.tokenInAmount; // Fallback = 100% ratio
+  }
+
+  // Calculate trade ratio for logging
+  const tradeRatio = leaderBeforeBalance > 0 ? trade.tokenInAmount / leaderBeforeBalance : 1;
+  console.log(`[PRODUCER] Trade ratio: ${(tradeRatio * 100).toFixed(1)}% (${trade.tokenInAmount.toFixed(4)} / ${leaderBeforeBalance.toFixed(4)})`);
+
+  // 3. Pre-calculate leader's USD value for transparency (even if copy fails)
+  let leaderUsdValue = 0;
+  try {
+    leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
+    if (!leaderUsdValue || leaderUsdValue <= 0) {
+      leaderUsdValue = await getUsdValue(destMint, trade.tokenOutAmount);
+    }
+  } catch {
+    leaderUsdValue = 0;
+  }
+
+  // 4. Insert queued trade for each follower with LEADER TRADE AMOUNTS
   for (const traderState of followers) {
     const traderStateId = traderState.id;
 
     try {
-      // Insert with status='queued' and store raw_data for processing later
+      // Insert with status='queued' and STORE LEADER AMOUNTS for transparency
       const { error: insertError } = await supabase.from('demo_trades').upsert({
         trader_state_id: traderStateId,
         star_trade_signature: trade.signature,
         type: trade.type,
         token_in_mint: sourceMint,
         token_in_symbol: getTokenSymbol(sourceMint),
+        token_in_amount: null,  // Copy amount - populated by Consumer
         token_out_mint: destMint,
         token_out_symbol: getTokenSymbol(destMint),
+        token_out_amount: null, // Copy amount - populated by Consumer
         star_trade_timestamp: trade.timestamp,
         status: 'queued',
+        // Store leader's actual trade amounts for transparency
+        leader_in_amount: trade.tokenInAmount,
+        leader_out_amount: trade.tokenOutAmount,
+        leader_usd_value: leaderUsdValue,
+        // NEW: Store leader's before-balance for accurate ratio calculation
+        leader_before_balance: leaderBeforeBalance,
         raw_data: trade  // Store full trade object for processing
       }, { onConflict: 'trader_state_id,star_trade_signature', ignoreDuplicates: true });
 
@@ -352,9 +443,9 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         continue;
       }
 
-      console.log(`  TS ${traderStateId.slice(0,8)}: Trade queued successfully`);
+      console.log(`  TS ${traderStateId.slice(0,8)}: Trade queued (Leader: ${trade.tokenInAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)} ${getTokenSymbol(sourceMint)} = ${(tradeRatio*100).toFixed(1)}%)`);
 
-      // 3. Trigger queue processor (fire and forget - don't await to keep webhook fast)
+      // 5. Trigger queue processor (fire and forget - don't await to keep webhook fast)
       processTradeQueue(traderStateId).catch(err => {
         console.error(`[PRODUCER] Queue processor error for ${traderStateId.slice(0,8)}:`, err);
       });
@@ -365,10 +456,11 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
   }
 }
 
-// ============ CONSUMER: Sequential Trade Processor ============
-// VERCEL OPTIMIZATION: Batch limit prevents timeouts, remaining trades picked up by next webhook
+// ============ CONSUMER: Sequential Trade Processor with Atomic Locking ============
+// RACE CONDITION FIX: Uses atomic UPDATE with conditional WHERE to claim trades
+// Even if multiple Vercel instances run simultaneously, only one will successfully claim each trade
 async function processTradeQueue(traderStateId: string) {
-  // Prevent duplicate processors for same trader state
+  // Instance-level guard (same-process safety)
   if (activeQueueProcessors.has(traderStateId)) {
     console.log(`[CONSUMER] Queue processor already running for ${traderStateId.slice(0,8)}`);
     return;
@@ -378,30 +470,58 @@ async function processTradeQueue(traderStateId: string) {
   console.log(`[CONSUMER] Starting queue processor for ${traderStateId.slice(0,8)}`);
 
   let tradesProcessed = 0;
+  const processorId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   try {
     // Process trades one-by-one until batch limit or no more queued trades
     while (tradesProcessed < MAX_TRADES_PER_BATCH) {
-      // 1. Fetch oldest queued trade for this trader state
-      const { data: queuedTrades, error: fetchError } = await supabase
+      // ========== ATOMIC CLAIM PATTERN ==========
+      // Step 1: Find oldest queued trade
+      const { data: candidates, error: findError } = await supabase
         .from('demo_trades')
-        .select('*')
+        .select('id')
         .eq('trader_state_id', traderStateId)
         .eq('status', 'queued')
         .order('created_at', { ascending: true })
         .limit(1);
 
-      if (fetchError) {
-        console.error(`[CONSUMER] Fetch error:`, fetchError.message);
+      if (findError) {
+        console.error(`[CONSUMER] Find error:`, findError.message);
         break;
       }
 
-      if (!queuedTrades || queuedTrades.length === 0) {
+      if (!candidates || candidates.length === 0) {
         console.log(`[CONSUMER] No more queued trades for ${traderStateId.slice(0,8)}`);
         break;
       }
 
-      const tradeRow = queuedTrades[0];
+      const tradeId = candidates[0].id;
+
+      // Step 2: ATOMIC CLAIM - Only succeeds if status is still 'queued'
+      // If another instance claimed it between Step 1 and now, this returns 0 rows updated
+      const { data: claimResult, error: claimError } = await supabase
+        .from('demo_trades')
+        .update({ 
+          status: 'processing',
+          processor_id: processorId  // Track which processor claimed it
+        })
+        .eq('id', tradeId)
+        .eq('status', 'queued')  // CRITICAL: Only update if still queued
+        .select('*');
+
+      if (claimError) {
+        console.error(`[CONSUMER] Claim error:`, claimError.message);
+        break;
+      }
+
+      // If claim returned no rows, another processor got it - skip and try next
+      if (!claimResult || claimResult.length === 0) {
+        console.log(`[CONSUMER] Trade ${tradeId.slice(0,8)} already claimed by another processor`);
+        continue; // Try to find another trade
+      }
+
+      // ========== PROCESS CLAIMED TRADE ==========
+      const tradeRow = claimResult[0];
       const trade = tradeRow.raw_data as RawTrade;
 
       if (!trade) {
@@ -410,21 +530,16 @@ async function processTradeQueue(traderStateId: string) {
           status: 'failed',
           error_message: 'Missing raw_data in trade row'
         }).eq('id', tradeRow.id);
+        tradesProcessed++;
         continue;
       }
 
       console.log(`[CONSUMER] Processing trade ${tradeRow.id.slice(0,8)} (sig: ${trade.signature?.slice(0,12)})`);
 
-      // 2. Mark as 'processing' to prevent re-processing
-      await supabase.from('demo_trades').update({
-        status: 'processing'
-      }).eq('id', tradeRow.id);
-
-      // 3. Execute the trade (full Master Fix logic)
       try {
         await executeQueuedTrade(traderStateId, tradeRow, trade);
 
-        // 4. Mark as completed
+        // Mark as completed
         await supabase.from('demo_trades').update({
           status: 'completed'
         }).eq('id', tradeRow.id);
@@ -432,7 +547,7 @@ async function processTradeQueue(traderStateId: string) {
         console.log(`[CONSUMER] Trade ${tradeRow.id.slice(0,8)} completed successfully`);
 
       } catch (processError: any) {
-        // 5. Mark as failed with error message
+        // Mark as failed with error message
         await supabase.from('demo_trades').update({
           status: 'failed',
           error_message: processError.message || 'Unknown processing error'
@@ -447,7 +562,7 @@ async function processTradeQueue(traderStateId: string) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    // Log if we hit batch limit (remaining trades will be picked up by next webhook)
+    // Log if we hit batch limit
     if (tradesProcessed >= MAX_TRADES_PER_BATCH) {
       console.log(`[CONSUMER] Batch limit reached (${MAX_TRADES_PER_BATCH}). Remaining trades will be processed on next trigger.`);
     }
@@ -459,9 +574,11 @@ async function processTradeQueue(traderStateId: string) {
 
 // ============ EXECUTE QUEUED TRADE (Master Fix Logic) ============
 async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: RawTrade) {
-  const sourceMint = trade.tokenInMint;
-  const destMint = trade.tokenOutMint;
   const SOL_MINT = 'So11111111111111111111111111111111111111112';
+  
+  // Normalize 'SOL' string to wSOL mint address for position lookup
+  const sourceMint = trade.tokenInMint === 'SOL' ? SOL_MINT : trade.tokenInMint;
+  const destMint = trade.tokenOutMint === 'SOL' ? SOL_MINT : trade.tokenOutMint;
 
   // 1. Fetch FRESH trader state and positions (not stale from queue time)
   const { data: traderState, error: tsError } = await supabase
@@ -481,21 +598,23 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   const sourceBalance = Number(sourcePosition?.size || 0);
 
   if (sourceBalance <= 0) {
-    throw new Error(`No ${sourceMint?.slice(0,6)} balance (have: ${sourceBalance})`);
+    throw new Error(`No ${getTokenSymbol(sourceMint)} balance (have: ${sourceBalance})`);
   }
 
   // 3. DYNAMIC RATIO CALCULATION
+  // Use leader_before_balance from trade row (set by Producer from positions table)
+  // This is more accurate than Helius tokenInPreBalance which is often 0 or missing
   const leaderTradeAmount = trade.tokenInAmount;
-  const leaderBeforeBalance = trade.tokenInPreBalance && trade.tokenInPreBalance > 0 
-      ? trade.tokenInPreBalance 
-      : leaderTradeAmount;
+  const leaderBeforeBalance = Number(tradeRow.leader_before_balance) > 0
+      ? Number(tradeRow.leader_before_balance)
+      : leaderTradeAmount; // Fallback only if DB value missing
   
   let tradeRatio = leaderBeforeBalance > 0 ? leaderTradeAmount / leaderBeforeBalance : 1;
   tradeRatio = Math.min(Math.max(tradeRatio, 0), 1);
 
   console.log(`  Ratio=${(tradeRatio*100).toFixed(1)}% (Leader: ${leaderTradeAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)})`);
 
-  // Apply Ratio to Our Balance
+  // Apply Ratio to Follower's Balance
   let copyAmount = sourceBalance * tradeRatio;
   copyAmount = Math.min(copyAmount, sourceBalance);
 

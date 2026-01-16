@@ -265,91 +265,63 @@ export default function TraderDetailPage() {
   
   return (
     <div className="min-h-screen font-sans" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
-      {/* Fixed Back Button - Top Left */}
       <Link 
         href="/star-traders"
+        className="fixed top-20 left-4 z-50 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg border transition-all hover:bg-white/10 md:w-auto"
         style={{ 
-          position: 'fixed',
-          top: '16px',
-          left: '16px',
-          zIndex: 9999,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '8px',
-          width: '180px',
-          height: '48px',
-          fontSize: '14px',
-          fontWeight: 500,
-          borderRadius: '8px',
-          border: `1px solid ${COLORS.structure}`,
+          borderColor: COLORS.structure,
           backgroundColor: COLORS.surface,
           color: COLORS.text,
-          textDecoration: 'none',
-          cursor: 'pointer',
-          transition: 'all 0.2s ease',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.1)';
-          e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.backgroundColor = COLORS.surface;
-          e.currentTarget.style.borderColor = COLORS.structure;
         }}
       >
-        <ArrowLeft size={16} /> Back to Traders
+        <ArrowLeft size={16} />
+        <span className="hidden sm:inline">Back to Traders</span>
       </Link>
 
-      <main className="max-w-6xl mx-auto px-6 py-12 pt-20">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 pt-32 sm:pt-24">
         {/* Header */}
         <div className="mb-8">
           
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-3 sm:gap-4">
               <div 
-                className="w-14 h-14 rounded-full flex items-center justify-center font-bold text-xl"
+                className="w-12 h-12 sm:w-14 sm:h-14 rounded-full flex items-center justify-center font-bold text-lg sm:text-xl flex-shrink-0"
                 style={{ backgroundColor: COLORS.structure, color: COLORS.text }}
               >
                 {traderName.charAt(0)}
               </div>
-              <div>
-                <h1 className="text-2xl font-semibold" style={{ color: COLORS.text }}>
+              <div className="min-w-0">
+                <h1 className="text-xl sm:text-2xl font-semibold truncate" style={{ color: COLORS.text }}>
                   {traderName}
                 </h1>
                 <a 
                   href={`https://solscan.io/account/${wallet}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-sm font-mono flex items-center gap-1 hover:opacity-80 transition-opacity"
+                  className="text-xs sm:text-sm font-mono flex items-center gap-1 hover:opacity-80 transition-opacity"
                   style={{ color: COLORS.data }}
                 >
-                  {wallet.slice(0, 12)}...{wallet.slice(-8)}
-                  <ArrowUpRight size={14} />
+                  <span className="truncate">{wallet.slice(0, 8)}...{wallet.slice(-6)}</span>
+                  <ArrowUpRight size={12} className="flex-shrink-0" />
                 </a>
               </div>
             </div>
 
-            {/* GMGN Link with Info */}
-            <div className="flex flex-col items-end gap-2">
-              <a 
-                href={`https://gmgn.ai/sol/address/${wallet}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border transition-all hover:bg-white/5 hover:border-white/20"
-                style={{ 
-                  borderColor: COLORS.structure, 
-                  backgroundColor: COLORS.surface,
-                }}
-              >
-                <span className="text-sm font-medium" style={{ color: COLORS.text }}>View on</span>
-                <img src="https://gmgn.ai/static/GMGNLogoDark.svg" alt="GMGN" className="h-5 w-auto" />
-                <ArrowUpRight size={14} style={{ color: COLORS.data }} />
-              </a>
-              <p className="text-xs text-right max-w-[200px]" style={{ color: COLORS.data }}>
-                Data shown is from recent trades. For detailed analytics, visit GMGN.
-              </p>
-            </div>
+            {/* GMGN Link */}
+            <a 
+              href={`https://gmgn.ai/sol/address/${wallet}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border transition-all hover:bg-white/5 hover:border-white/20 self-start sm:self-center"
+              style={{ 
+                borderColor: COLORS.structure, 
+                backgroundColor: COLORS.surface,
+              }}
+            >
+              <span className="text-sm font-medium" style={{ color: COLORS.text }}>View on</span>
+              <img src="https://gmgn.ai/static/GMGNLogoDark.svg" alt="GMGN" className="h-5 w-auto" />
+              <ArrowUpRight size={14} style={{ color: COLORS.data }} />
+            </a>
           </div>
         </div>
         
@@ -365,28 +337,28 @@ export default function TraderDetailPage() {
         
         {/* Stats Summary */}
         {stats && (
-          <div className="grid grid-cols-4 gap-4 mb-8">
-            <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Total PnL</div>
-              <div className="text-xl font-semibold" style={{ color: stats.totalPnl >= 0 ? '#10B981' : '#EF4444' }}>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-8">
+            <div className="p-4 sm:p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+              <div className="text-xs font-mono uppercase tracking-wider mb-1 sm:mb-2" style={{ color: COLORS.data }}>Total PnL</div>
+              <div className="text-lg sm:text-xl font-semibold" style={{ color: stats.totalPnl >= 0 ? '#10B981' : '#EF4444' }}>
                 {stats.totalPnl >= 0 ? '+' : '-'}${formatAmount(Math.abs(stats.totalPnl))}
               </div>
             </div>
-            <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Win Rate</div>
-              <div className="text-xl font-semibold" style={{ color: COLORS.brand }}>{stats.winRate}%</div>
+            <div className="p-4 sm:p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+              <div className="text-xs font-mono uppercase tracking-wider mb-1 sm:mb-2" style={{ color: COLORS.data }}>Win Rate</div>
+              <div className="text-lg sm:text-xl font-semibold" style={{ color: COLORS.brand }}>{stats.winRate}%</div>
             </div>
-            <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Wins / Losses</div>
-              <div className="text-xl font-semibold">
+            <div className="p-4 sm:p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+              <div className="text-xs font-mono uppercase tracking-wider mb-1 sm:mb-2" style={{ color: COLORS.data }}>Wins / Losses</div>
+              <div className="text-lg sm:text-xl font-semibold">
                 <span style={{ color: '#10B981' }}>{stats.wins}</span>
                 <span style={{ color: COLORS.data }}> / </span>
                 <span style={{ color: '#EF4444' }}>{stats.losses}</span>
               </div>
             </div>
-            <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Portfolio Value</div>
-              <div className="text-xl font-semibold" style={{ color: COLORS.brand }}>{formatUsd(totalPortfolioValue)}</div>
+            <div className="p-4 sm:p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+              <div className="text-xs font-mono uppercase tracking-wider mb-1 sm:mb-2" style={{ color: COLORS.data }}>Portfolio</div>
+              <div className="text-lg sm:text-xl font-semibold" style={{ color: COLORS.brand }}>{formatUsd(totalPortfolioValue)}</div>
             </div>
           </div>
         )}
@@ -420,80 +392,85 @@ export default function TraderDetailPage() {
         {/* Trades Tab */}
         {activeTab === 'trades' && (
           <div className="border overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-            <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: COLORS.structure }}>
+            <div className="px-4 sm:px-6 py-4 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3" style={{ borderColor: COLORS.structure }}>
               <div>
                 <h2 className="font-medium" style={{ color: COLORS.text }}>Recent Trades</h2>
                 <p className="text-xs" style={{ color: COLORS.data }}>Last 100 trades with PnL calculation</p>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={fetchTrades} className="px-3 py-1.5 text-xs border transition-colors hover:opacity-80" style={{ borderColor: COLORS.structure, color: COLORS.brand }}>
+                <button onClick={fetchTrades} className="px-3 py-1.5 text-xs border transition-colors hover:opacity-80 rounded" style={{ borderColor: COLORS.structure, color: COLORS.brand }}>
                   <RefreshCw size={12} className="inline mr-1" /> Refresh
                 </button>
-                <button onClick={syncTrades} disabled={syncing} className="px-3 py-1.5 text-xs border transition-colors hover:opacity-80" style={{ borderColor: COLORS.structure, color: '#F59E0B' }}>
+                <button onClick={syncTrades} disabled={syncing} className="px-3 py-1.5 text-xs border transition-colors hover:opacity-80 rounded" style={{ borderColor: COLORS.structure, color: '#F59E0B' }}>
                   <Download size={12} className="inline mr-1" /> {syncing ? 'Syncing...' : 'Sync'}
                 </button>
               </div>
             </div>
             
-            <div className="grid grid-cols-8 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
-              <div>Type</div>
-              <div className="col-span-2">Token In → Token Out</div>
-              <div>USD Value</div>
-              <div>Profit</div>
-              <div>Age</div>
-              <div>Gas</div>
-              <div>Actions</div>
-            </div>
+            {/* Scrollable table wrapper for mobile */}
+            <div className="overflow-x-auto">
+              <div className="min-w-[700px]">
+                <div className="grid grid-cols-8 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
+                  <div>Type</div>
+                  <div className="col-span-2">Token In → Token Out</div>
+                  <div>USD Value</div>
+                  <div>Profit</div>
+                  <div>Age</div>
+                  <div>Gas</div>
+                  <div>Actions</div>
+                </div>
             
-            <div className="max-h-[500px] overflow-y-auto">
-              {loading ? (
-                <div className="flex items-center justify-center py-16">
-                  <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
-                </div>
-              ) : error ? (
-                <div className="text-center py-16" style={{ color: '#EF4444' }}>{error}</div>
-              ) : trades.length === 0 ? (
-                <div className="text-center py-16" style={{ color: COLORS.data }}>
-                  No trades found. Click "Sync" to import historical trades.
-                </div>
-              ) : (
-                trades.map((trade) => {
-                  const isBuy = trade.type === 'buy';
-                  const pnl = formatPnl(trade.realizedPnl);
-                  const inMeta = tokenMeta[trade.tokenInMint] || { symbol: trade.tokenInSymbol, logoURI: null };
-                  const outMeta = tokenMeta[trade.tokenOutMint] || { symbol: trade.tokenOutSymbol, logoURI: null };
-                  
-                  return (
-                    <div key={trade.signature} className="grid grid-cols-8 gap-4 items-center px-6 py-3 hover:bg-white/[0.02] transition-colors border-b" style={{ borderColor: COLORS.structure }}>
-                      <div>
-                        <span className="px-2.5 py-1 rounded text-xs font-medium" style={{ backgroundColor: isBuy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)', color: isBuy ? '#10B981' : '#EF4444' }}>
-                          {isBuy ? 'Buy' : 'Sell'}
-                        </span>
-                      </div>
-                      <div className="col-span-2 flex items-center gap-2">
-                        <div className="flex items-center gap-1.5">
-                          <TokenIcon symbol={inMeta.symbol} logoURI={inMeta.logoURI} />
-                          <span style={{ color: COLORS.text }} className="text-sm">{formatAmount(trade.tokenInAmount)} {inMeta.symbol}</span>
-                        </div>
-                        <ArrowRight size={14} style={{ color: COLORS.data }} />
-                        <div className="flex items-center gap-1.5">
-                          <TokenIcon symbol={outMeta.symbol} logoURI={outMeta.logoURI} />
-                          <span style={{ color: COLORS.text }} className="text-sm">{formatAmount(trade.tokenOutAmount)} {outMeta.symbol}</span>
-                        </div>
-                      </div>
-                      <div style={{ color: COLORS.brand }} className="font-medium">${formatAmount(trade.usdValue)}</div>
-                      <div style={{ color: pnl.color }} className="font-medium">{pnl.text}</div>
-                      <div style={{ color: COLORS.data }}>{timeAgo(trade.timestamp)}</div>
-                      <div style={{ color: COLORS.data }}>${(trade.gas * 200).toFixed(3)}</div>
-                      <div>
-                        <a href={`https://solscan.io/tx/${trade.signature}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs hover:opacity-80 transition-opacity" style={{ color: COLORS.data }}>
-                          View <ArrowUpRight size={12} />
-                        </a>
-                      </div>
+                <div className="max-h-[500px] overflow-y-auto">
+                  {loading ? (
+                    <div className="flex items-center justify-center py-16">
+                      <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
                     </div>
-                  );
-                })
-              )}
+                  ) : error ? (
+                    <div className="text-center py-16" style={{ color: '#EF4444' }}>{error}</div>
+                  ) : trades.length === 0 ? (
+                    <div className="text-center py-16" style={{ color: COLORS.data }}>
+                      No trades found. Click "Sync" to import historical trades.
+                    </div>
+                  ) : (
+                    trades.map((trade) => {
+                      const isBuy = trade.type === 'buy';
+                      const pnl = formatPnl(trade.realizedPnl);
+                      const inMeta = tokenMeta[trade.tokenInMint] || { symbol: trade.tokenInSymbol, logoURI: null };
+                      const outMeta = tokenMeta[trade.tokenOutMint] || { symbol: trade.tokenOutSymbol, logoURI: null };
+                      
+                      return (
+                        <div key={trade.signature} className="grid grid-cols-8 gap-4 items-center px-6 py-3 hover:bg-white/[0.02] transition-colors border-b" style={{ borderColor: COLORS.structure }}>
+                          <div>
+                            <span className="px-2.5 py-1 rounded text-xs font-medium" style={{ backgroundColor: isBuy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)', color: isBuy ? '#10B981' : '#EF4444' }}>
+                              {isBuy ? 'Buy' : 'Sell'}
+                            </span>
+                          </div>
+                          <div className="col-span-2 flex items-center gap-2">
+                            <div className="flex items-center gap-1.5">
+                              <TokenIcon symbol={inMeta.symbol} logoURI={inMeta.logoURI} />
+                              <span style={{ color: COLORS.text }} className="text-sm">{formatAmount(trade.tokenInAmount)} {inMeta.symbol}</span>
+                            </div>
+                            <ArrowRight size={14} style={{ color: COLORS.data }} />
+                            <div className="flex items-center gap-1.5">
+                              <TokenIcon symbol={outMeta.symbol} logoURI={outMeta.logoURI} />
+                              <span style={{ color: COLORS.text }} className="text-sm">{formatAmount(trade.tokenOutAmount)} {outMeta.symbol}</span>
+                            </div>
+                          </div>
+                          <div style={{ color: COLORS.brand }} className="font-medium">${formatAmount(trade.usdValue)}</div>
+                          <div style={{ color: pnl.color }} className="font-medium">{pnl.text}</div>
+                          <div style={{ color: COLORS.data }}>{timeAgo(trade.timestamp)}</div>
+                          <div style={{ color: COLORS.data }}>${(trade.gas * 200).toFixed(3)}</div>
+                          <div>
+                            <a href={`https://solscan.io/tx/${trade.signature}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs hover:opacity-80 transition-opacity" style={{ color: COLORS.data }}>
+                              View <ArrowUpRight size={12} />
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -501,7 +478,7 @@ export default function TraderDetailPage() {
         {/* Portfolio Tab */}
         {activeTab === 'portfolio' && (
           <div className="border overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-            <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: COLORS.structure }}>
+            <div className="px-4 sm:px-6 py-4 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3" style={{ borderColor: COLORS.structure }}>
               <div>
                 <h2 className="font-medium" style={{ color: COLORS.text }}>Portfolio</h2>
                 <p className="text-xs" style={{ color: COLORS.data }}>Real-time on-chain holdings</p>
@@ -523,23 +500,26 @@ export default function TraderDetailPage() {
               </div>
             </div>
             
-            <div className="grid grid-cols-6 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
-              <div>Token</div>
-              <div>Balance</div>
-              <div>Price</div>
-              <div>Value</div>
-              <div>% Portfolio</div>
-              <div>Actions</div>
-            </div>
-            
-            <div className="max-h-[500px] overflow-y-auto">
-              {portfolioLoading ? (
-                <div className="flex items-center justify-center py-16">
-                  <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
+            {/* Scrollable table wrapper for mobile */}
+            <div className="overflow-x-auto">
+              <div className="min-w-[600px]">
+                <div className="grid grid-cols-6 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
+                  <div>Token</div>
+                  <div>Balance</div>
+                  <div>Price</div>
+                  <div>Value</div>
+                  <div>% Portfolio</div>
+                  <div>Actions</div>
                 </div>
-              ) : portfolioError ? (
-                <div className="text-center py-16" style={{ color: '#EF4444' }}>{portfolioError}</div>
-              ) : (
+            
+                <div className="max-h-[500px] overflow-y-auto">
+                  {portfolioLoading ? (
+                    <div className="flex items-center justify-center py-16">
+                      <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
+                    </div>
+                  ) : portfolioError ? (
+                    <div className="text-center py-16" style={{ color: '#EF4444' }}>{portfolioError}</div>
+                  ) : (
                 <>
                   {/* Native SOL */}
                   {solBalance && (
@@ -593,6 +573,8 @@ export default function TraderDetailPage() {
                   ))}
                 </>
               )}
+                </div>
+              </div>
             </div>
           </div>
         )}
