@@ -338,9 +338,9 @@ export default function HomePage() {
             </p>
 
             <div className="flex flex-wrap gap-3">
-              <a href="/dashboard">
+              <a href="/demo-vault">
                 <Button className="h-11 px-7 text-sm font-medium hover:opacity-90 w-full sm:w-auto">
-                  LAUNCH_TERMINAL
+                  TRY_DEMO
                   <ArrowRight size={14} className="ml-2" />
                 </Button>
               </a>

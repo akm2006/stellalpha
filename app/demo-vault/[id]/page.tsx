@@ -414,57 +414,72 @@ export default function TraderStateDetailPage() {
   
   return (
     <div className="min-h-screen font-sans" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
-      <main className="max-w-6xl mx-auto px-6 py-12">
+      {/* Responsive Back Button */}
+      <div className="fixed top-16 left-0 right-0 z-40 px-4 py-2 md:hidden bg-[#050505]/80 backdrop-blur-md border-b border-[#262626]">
+        <Link 
+          href="/demo-vault"
+          className="flex items-center gap-2 text-sm font-medium p-2"
+          style={{ color: COLORS.text }}
+        >
+          <ArrowLeft size={16} /> Back
+        </Link>
+      </div>
+
+      <Link 
+        href="/demo-vault"
+        className="hidden md:flex fixed top-4 left-4 z-50 items-center justify-center gap-2 text-sm font-medium transition-all duration-200"
+        style={{ 
+          width: '200px',
+          height: '48px',
+          borderRadius: '8px',
+          border: `1px solid ${COLORS.structure}`,
+          backgroundColor: COLORS.surface,
+          color: COLORS.text,
+        }}
+      >
+        <ArrowLeft size={16} /> Back to Demo Vault
+      </Link>
+
+      <main className="max-w-6xl mx-auto px-4 md:px-6 py-12 pt-32 md:pt-20">
         {/* Header */}
         <div className="mb-8">
-          <Link 
-            href="/demo-vault"
-            className="inline-flex items-center gap-2 text-sm mb-6 hover:opacity-80"
-            style={{ color: COLORS.data }}
-          >
-            <ArrowLeft size={16} /> Back to Demo Vault
-          </Link>
           
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-14 rounded-full flex items-center justify-center font-bold text-xl" style={{ backgroundColor: COLORS.structure, color: COLORS.text }}>
-                {starTrader.charAt(0)}
+          {/* Main Title Row */}
+          <div className="flex flex-col md:flex-row md:items-start justify-between mb-6 gap-4">
+            <div>
+              <div className="flex flex-wrap items-center gap-3 mb-2">
+                <h1 className="text-2xl md:text-3xl font-semibold text-white">Trader State</h1>
+                {isSettled ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/10 text-gray-400 border border-gray-500/20 flex items-center gap-1.5">
+                    <StopCircle size={12} /> Settled
+                  </span>
+                ) : isPaused ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 flex items-center gap-1.5">
+                    <Pause size={12} /> Paused
+                  </span>
+                ) : isInitialized ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5">
+                    <CheckCircle size={12} /> Active
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-500/10 text-orange-400 border border-orange-500/20 flex items-center gap-1.5">
+                    <Clock size={12} /> Pending
+                  </span>
+                )}
               </div>
-              <div>
-                <h1 className="text-2xl font-semibold flex items-center gap-3" style={{ color: COLORS.text }}>
-                  Trader State
-                  {isSettled ? (
-                    <span className="text-sm text-gray-400 flex items-center gap-1"><StopCircle size={14} /> Settled</span>
-                  ) : isPaused ? (
-                    <span className="text-sm text-yellow-400 flex items-center gap-1"><Pause size={14} /> Paused</span>
-                  ) : isInitialized ? (
-                    <span className="text-sm text-green-400 flex items-center gap-1"><CheckCircle size={14} /> Active</span>
-                  ) : (
-                    <span className="text-sm text-orange-400 flex items-center gap-1"><Clock size={14} /> Pending</span>
-                  )}
-                </h1>
-                <div className="flex items-center gap-4 text-sm" style={{ color: COLORS.data }}>
-                  <span className="font-mono">{starTrader.slice(0, 12)}...{starTrader.slice(-8)}</span>
-                  <a 
-                    href={`https://solscan.io/account/${starTrader}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1 hover:opacity-80"
-                    style={{ color: COLORS.brand }}
-                  >
-                    Solscan <ArrowUpRight size={12} />
-                  </a>
-                </div>
+              <div className="flex items-center gap-2 text-xs md:text-sm font-mono opacity-50 break-all">
+                <span>UUID:</span>
+                <span>{traderStateId}</span>
               </div>
             </div>
-            
+
             {/* Action Buttons */}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {!isInitialized && !isSettled && (
                 <button 
                   onClick={handleInitClick} 
                   disabled={actionLoading} 
-                  className="px-4 py-2 text-sm font-medium flex items-center gap-2 rounded transition-colors hover:opacity-90 disabled:opacity-50" 
+                  className="px-4 py-2 text-sm font-medium flex items-center gap-2 rounded transition-colors hover:opacity-90 disabled:opacity-50 w-full md:w-auto justify-center" 
                   style={{ backgroundColor: '#10B981', color: '#000' }}
                 >
                   <CheckCircle size={14} /> Initialize Copy Trading
@@ -494,10 +509,46 @@ export default function TraderStateDetailPage() {
               </button>
             </div>
           </div>
+
+          {/* Follow Info Card */}
+          <div className="p-4 rounded-lg border bg-white/[0.02]" style={{ borderColor: COLORS.structure }}>
+            <div className="text-[10px] uppercase tracking-wider font-semibold opacity-50 mb-3 block">Following Star Trader</div>
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+              <div className="flex items-center gap-4 w-full sm:w-auto">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-lg shrink-0" style={{ backgroundColor: COLORS.structure, color: COLORS.text }}>
+                  {starTrader.charAt(0)}
+                </div>
+                
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-mono text-sm truncate" style={{ color: COLORS.text }}>{starTrader}</span>
+                    <a 
+                      href={`https://solscan.io/account/${starTrader}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1 hover:bg-white/5 rounded transition-colors shrink-0"
+                      title="View on Solscan"
+                    >
+                      <ArrowUpRight size={14} style={{ color: COLORS.data }} />
+                    </a>
+                  </div>
+                  <div className="flex items-center gap-4 text-xs">
+                    <Link
+                      href={`/star-traders/${starTrader}`}
+                      className="flex items-center gap-1 hover:text-white transition-colors"
+                      style={{ color: COLORS.brand }}
+                    >
+                      View Star Trader Profile <ArrowRight size={12} />
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         
-        {/* Stats Cards - 5 columns */}
-        <div className="grid grid-cols-5 gap-4 mb-8">
+        {/* Stats Cards - Responsive Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
           <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Allocated</div>
             <div className="text-xl font-semibold" style={{ color: COLORS.text }}>{formatUsd(allocatedUsd)}</div>
@@ -511,7 +562,7 @@ export default function TraderStateDetailPage() {
             <div className="text-xl font-semibold" style={{ color: totalPnL >= 0 ? '#10B981' : '#EF4444' }}>
               {totalPnL >= 0 ? '+' : ''}{formatUsd(totalPnL)} ({totalPnLPercent >= 0 ? '+' : ''}{totalPnLPercent.toFixed(1)}%)
             </div>
-            <div className="text-xs mt-1 flex gap-3" style={{ color: COLORS.data }}>
+            <div className="text-xs mt-1 flex flex-col xl:flex-row xl:gap-3 gap-1" style={{ color: COLORS.data }}>
               <span>Realized: <span style={{ color: realizedPnlUsd >= 0 ? '#10B981' : '#EF4444' }}>{realizedPnlUsd >= 0 ? '+' : ''}{formatUsd(realizedPnlUsd)}</span></span>
               <span>Unrealized: <span style={{ color: unrealizedPnL >= 0 ? '#10B981' : '#EF4444' }}>{unrealizedPnL >= 0 ? '+' : ''}{formatUsd(unrealizedPnL)}</span></span>
             </div>
@@ -521,7 +572,7 @@ export default function TraderStateDetailPage() {
             <div className="text-xl font-semibold" style={{ color: COLORS.text }}>{trades.length}</div>
             <div className="text-xs mt-1" style={{ color: COLORS.data }}>Win Rate: {winRate.toFixed(0)}%</div>
           </div>
-          <div className="p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+          <div className="p-5 border col-span-2 md:col-span-1" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.data }}>Avg Latency</div>
             <div className="text-xl font-semibold" style={{ color: COLORS.text }}>{formatLatency(avgLatency)}</div>
           </div>
@@ -564,7 +615,7 @@ export default function TraderStateDetailPage() {
             <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: COLORS.structure }}>
               <div>
                 <h2 className="font-medium" style={{ color: COLORS.text }}>Portfolio</h2>
-                <p className="text-xs" style={{ color: COLORS.data }}>Live prices from Jupiter • Unrealized PnL = (Price - AvgEntry) × Amount</p>
+                <p className="text-xs" style={{ color: COLORS.data }}>Real-time holdings and performance tracking</p>
               </div>
               <div className="text-lg font-medium" style={{ color: COLORS.brand }}>{formatUsd(portfolioValue)}</div>
             </div>
@@ -622,7 +673,7 @@ export default function TraderStateDetailPage() {
           <div className="border overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <div className="px-6 py-4 border-b" style={{ borderColor: COLORS.structure }}>
               <h2 className="font-medium" style={{ color: COLORS.text }}>Copy Trades</h2>
-              <p className="text-xs" style={{ color: COLORS.data }}>Simulated trades • PnL shown only for sells (WAC method)</p>
+              <p className="text-xs" style={{ color: COLORS.data }}>Complete history of copy-trading actions</p>
             </div>
             
             <div className="grid grid-cols-8 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
@@ -661,12 +712,12 @@ export default function TraderStateDetailPage() {
                       <div className="col-span-2 flex items-center gap-2">
                         <div className="flex items-center gap-1.5">
                           <TokenIcon symbol={inMeta.symbol || trade.token_in_symbol} logoURI={inMeta.logoURI} />
-                          <span style={{ color: COLORS.text }}>{formatAmount(trade.token_in_amount)}</span>
+                          <span style={{ color: COLORS.text }}>{formatAmount(trade.token_in_amount)} {inMeta.symbol || trade.token_in_symbol}</span>
                         </div>
                         <ArrowRight size={14} style={{ color: COLORS.data }} />
                         <div className="flex items-center gap-1.5">
                           <TokenIcon symbol={outMeta.symbol || trade.token_out_symbol} logoURI={outMeta.logoURI} />
-                          <span style={{ color: COLORS.text }}>{formatAmount(trade.token_out_amount)}</span>
+                          <span style={{ color: COLORS.text }}>{formatAmount(trade.token_out_amount)} {outMeta.symbol || trade.token_out_symbol}</span>
                         </div>
                       </div>
                       <div style={{ color: COLORS.brand }} className="font-medium">{formatUsd(trade.usd_value)}</div>

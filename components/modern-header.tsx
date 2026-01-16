@@ -4,9 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Home, Settings, Menu, X } from "lucide-react";
+import { Home, Settings, Menu, X, Wallet, LayoutDashboard, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { COLORS } from "@/lib/theme";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 
 interface NavItem {
   href: string;
@@ -15,8 +17,9 @@ interface NavItem {
 }
 
 const navigationItems: NavItem[] = [
-  { href: "/dashboard", icon: Home, label: "Dashboard" },
-  { href: "/command-center", icon: Settings, label: "Command Center" },
+   { href: "/demo-vault", icon: LayoutDashboard, label: "Demo" },
+  { href: "/star-traders", icon: Star, label: "Star Traders" },
+ 
 ];
 
 export default function ModernHeader() {
@@ -64,7 +67,23 @@ export default function ModernHeader() {
         </nav>
 
         <div className="ml-auto flex items-center gap-4">
-         
+          {/* Styled Wallet Button */}
+          <div className="wallet-button-wrapper">
+            <WalletMultiButton 
+              style={{
+                backgroundColor: COLORS.surface,
+                border: `1px solid ${COLORS.structure}`,
+                borderRadius: '8px',
+                padding: '10px 16px',
+                fontSize: '14px',
+                fontWeight: 500,
+                color: COLORS.text,
+                height: 'auto',
+                lineHeight: 'normal',
+                transition: 'all 0.2s ease',
+              }}
+            />
+          </div>
 
           {/* Mobile menu toggle */}
           <button
