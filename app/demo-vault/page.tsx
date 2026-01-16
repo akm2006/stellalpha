@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useWallet } from '@solana/wallet-adapter-react';
+import { useAuth } from '@/contexts/auth-context';
 import { COLORS } from '@/lib/theme';
 import { 
   Wallet, 
@@ -16,7 +17,9 @@ import {
   Pause,
   StopCircle,
   ArrowRight,
-  DollarSign
+  DollarSign,
+  LogIn,
+  Loader2
 } from 'lucide-react';
 
 interface Position {
@@ -52,7 +55,8 @@ function formatUsd(amount: number): string {
 }
 
 export default function DemoVaultPage() {
-  const { publicKey, connected } = useWallet();
+  const { connected } = useWallet();
+  const { isAuthenticated, isLoading: authLoading, user, signIn, openWalletModal } = useAuth();
   const [vault, setVault] = useState<DemoVault | null>(null);
   const [traderStates, setTraderStates] = useState<TraderState[]>([]);
   const [starTraders, setStarTraders] = useState<{ address: string; name: string }[]>([]);
@@ -64,7 +68,8 @@ export default function DemoVaultPage() {
   const [selectedTrader, setSelectedTrader] = useState<string | null>(null);
   const [allocationUsd, setAllocationUsd] = useState(500);
   
-  const walletAddress = publicKey?.toBase58() || null;
+  // Use authenticated wallet address instead of raw connected wallet
+  const walletAddress = user?.wallet || null;
   
   const fetchVault = useCallback(async () => {
     if (!walletAddress) return;
@@ -223,14 +228,52 @@ export default function DemoVaultPage() {
         {/* Not Connected */}
         {!connected && (
           <div className="border p-12 text-center" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-            <Wallet size={48} className="mx-auto mb-4 opacity-50" />
+            <Wallet size={48} className="mx-auto mb-4" style={{ color: COLORS.brand }} />
             <h2 className="text-xl font-medium mb-2">Connect Your Wallet</h2>
-            <p className="text-sm mb-6" style={{ color: COLORS.data }}>Connect wallet in the navbar to create a demo vault with $1,000 virtual USD</p>
+            <p className="text-sm mb-6" style={{ color: COLORS.data }}>Connect your Solana wallet to create a demo vault with $1,000 virtual USD</p>
+            <button
+              onClick={openWalletModal}
+              className="px-6 py-3 font-medium transition-opacity hover:opacity-90 flex items-center gap-2 mx-auto rounded-lg"
+              style={{ backgroundColor: COLORS.brand, color: '#000' }}
+            >
+              <Wallet size={18} />
+              Connect Wallet
+            </button>
+          </div>
+        )}
+        
+        {/* Connected but Not Authenticated - Require Sign In */}
+        {connected && !isAuthenticated && !authLoading && (
+          <div className="border p-12 text-center" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
+            <LogIn size={48} className="mx-auto mb-4" style={{ color: COLORS.brand }} />
+            <h2 className="text-xl font-medium mb-2">Sign In Required</h2>
+            <p className="text-sm mb-6" style={{ color: COLORS.data }}>
+              Sign a message with your wallet to verify ownership and access your demo vault securely.
+            </p>
+            <button
+              onClick={signIn}
+              disabled={authLoading}
+              className="px-6 py-3 font-medium transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center gap-2 mx-auto"
+              style={{ backgroundColor: COLORS.brand, color: '#000' }}
+            >
+              {authLoading ? <Loader2 className="animate-spin" size={18} /> : <LogIn size={18} />}
+              Sign In with Wallet
+            </button>
+          </div>
+        )}
+        
+        {/* Auth Loading */}
+        {connected && authLoading && (
+          <div className="flex items-center justify-center py-16">
+            <div className="flex flex-col items-center gap-3">
+              <Loader2 size={32} className="animate-spin" style={{ color: COLORS.brand }} />
+              <span className="text-sm" style={{ color: COLORS.data }}>Verifying wallet ownership...</span>
+            </div>
           </div>
         )}
         
         {/* No Vault */}
-        {connected && !vault && !loading && (
+        {connected && isAuthenticated && !vault && !loading && (
           <div className="border p-12 text-center" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
             <TrendingUp size={48} className="mx-auto mb-4" style={{ color: COLORS.brand }} />
             <h2 className="text-xl font-medium mb-2">Deploy Demo Vault</h2>
@@ -263,7 +306,7 @@ export default function DemoVaultPage() {
         )}
         
         {/* Vault Dashboard */}
-        {connected && vault && (
+        {connected && isAuthenticated && vault && (
           <>
             {/* Stats */}
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">

@@ -4,6 +4,7 @@ import { Inter, Space_Grotesk } from "next/font/google"
 import "./globals.css"
 import ModernHeader from "@/components/modern-header"
 import AppWalletProvider from "@/components/providers/AppWalletProvider"
+import { AuthProvider } from "@/contexts/auth-context"
 
 
 const inter = Inter({
@@ -32,8 +33,10 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} ${spaceGrotesk.variable} antialiased`}>
       <body>
         <AppWalletProvider>
+          <AuthProvider>
             <ModernHeader />
             <main className="relative z-10">{children}</main>
+          </AuthProvider>
         </AppWalletProvider>
       </body>
     </html>

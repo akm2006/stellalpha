@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useWallet } from '@solana/wallet-adapter-react';
+import { useAuth } from '@/contexts/auth-context';
 import { COLORS } from '@/lib/theme';
 import { 
   ArrowLeft, 
@@ -20,7 +21,8 @@ import {
   CheckCircle,
   ExternalLink,
   X,
-  Loader2
+  Loader2,
+  LogIn
 } from 'lucide-react';
 
 // =============================================================================
@@ -47,15 +49,21 @@ interface Trade {
   type: 'buy' | 'sell';
   token_in_mint: string;
   token_in_symbol: string;
-  token_in_amount: number;
+  token_in_amount: number | null;
   token_out_mint: string;
   token_out_symbol: string;
-  token_out_amount: number;
-  usd_value: number;
+  token_out_amount: number | null;
+  usd_value: number | null;
   realized_pnl: number | null;  // Only for sells
-  latency_diff_ms: number;
+  latency_diff_ms: number | null;
   star_trade_signature: string;
   created_at: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  error_message: string | null;
+  // Leader trade info (always populated)
+  leader_in_amount: number | null;
+  leader_out_amount: number | null;
+  leader_usd_value: number | null;
 }
 
 interface PortfolioData {
@@ -85,7 +93,8 @@ interface TokenMeta {
 // FORMATTING UTILITIES
 // =============================================================================
 
-function formatAmount(amount: number): string {
+function formatAmount(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined) return '—';
   if (Math.abs(amount) >= 1000000) return (amount / 1000000).toFixed(2) + 'M';
   if (Math.abs(amount) >= 1000) return (amount / 1000).toFixed(2) + 'K';
   if (Math.abs(amount) < 0.01 && amount !== 0) return amount.toFixed(6);
@@ -172,9 +181,11 @@ function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | nul
 export default function TraderStateDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const { publicKey, connected } = useWallet();
+  const { connected } = useWallet();
+  const { isAuthenticated, user, signIn, isLoading: authLoading } = useAuth();
   const traderStateId = params.id as string;
-  const walletAddress = publicKey?.toBase58() || null;
+  // Use authenticated wallet address instead of raw connected wallet
+  const walletAddress = user?.wallet || null;
   
   // State
   const [portfolio, setPortfolio] = useState<PortfolioData | null>(null);
@@ -699,28 +710,55 @@ export default function TraderStateDetailPage() {
                   const inMeta = tokenMeta[trade.token_in_mint] || { symbol: trade.token_in_symbol, logoURI: null };
                   const outMeta = tokenMeta[trade.token_out_mint] || { symbol: trade.token_out_symbol, logoURI: null };
                   
+                  // For failed/incomplete trades, show leader amounts as fallback
+                  const isFailed = trade.status === 'failed';
+                  const isIncomplete = !trade.token_in_amount || !trade.token_out_amount;
+                  
+                  // Use copy amounts if available, otherwise leader amounts
+                  const displayInAmount = trade.token_in_amount ?? trade.leader_in_amount;
+                  const displayOutAmount = trade.token_out_amount ?? trade.leader_out_amount;
+                  const displayUsdValue = trade.usd_value ?? trade.leader_usd_value;
+                  
                   return (
                     <div key={trade.id} className="grid grid-cols-8 gap-4 items-center px-6 py-3 hover:bg-white/[0.02] border-b" style={{ borderColor: COLORS.structure }}>
-                      <div>
+                      <div className="flex items-center gap-2">
                         <span className="px-2.5 py-1 rounded text-xs font-medium" style={{ 
                           backgroundColor: isBuy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)', 
                           color: isBuy ? '#10B981' : '#EF4444' 
                         }}>
                           {isBuy ? 'Buy' : 'Sell'}
                         </span>
+                        {/* Status Badge */}
+                        {isFailed && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/20 text-red-400" title={trade.error_message || 'Copy failed'}>
+                            ✗
+                          </span>
+                        )}
+                        {isIncomplete && !isFailed && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-yellow-500/20 text-yellow-400">
+                            ⏳
+                          </span>
+                        )}
                       </div>
                       <div className="col-span-2 flex items-center gap-2">
                         <div className="flex items-center gap-1.5">
                           <TokenIcon symbol={inMeta.symbol || trade.token_in_symbol} logoURI={inMeta.logoURI} />
-                          <span style={{ color: COLORS.text }}>{formatAmount(trade.token_in_amount)} {inMeta.symbol || trade.token_in_symbol}</span>
+                          <span style={{ color: isIncomplete && !isFailed ? COLORS.data : COLORS.text }}>
+                            {formatAmount(displayInAmount)} {inMeta.symbol || trade.token_in_symbol}
+                            {isIncomplete && <span className="text-[10px] opacity-50 ml-1">(leader)</span>}
+                          </span>
                         </div>
                         <ArrowRight size={14} style={{ color: COLORS.data }} />
                         <div className="flex items-center gap-1.5">
                           <TokenIcon symbol={outMeta.symbol || trade.token_out_symbol} logoURI={outMeta.logoURI} />
-                          <span style={{ color: COLORS.text }}>{formatAmount(trade.token_out_amount)} {outMeta.symbol || trade.token_out_symbol}</span>
+                          <span style={{ color: isIncomplete && !isFailed ? COLORS.data : COLORS.text }}>
+                            {formatAmount(displayOutAmount)} {outMeta.symbol || trade.token_out_symbol}
+                          </span>
                         </div>
                       </div>
-                      <div style={{ color: COLORS.brand }} className="font-medium">{formatUsd(trade.usd_value)}</div>
+                      <div style={{ color: isFailed ? '#EF4444' : COLORS.brand }} className="font-medium">
+                        {isFailed ? 'Failed' : formatUsd(displayUsdValue)}
+                      </div>
                       <div style={{ color: tradePnl.color }} className="font-medium">{tradePnl.text}</div>
                       <div style={{ color: COLORS.data }}>{formatLatency(trade.latency_diff_ms)}</div>
                       <div style={{ color: COLORS.data }}>{timeAgo(trade.created_at)}</div>
