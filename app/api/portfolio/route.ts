@@ -8,6 +8,12 @@ const HELIUS_RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const NATIVE_SOL = 'NATIVE_SOL'; // Special identifier for native SOL
 
+// Configuration for Jupiter API batching
+const BATCH_SIZE = 30; // Jupiter works well with ~30 tokens per request
+const REQUEST_TIMEOUT_MS = 8000; // 8 seconds timeout per batch
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 500;
+
 interface PortfolioItem {
   mint: string;
   symbol: string;
@@ -22,35 +28,90 @@ interface PortfolioItem {
   isDust: boolean;
 }
 
-// Fetch prices from Jupiter Price API v3
+// Helper: fetch with timeout
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// Helper: delay for retries
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Fetch prices from Jupiter Price API v3 with batching and retry logic
 async function fetchJupiterPrices(mints: string[]): Promise<Record<string, number>> {
   if (mints.length === 0) return {};
   
-  try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+  
+  const allPrices: Record<string, number> = {};
+  
+  // Split mints into batches
+  const batches: string[][] = [];
+  for (let i = 0; i < mints.length; i += BATCH_SIZE) {
+    batches.push(mints.slice(i, i + BATCH_SIZE));
+  }
+  
+  console.log(`[Portfolio] Fetching prices for ${mints.length} tokens in ${batches.length} batch(es)`);
+  
+  // Process batches SEQUENTIALLY to avoid rate limits
+  const DELAY_BETWEEN_BATCHES_MS = 200;
+  
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
     
-    const response = await fetch(
-      `https://api.jup.ag/price/v3?ids=${mints.join(',')}`,
-      { headers }
-    );
-    
-    if (!response.ok) return {};
-    
-    const data = await response.json();
-    const prices: Record<string, number> = {};
-    
-    for (const [mint, info] of Object.entries(data)) {
-      if (info && typeof info === 'object' && 'usdPrice' in info) {
-        prices[mint] = (info as any).usdPrice;
-      }
+    // Add delay between batches (except for first one)
+    if (i > 0) {
+      await delay(DELAY_BETWEEN_BATCHES_MS);
     }
     
-    return prices;
-  } catch (err) {
-    console.error('Jupiter price fetch error:', err);
-    return {};
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const response = await fetchWithTimeout(
+          `https://api.jup.ag/price/v3?ids=${batch.join(',')}`,
+          { headers },
+          REQUEST_TIMEOUT_MS
+        );
+        
+        // Handle rate limiting with longer backoff
+        if (response.status === 429) {
+          console.warn(`[Portfolio] Price API rate limited (429), waiting...`);
+          await delay(1500);
+          continue;
+        }
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        for (const [mint, info] of Object.entries(data)) {
+          if (info && typeof info === 'object' && 'usdPrice' in info) {
+            allPrices[mint] = (info as { usdPrice: number }).usdPrice;
+          }
+        }
+        
+        break; // Success, exit retry loop
+      } catch (err) {
+        if (attempt === MAX_RETRIES) {
+          console.warn(`[Portfolio] Price batch ${i + 1}/${batches.length} failed:`, err);
+        } else {
+          await delay(RETRY_DELAY_MS * (attempt + 1));
+        }
+      }
+    }
   }
+  
+  console.log(`[Portfolio] Successfully fetched ${Object.keys(allPrices).length} prices`);
+  return allPrices;
 }
 
 export async function GET(request: NextRequest) {

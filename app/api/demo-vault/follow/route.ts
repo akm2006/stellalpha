@@ -186,7 +186,7 @@ async function handleSync(ts: any) {
         params: {
           ownerAddress: ts.star_trader,
           page: 1,
-          limit: 100,
+          limit: 1000, // Increased from 100 to get all holdings
           displayOptions: { showFungible: true, showNativeBalance: true }
         }
       })
@@ -253,35 +253,80 @@ async function handleSync(ts: any) {
       return NextResponse.json({ success: true, action: 'sync', warning: 'Star trader has no tokens' });
     }
     
-    // Get prices
-    const mints = items.map(i => i.mint);
+    // Get prices - first fetch SOL and USDC specifically (critical tokens)
     let prices: Record<string, number> = {};
+    const JUPITER_HEADERS: Record<string, string> = JUPITER_API_KEY ? { 'x-api-key': JUPITER_API_KEY } : {};
+    
+    console.log(`[Sync] Fetching SOL/USDC prices first...`);
     
     try {
-      const pricesResponse = await fetch(
-        `https://api.jup.ag/price/v3?ids=${mints.join(',')}`,
-        { headers: JUPITER_API_KEY ? { 'x-api-key': JUPITER_API_KEY } : {} }
+      // Step 1: Fetch critical token prices (SOL, USDC) first
+      const criticalMints = [SOL_MINT, USDC_MINT];
+      const criticalResponse = await fetch(
+        `https://api.jup.ag/price/v3?ids=${criticalMints.join(',')}`,
+        { headers: JUPITER_HEADERS }
       );
-      const pricesData = await pricesResponse.json();
       
-      const priceMap = pricesData.data || pricesData;
-      for (const [mint, info] of Object.entries(priceMap)) {
-        if (info && typeof info === 'object') {
-          prices[mint] = Number((info as any).price || (info as any).usdPrice || 0);
+      if (criticalResponse.ok) {
+        const criticalData = await criticalResponse.json();
+        console.log(`[Sync] Critical prices response:`, JSON.stringify(criticalData).slice(0, 500));
+        
+        for (const [mint, info] of Object.entries(criticalData)) {
+          if (info && typeof info === 'object') {
+            const priceObj = info as Record<string, unknown>;
+            const usdPrice = priceObj.usdPrice ?? priceObj.price;
+            if (typeof usdPrice === 'number' && usdPrice > 0) {
+              prices[mint] = usdPrice;
+            } else if (typeof usdPrice === 'string') {
+              const parsed = parseFloat(usdPrice);
+              if (!isNaN(parsed) && parsed > 0) prices[mint] = parsed;
+            }
+          }
         }
       }
-    } catch {
-      // Use cached prices from DB if available
-      const { data: cachedPrices } = await supabase
-        .from('token_prices')
-        .select('*')
-        .in('mint', mints);
       
-      if (cachedPrices) {
-        for (const p of cachedPrices) {
-          prices[p.mint] = p.price;
+      console.log(`[Sync] Critical prices: SOL=$${prices[SOL_MINT]?.toFixed(2) || 'N/A'}, USDC=$${prices[USDC_MINT]?.toFixed(2) || 'N/A'}`);
+      
+      // Step 2: Fetch other token prices (limit to top 30 by balance)
+      const sortedItems = [...items].sort((a, b) => b.balance - a.balance).slice(0, 30);
+      const otherMints = sortedItems.map(i => i.mint).filter(m => m !== SOL_MINT && m !== USDC_MINT);
+      
+      if (otherMints.length > 0) {
+        console.log(`[Sync] Fetching ${otherMints.length} other token prices...`);
+        const otherResponse = await fetch(
+          `https://api.jup.ag/price/v3?ids=${otherMints.join(',')}`,
+          { headers: JUPITER_HEADERS }
+        );
+        
+        if (otherResponse.ok) {
+          const otherData = await otherResponse.json();
+          for (const [mint, info] of Object.entries(otherData)) {
+            if (info && typeof info === 'object') {
+              const priceObj = info as Record<string, unknown>;
+              const usdPrice = priceObj.usdPrice ?? priceObj.price;
+              if (typeof usdPrice === 'number' && usdPrice > 0) {
+                prices[mint] = usdPrice;
+              }
+            }
+          }
         }
       }
+      
+      console.log(`[Sync] Total prices fetched: ${Object.keys(prices).length}`);
+    } catch (err) {
+      console.error('[Sync] Price fetch error:', err);
+      await supabase.from('demo_trader_states').update({ is_syncing: false }).eq('id', ts.id);
+      return NextResponse.json({ 
+        error: 'Failed to fetch realtime prices from Jupiter. Please try again.' 
+      }, { status: 500 });
+    }
+    
+    // Require SOL or USDC price - fail if neither available
+    if (!prices[SOL_MINT] && !prices[USDC_MINT]) {
+      await supabase.from('demo_trader_states').update({ is_syncing: false }).eq('id', ts.id);
+      return NextResponse.json({ 
+        error: 'Could not fetch realtime prices for SOL/USDC. Please try again.' 
+      }, { status: 500 });
     }
     
     // Calculate portfolio value and percentages
@@ -295,6 +340,8 @@ async function handleSync(ts: any) {
       holdings.push({ ...item, price, value, percent: 0 });
     }
     
+    console.log(`[Sync] Total portfolio value: $${totalValue.toFixed(2)}, ${holdings.length} holdings`);
+    
     for (const h of holdings) {
       h.percent = totalValue > 0 ? (h.value / totalValue) * 100 : 0;
     }
@@ -302,6 +349,9 @@ async function handleSync(ts: any) {
     // Create positions matching star trader ratios
     const significantHoldings = holdings.filter(h => h.percent >= 0.1);
     
+    console.log(`[Sync] Creating ${significantHoldings.length} positions from significant holdings`);
+    
+    let createdPositions = 0;
     for (const holding of significantHoldings) {
       const myUsdAllocation = ts.allocated_usd * (holding.percent / 100);
       if (myUsdAllocation < 0.10) continue;
@@ -311,7 +361,7 @@ async function handleSync(ts: any) {
       if (pricePerToken > 0) {
         const myTokenAmount = myUsdAllocation / pricePerToken;
         
-        await supabase.from('demo_positions').insert({
+        const { error } = await supabase.from('demo_positions').insert({
           trader_state_id: ts.id,
           token_mint: holding.mint,
           token_symbol: holding.symbol,
@@ -319,6 +369,13 @@ async function handleSync(ts: any) {
           cost_usd: myUsdAllocation,
           avg_cost: pricePerToken
         });
+        
+        if (error) {
+          console.error(`[Sync] Failed to create position for ${holding.symbol}:`, error);
+        } else {
+          createdPositions++;
+          console.log(`[Sync] Created position: ${holding.symbol} ${myTokenAmount.toFixed(4)} @ $${pricePerToken.toFixed(2)} = $${myUsdAllocation.toFixed(2)}`);
+        }
         
         // Cache price for fallback (ignore errors)
         try {
@@ -329,7 +386,8 @@ async function handleSync(ts: any) {
           }, { onConflict: 'mint' });
         } catch {}
       } else {
-        await supabase.from('demo_positions').insert({
+        // No price - use USD allocation as fallback
+        const { error } = await supabase.from('demo_positions').insert({
           trader_state_id: ts.id,
           token_mint: holding.mint,
           token_symbol: holding.symbol,
@@ -337,8 +395,16 @@ async function handleSync(ts: any) {
           cost_usd: myUsdAllocation,
           avg_cost: 1
         });
+        
+        if (error) {
+          console.error(`[Sync] Failed to create fallback position for ${holding.symbol}:`, error);
+        } else {
+          createdPositions++;
+        }
       }
     }
+    
+    console.log(`[Sync] Created ${createdPositions} positions successfully`);
     
     // Mark sync complete (but not initialized)
     await supabase.from('demo_trader_states').update({ is_syncing: false }).eq('id', ts.id);
@@ -346,8 +412,10 @@ async function handleSync(ts: any) {
     return NextResponse.json({ 
       success: true, 
       action: 'sync',
-      positions: significantHoldings.length,
-      message: 'Portfolio synced. Click Initialize to start copy trading.'
+      positions: createdPositions,
+      message: createdPositions > 0 
+        ? 'Portfolio synced. Click Initialize to start copy trading.'
+        : 'Sync completed but no positions created. Try again.'
     });
     
   } catch (error) {
@@ -458,11 +526,11 @@ export async function DELETE(request: NextRequest) {
           { headers: JUPITER_API_KEY ? { 'x-api-key': JUPITER_API_KEY } : {} }
         );
         const pricesData = await pricesResponse.json();
-        const priceMap = pricesData.data || pricesData;
         
-        for (const [mint, info] of Object.entries(priceMap)) {
-          if (info && typeof info === 'object') {
-            prices[mint] = Number((info as any).price || (info as any).usdPrice || 0);
+        // Jupiter v3 returns prices directly on root object
+        for (const [mint, info] of Object.entries(pricesData)) {
+          if (info && typeof info === 'object' && 'usdPrice' in info) {
+            prices[mint] = Number((info as { usdPrice: number }).usdPrice || 0);
           }
         }
       } catch {
