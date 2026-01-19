@@ -847,6 +847,19 @@ export async function POST(request: NextRequest) {
     for (const tx of transactions) {
       if (!tx.signature || !tx.feePayer) continue;
       
+      // SECURITY: Only process trades from known star traders
+      // Star traders must be added via database, not auto-discovered via webhook
+      const { data: starTrader } = await supabase
+        .from('star_traders')
+        .select('address')
+        .eq('address', tx.feePayer)
+        .single();
+      
+      if (!starTrader) {
+        console.log(`Rejected trade from unknown wallet: ${tx.feePayer.slice(0, 8)}...`);
+        continue;  // Skip this transaction - wallet not in star_traders
+      }
+      
       const trade = await detectTrade(tx, tx.feePayer);
       if (!trade) continue;
       
@@ -889,12 +902,8 @@ export async function POST(request: NextRequest) {
         // With batch limit of 5 trades and parallel fetching, this completes in ~3-5 seconds.
         await executeCopyTrades(trade, receivedAt);
         
-        // Auto-add new wallet to star_traders table (ignore if already exists)
-        await supabase.from('star_traders').upsert({
-          address: trade.wallet,  // Use 'address' column
-          name: `Trader ${trade.wallet.slice(0, 6)}`,
-          created_at: new Date().toISOString()
-        }, { onConflict: 'address', ignoreDuplicates: true });
+        // NOTE: Star traders are no longer auto-added here.
+        // They must be added manually via database to prevent unauthorized wallet tracking.
       } else {
         console.log(`Trade insert error for ${trade.signature}:`, error.message);
       }

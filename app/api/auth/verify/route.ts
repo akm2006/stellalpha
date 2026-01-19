@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import { supabaseAdmin } from '@/lib/server-admin';
-import { getNonceForWallet, deleteNonceForWallet } from '../nonce/route';
+import { getSession } from '@/lib/session';
 
 // Generate a deterministic UUID from wallet address for Supabase user ID
 function walletToUUID(wallet: string): string {
@@ -25,25 +25,18 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // 1. Validate nonce exists and hasn't expired
-    const storedNonce = getNonceForWallet(wallet);
-    if (!storedNonce) {
-      return NextResponse.json(
-        { error: 'Nonce not found or expired. Please request a new one.' }, 
-        { status: 401 }
-      );
-    }
+    const session = await getSession();
     
-    if (Date.now() > storedNonce.expires) {
-      deleteNonceForWallet(wallet);
+    // 1. Validate nonce exists in session
+    if (!session.nonce) {
       return NextResponse.json(
-        { error: 'Nonce expired. Please request a new one.' }, 
+        { error: 'Nonce not found. Please request a new one.' }, 
         { status: 401 }
       );
     }
     
     // 2. Verify the nonce is present in the message
-    if (!message.includes(storedNonce.nonce)) {
+    if (!message.includes(session.nonce)) {
       return NextResponse.json(
         { error: 'Invalid nonce in message' }, 
         { status: 401 }
@@ -76,8 +69,8 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // 4. Consume the nonce (one-time use)
-    deleteNonceForWallet(wallet);
+    // 4. Consume the nonce (security best practice)
+    session.nonce = undefined; // clear nonce
     
     // 5. Create or get user in Supabase
     const userId = walletToUUID(wallet);
@@ -115,37 +108,17 @@ export async function POST(request: NextRequest) {
       });
     }
     
-    // 6. Generate session tokens
-    // Note: Supabase Admin API doesn't directly create sessions, 
-    // so we'll use a custom JWT approach or magic link workaround
-    // For now, we return a signed token that the client can use
-    
-    const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'magiclink',
-      email: `${wallet.slice(0, 8)}@stellalpha.wallet`,
-    });
-    
-    if (sessionError) {
-      console.error('[Auth/Verify] Session generation error:', sessionError);
-      // Fallback: Return success with wallet info (client will handle state)
-      return NextResponse.json({
-        success: true,
-        user: {
-          id: userId,
-          wallet: wallet,
-        },
-        message: 'Authenticated successfully',
-      });
-    }
+    // 6. Save session
+    session.isLoggedIn = true;
+    session.user = {
+      id: userId,
+      wallet: wallet,
+    };
+    await session.save();
     
     return NextResponse.json({
       success: true,
-      user: {
-        id: userId,
-        wallet: wallet,
-      },
-      // If magic link was generated, include the hashed token
-      token: sessionData?.properties?.hashed_token,
+      user: session.user,
       message: 'Authenticated successfully',
     });
     
@@ -154,3 +127,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
+

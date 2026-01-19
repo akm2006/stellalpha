@@ -15,12 +15,6 @@ interface AuthState {
   error: string | null;
 }
 
-interface StoredSession {
-  user: { id: string; wallet: string };
-  expiresAt: number;  // Unix timestamp
-  createdAt: number;
-}
-
 interface AuthContextType extends AuthState {
   signIn: () => Promise<boolean>;
   signOut: () => void;
@@ -30,8 +24,9 @@ interface AuthContextType extends AuthState {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'stellalpha_auth';
+// Parameters for SIWS message
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 
 // Get the app domain for SIWS message
 function getAppDomain(): string {
@@ -58,13 +53,6 @@ Nonce: ${nonce}
 Issued At: ${issuedAt}`;
 }
 
-// Check if session is valid (not expired and wallet matches)
-function isSessionValid(session: StoredSession | null, currentWallet: string | null): boolean {
-  if (!session || !currentWallet) return false;
-  if (session.user.wallet !== currentWallet) return false;
-  if (Date.now() > session.expiresAt) return false;
-  return true;
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const { publicKey, signMessage, connected, disconnect } = useWallet();
@@ -78,43 +66,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   
   // Load persisted auth state on mount and validate
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const session: StoredSession = JSON.parse(stored);
-        const currentWallet = publicKey?.toBase58() || null;
-        
-        if (isSessionValid(session, currentWallet)) {
-          setState({
-            isAuthenticated: true,
-            isLoading: false,
-            user: session.user,
-            error: null,
-          });
-          return;
-        } else {
-          // Session expired or wallet mismatch - clear it
-          localStorage.removeItem(STORAGE_KEY);
+    async function checkSession() {
+      try {
+        const res = await fetch('/api/auth/user');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.isLoggedIn) {
+            setState({
+              isAuthenticated: true,
+              isLoading: false,
+              user: data.user,
+              error: null,
+            });
+            return;
+          }
         }
+      } catch (err) {
+        console.error('Failed to check session:', err);
       }
-    } catch {
-      localStorage.removeItem(STORAGE_KEY);
-    }
-    setState(prev => ({ ...prev, isLoading: false }));
-  }, [publicKey]);
-  
-  // Clear auth when wallet disconnects
-  useEffect(() => {
-    if (!connected) {
-      setState({
+      
+      setState(prev => ({ 
+        ...prev, 
         isAuthenticated: false,
-        isLoading: false,
         user: null,
-        error: null,
-      });
-      localStorage.removeItem(STORAGE_KEY);
+        isLoading: false 
+      }));
     }
-  }, [connected]);
+    
+    checkSession();
+  }, [publicKey]); // Check session when wallet changes or on mount
+  
+  // Note: We don't automatically sign out when wallet disconnects anymore, 
+  // because the session is HTTP-only cookie based. However, for UX consistency,
+  // if the wallet *explicitly* disconnects, we might want to clear the session.
+  // But strictly speaking, session could persist without wallet if we wanted.
+  // For now, let's keep the behavior: disconnect wallet -> sign out.
+  useEffect(() => {
+    if (!connected && !state.isLoading && state.isAuthenticated) {
+       // Only if we were authenticated and now not connected
+       // We might choose to NOT auto-logout to allow "reconnect to continue session"
+       // But user request says "frequent logout" is bad. 
+       // Actually, keeping the session even if wallet disconnects is better for persistence.
+       // So we will NOT auto-logout here. The session is valid until it expires.
+       // BUT, the `UnifiedAuthButton` relies on `connected` state from wallet adapter.
+       // So if wallet disconnects, they can't sign transactions, but are they "Logged In"?
+       // Ideally: "Logged In" but "Wallet Not Connected".
+       // For simplicity in this app: If wallet disconnects, we just let them be "Logged In" 
+       // but they will be prompted to connect wallet if they try to do something.
+       // However, `isSessionValid` logic previously enforced wallet match.
+       // Let's relax that: Session is valid if cookie is valid.
+    }
+  }, [connected, state.isAuthenticated, state.isLoading]);
   
   const signIn = useCallback(async (): Promise<boolean> => {
     if (!publicKey || !signMessage) {
@@ -127,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState(prev => ({ ...prev, isLoading: true, error: null }));
     
     try {
-      // 1. Request nonce from server
+      // 1. Request nonce from server (stores in session)
       const nonceRes = await fetch(`/api/auth/nonce?wallet=${wallet}`);
       if (!nonceRes.ok) {
         throw new Error('Failed to get nonce');
@@ -142,7 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const signatureBytes = await signMessage(messageBytes);
       const signature = bs58.encode(signatureBytes);
       
-      // 4. Verify with server
+      // 4. Verify with server (creates session)
       const verifyRes = await fetch('/api/auth/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -156,14 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       
       const { user } = await verifyRes.json();
       
-      // 5. Persist auth state with expiry
-      const session: StoredSession = {
-        user,
-        createdAt: Date.now(),
-        expiresAt: Date.now() + SESSION_DURATION_MS,
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-      
+      // State is updated from response
       setState({
         isAuthenticated: true,
         isLoading: false,
@@ -184,8 +179,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [publicKey, signMessage]);
   
-  const signOut = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
+  const signOut = useCallback(async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (e) {
+      console.error('Logout failed', e);
+    }
+    
     setState({
       isAuthenticated: false,
       isLoading: false,
@@ -209,6 +209,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     </AuthContext.Provider>
   );
 }
+
 
 export function useAuth(): AuthContextType {
   const context = useContext(AuthContext);

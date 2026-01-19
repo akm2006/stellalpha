@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { COLORS } from '@/lib/theme';
-import { ArrowUpRight, ArrowRight, ArrowLeft, RefreshCw, Download, TrendingUp, Wallet, BarChart3, AlertTriangle } from 'lucide-react';
+import { ArrowUpRight, ArrowRight, ArrowLeft, RefreshCw, Download, TrendingUp, Wallet, BarChart3, AlertTriangle, Info } from 'lucide-react';
 
 interface TraderStats {
   totalPnl: number;
@@ -72,7 +72,12 @@ function formatUsd(amount: number | null): string {
   if (amount === null) return '—';
   if (amount >= 1000000) return '$' + (amount / 1000000).toFixed(2) + 'M';
   if (amount >= 1000) return '$' + (amount / 1000).toFixed(2) + 'K';
-  return '$' + amount.toFixed(2);
+  if (amount >= 1) return '$' + amount.toFixed(2);
+  if (amount >= 0.01) return '$' + amount.toFixed(2);
+  if (amount >= 0.0001) return '$' + amount.toFixed(4);
+  if (amount >= 0.000001) return '$' + amount.toFixed(6);
+  if (amount > 0) return '$' + amount.toExponential(2); // Very small values
+  return '$0.00';
 }
 
 function formatPnl(pnl: number | null): { text: string; color: string } {
@@ -307,21 +312,27 @@ export default function TraderDetailPage() {
               </div>
             </div>
 
-            {/* GMGN Link */}
-            <a 
-              href={`https://gmgn.ai/sol/address/${wallet}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border transition-all hover:bg-white/5 hover:border-white/20 self-start sm:self-center"
-              style={{ 
-                borderColor: COLORS.structure, 
-                backgroundColor: COLORS.surface,
-              }}
-            >
-              <span className="text-sm font-medium" style={{ color: COLORS.text }}>View on</span>
-              <img src="https://gmgn.ai/static/GMGNLogoDark.svg" alt="GMGN" className="h-5 w-auto" />
-              <ArrowUpRight size={14} style={{ color: COLORS.data }} />
-            </a>
+            {/* GMGN Link with Context */}
+            <div className="flex flex-col items-end gap-2 self-start sm:self-center">
+              <a 
+                href={`https://gmgn.ai/sol/address/${wallet}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border transition-all hover:bg-white/5 hover:border-white/20"
+                style={{ 
+                  borderColor: COLORS.structure, 
+                  backgroundColor: COLORS.surface,
+                }}
+              >
+                <span className="text-sm font-medium" style={{ color: COLORS.text }}>View on</span>
+                <img src="https://gmgn.ai/static/GMGNLogoDark.svg" alt="GMGN" className="h-5 w-auto" />
+                <ArrowUpRight size={14} style={{ color: COLORS.data }} />
+              </a>
+              <div className="flex items-start gap-1.5 text-xs font-medium max-w-[220px] text-right" style={{ color: COLORS.data }}>
+                <Info size={14} className="mt-0.5 flex-shrink-0" style={{ color: COLORS.brand }} />
+                <span>Analysis based on recent trades. Use GMGN for full history.</span>
+              </div>
+            </div>
           </div>
         </div>
         

@@ -85,39 +85,96 @@ async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
 }
 
 // Batch fetch multiple tokens using Jupiter Tokens API v2
+// Now with batching, timeout, and retry logic for wallets with 100+ tokens
 async function fetchManyFromJupiter(mints: string[]): Promise<Record<string, TokenMeta>> {
   const result: Record<string, TokenMeta> = {};
   if (mints.length === 0) return result;
   
-  try {
-    const headers: Record<string, string> = {};
-    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-    
-    // API supports comma-separated mints in query
-    const query = mints.map(m => encodeURIComponent(m)).join(',');
-    const response = await fetch(
-      `https://api.jup.ag/tokens/v2/search?query=${query}`,
-      { headers }
-    );
-    
-    if (!response.ok) return result;
-    
-    const tokens = await response.json();
-    for (const token of tokens) {
-      if (mints.includes(token.id)) {
-        result[token.id] = {
-          symbol: token.symbol,
-          name: token.name,
-          logoURI: token.icon || null,
-          decimals: token.decimals,
-          usdPrice: token.usdPrice ?? null
-        };
-      }
-    }
-  } catch (err) {
-    console.error('Jupiter batch API error:', err);
+  // Limit to top 200 tokens to avoid excessive API calls
+  // Most valuable tokens are discovered early via database cache
+  const mintsToFetch = mints.slice(0, 200);
+  if (mints.length > 200) {
+    console.log(`[Portfolio] Limiting metadata fetch to 200 tokens (${mints.length} requested)`);
   }
   
+  const headers: Record<string, string> = {};
+  if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+  
+  const BATCH_SIZE = 15; // Smaller batches to avoid rate limits
+  const TIMEOUT_MS = 8000;
+  const MAX_RETRIES = 1; // Fewer retries to avoid hammering
+  const DELAY_BETWEEN_BATCHES_MS = 300; // Delay between batches
+  
+  // Helper: fetch with timeout
+  const fetchWithTimeout = async (url: string): Promise<Response> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { headers, signal: controller.signal });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+  
+  // Split into batches
+  const batches: string[][] = [];
+  for (let i = 0; i < mintsToFetch.length; i += BATCH_SIZE) {
+    batches.push(mintsToFetch.slice(i, i + BATCH_SIZE));
+  }
+  
+  console.log(`[Portfolio] Fetching metadata for ${mintsToFetch.length} tokens in ${batches.length} batch(es)`);
+  
+  // Process batches SEQUENTIALLY to avoid rate limits
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    
+    // Add delay between batches (except for first one)
+    if (i > 0) {
+      await new Promise(r => setTimeout(r, DELAY_BETWEEN_BATCHES_MS));
+    }
+    
+    // Process single batch with retry logic
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const query = batch.map(m => encodeURIComponent(m)).join(',');
+        const response = await fetchWithTimeout(
+          `https://api.jup.ag/tokens/v2/search?query=${query}`
+        );
+        
+        // Handle rate limiting with longer backoff
+        if (response.status === 429) {
+          console.warn(`[Portfolio] Rate limited (429), waiting longer...`);
+          await new Promise(r => setTimeout(r, 2000)); // 2 second wait on 429
+          continue;
+        }
+        
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        
+        const tokens = await response.json();
+        for (const token of tokens) {
+          if (batch.includes(token.id)) {
+            result[token.id] = {
+              symbol: token.symbol,
+              name: token.name,
+              logoURI: token.icon || null,
+              decimals: token.decimals,
+              usdPrice: token.usdPrice ?? null
+            };
+          }
+        }
+        break; // Success, exit retry loop
+      } catch (err) {
+        if (attempt === MAX_RETRIES) {
+          console.warn(`[Portfolio] Metadata batch ${i + 1}/${batches.length} failed:`, err);
+        } else {
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        }
+      }
+    }
+  }
+  
+  console.log(`[Portfolio] Successfully fetched metadata for ${Object.keys(result).length} tokens`);
   return result;
 }
 
