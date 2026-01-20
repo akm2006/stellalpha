@@ -360,78 +360,123 @@ export default function DemoVaultPage() {
               </button>
             </div>
             
-            {/* Trader States List - Scrollable on mobile */}
+            {/* Trader States List - Responsive */}
             <div className="border overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
               <div className="px-6 py-4 border-b" style={{ borderColor: COLORS.structure }}>
                 <h2 className="font-medium" style={{ color: COLORS.text }}>Trader States</h2>
                 <p className="text-xs" style={{ color: COLORS.data }}>Each state follows a different star trader with isolated funds</p>
               </div>
               
-              <div className="overflow-x-auto">
-                <div className="min-w-[800px]">
-                  <div className="grid grid-cols-7 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
-                    <div>Star Trader</div>
-                    <div>Allocated</div>
-                    <div>Current Value</div>
-                    <div>PnL</div>
-                    <div>Positions</div>
-                    <div>Status</div>
-                    <div>Actions</div>
+              {/* Desktop Header */}
+              <div className="hidden md:grid md:grid-cols-7 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
+                <div>Star Trader</div>
+                <div>Allocated</div>
+                <div>Current Value</div>
+                <div>PnL</div>
+                <div>Positions</div>
+                <div>Status</div>
+                <div>Actions</div>
+              </div>
+              
+              {/* Content */}
+              <div className="divide-y md:divide-y-0" style={{ borderColor: COLORS.structure }}>
+                {traderStates.length === 0 ? (
+                  <div className="text-center py-12" style={{ color: COLORS.data }}>
+                    No trader states. Create one to start copy trading.
                   </div>
-                  
-                  {traderStates.length === 0 ? (
-                    <div className="text-center py-12" style={{ color: COLORS.data }}>
-                      No trader states. Create one to start copy trading.
-                    </div>
-                  ) : (
-                    traderStates.map(ts => {
-                      const pnl = ts.totalValue - Number(ts.allocated_usd);
-                      const pnlPercent = ts.allocated_usd > 0 ? (pnl / ts.allocated_usd) * 100 : 0;
-                      
-                      return (
-                        <Link 
-                          key={ts.id} 
-                          href={`/demo-vault/${ts.id}`}
-                          className="grid grid-cols-7 gap-4 items-center px-6 py-4 hover:bg-white/[0.02] transition-colors border-b cursor-pointer"
-                          style={{ borderColor: COLORS.structure }}
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold" style={{ backgroundColor: COLORS.structure, color: COLORS.text }}>
+                ) : (
+                  traderStates.map(ts => {
+                    const pnl = ts.totalValue - Number(ts.allocated_usd);
+                    const pnlPercent = ts.allocated_usd > 0 ? (pnl / ts.allocated_usd) * 100 : 0;
+                    
+                    return (
+                      <Link 
+                        key={ts.id} 
+                        href={`/demo-vault/${ts.id}`}
+                        className="block hover:bg-white/[0.02] transition-colors border-b md:border-b-0"
+                        style={{ borderColor: COLORS.structure }}
+                      >
+                        <div className="p-4 md:px-6 md:py-4 grid grid-cols-1 md:grid-cols-7 gap-4 items-center">
+                          
+                          {/* 1. Trader Info */}
+                          <div className="flex items-center gap-3 md:col-span-1">
+                            <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold shrink-0" style={{ backgroundColor: COLORS.structure, color: COLORS.text }}>
                               {ts.star_trader.charAt(0)}
                             </div>
-                            <div>
-                              <div className="font-mono text-sm" style={{ color: COLORS.text }}>
+                            <div className="min-w-0">
+                              <div className="font-mono text-sm truncate" style={{ color: COLORS.text }}>
                                 {ts.star_trader.slice(0, 8)}...
+                              </div>
+                              {/* Mobile Only ID */}
+                              <div className="md:hidden text-xs truncate opacity-50" style={{ color: COLORS.data }}>
+                                ID: {ts.id.slice(0,6)}
                               </div>
                             </div>
                           </div>
-                          <div style={{ color: COLORS.text }}>{formatUsd(ts.allocated_usd)}</div>
-                          <div style={{ color: COLORS.brand }} className="font-medium">{formatUsd(ts.totalValue)}</div>
-                          <div style={{ color: pnl >= 0 ? '#10B981' : '#EF4444' }} className="font-medium">
-                            {pnl >= 0 ? '+' : ''}{formatUsd(pnl)} ({pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(1)}%)
+
+                          {/* Mobile Stats Grid (2 cols) */}
+                          <div className="grid grid-cols-2 gap-y-3 gap-x-4 md:contents">
+                            
+                            {/* 2. Allocated */}
+                            <div className="md:col-span-1">
+                              <span className="md:hidden text-[10px] uppercase font-mono mb-1 block opacity-60" style={{ color: COLORS.data }}>Allocated</span>
+                              <div style={{ color: COLORS.text }}>{formatUsd(ts.allocated_usd)}</div>
+                            </div>
+                            
+                            {/* 3. Current Value */}
+                            <div className="md:col-span-1">
+                              <span className="md:hidden text-[10px] uppercase font-mono mb-1 block opacity-60" style={{ color: COLORS.data }}>Value</span>
+                              <div style={{ color: COLORS.brand }} className="font-medium">{formatUsd(ts.totalValue)}</div>
+                            </div>
+                            
+                            {/* 4. PnL */}
+                            <div className="md:col-span-1">
+                              <span className="md:hidden text-[10px] uppercase font-mono mb-1 block opacity-60" style={{ color: COLORS.data }}>PnL</span>
+                              <div style={{ color: pnl >= 0 ? '#10B981' : '#EF4444' }} className="font-medium">
+                                {pnl >= 0 ? '+' : ''}{formatUsd(pnl)} ({pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(1)}%)
+                              </div>
+                            </div>
+                            
+                            {/* 5. Positions */}
+                            <div className="md:col-span-1">
+                              <span className="md:hidden text-[10px] uppercase font-mono mb-1 block opacity-60" style={{ color: COLORS.data }}>Pos</span>
+                              <div style={{ color: COLORS.text }}>{ts.positionCount}</div>
+                            </div>
                           </div>
-                          <div style={{ color: COLORS.text }}>{ts.positionCount}</div>
-                          <div>
-                            {ts.is_settled ? (
-                              <span className="text-xs text-gray-400 flex items-center gap-1"><StopCircle size={12} /> Settled</span>
-                            ) : ts.is_paused ? (
-                              <span className="text-xs text-yellow-400 flex items-center gap-1"><Pause size={12} /> Paused</span>
-                            ) : ts.is_initialized ? (
-                              <span className="text-xs text-green-400 flex items-center gap-1"><CheckCircle size={12} /> Active</span>
-                            ) : ts.is_syncing ? (
-                              <span className="text-xs text-blue-400 flex items-center gap-1"><RefreshCw size={12} className="animate-spin" /> Syncing</span>
-                            ) : (
-                              <span className="text-xs text-orange-400 flex items-center gap-1"><Clock size={12} /> Uninitialized</span>
-                            )}
+
+                          {/* 6. Status */}
+                          <div className="md:col-span-1 mt-2 md:mt-0 flex items-center justify-between md:block">
+                             <div className="md:hidden text-sm font-medium" style={{ color: COLORS.text }}>Status</div>
+                             <div>
+                                {ts.is_settled ? (
+                                  <span className="text-xs text-gray-400 flex items-center gap-1"><StopCircle size={12} /> Settled</span>
+                                ) : ts.is_paused ? (
+                                  <span className="text-xs text-yellow-400 flex items-center gap-1"><Pause size={12} /> Paused</span>
+                                ) : ts.is_initialized ? (
+                                  <span className="text-xs text-green-400 flex items-center gap-1"><CheckCircle size={12} /> Active</span>
+                                ) : ts.is_syncing ? (
+                                  <span className="text-xs text-blue-400 flex items-center gap-1"><RefreshCw size={12} className="animate-spin" /> Syncing</span>
+                                ) : (
+                                  <span className="text-xs text-orange-400 flex items-center gap-1"><Clock size={12} /> Uninitialized</span>
+                                )}
+                             </div>
                           </div>
-                          <div className="flex items-center gap-1" style={{ color: COLORS.brand }}>
+
+                          {/* 7. Action */}
+                          <div className="md:col-span-1 hidden md:flex items-center gap-1" style={{ color: COLORS.brand }}>
                             View <ArrowRight size={14} />
                           </div>
-                        </Link>
-                      );
-                    })
-                  )}
-                </div>
+                          
+                          {/* Mobile View Button */}
+                          <div className="md:hidden mt-2 pt-3 border-t flex items-center justify-center gap-2 font-medium" style={{ borderColor: COLORS.structure, color: COLORS.brand }}>
+                             View Details <ArrowRight size={14} />
+                          </div>
+
+                        </div>
+                      </Link>
+                    );
+                  })
+                )}
               </div>
             </div>
           </>

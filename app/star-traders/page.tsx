@@ -56,15 +56,7 @@ export default function StarTradersListPage() {
   const handleTraderClick = (wallet: string) => {
     router.push(`/star-traders/${wallet}`);
   };
-  
-  // Calculate summary stats
-  const totalTrades = traders.reduce((sum, t) => sum + (t.stats?.tradesCount || 0), 0);
-  const avgWinRate = traders.length > 0 
-    ? traders.reduce((sum, t) => sum + (t.stats?.winRate || 0), 0) / traders.length 
-    : 0;
-  const totalPnl = traders.reduce((sum, t) => sum + (t.stats?.totalPnl || 0), 0);
-  
-  return (
+    return (
     <div className="min-h-screen font-sans pt-24 pb-12" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
       <main className="max-w-6xl mx-auto px-4 sm:px-6">
         {/* Header */}
@@ -82,46 +74,7 @@ export default function StarTradersListPage() {
             Follow top-performing wallets and copy their trades in real-time
           </p>
         </div>
-        
-        {/* Summary Stats (only show if traders exist) */}
-        {!loading && traders.length > 0 && (
-          <div className="grid grid-cols-3 gap-3 sm:gap-4 mb-8">
-            <div 
-              className="p-4 sm:p-5 border text-center"
-              style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}
-            >
-              <Activity size={20} className="mx-auto mb-2" style={{ color: COLORS.brand }} />
-              <div className="text-xl sm:text-2xl font-bold" style={{ color: COLORS.text }}>
-                {totalTrades}
-              </div>
-              <div className="text-xs sm:text-sm" style={{ color: COLORS.data }}>Total Trades</div>
-            </div>
-            <div 
-              className="p-4 sm:p-5 border text-center"
-              style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}
-            >
-              <Trophy size={20} className="mx-auto mb-2" style={{ color: '#FBBF24' }} />
-              <div className="text-xl sm:text-2xl font-bold" style={{ color: COLORS.text }}>
-                {avgWinRate.toFixed(0)}%
-              </div>
-              <div className="text-xs sm:text-sm" style={{ color: COLORS.data }}>Avg Win Rate</div>
-            </div>
-            <div 
-              className="p-4 sm:p-5 border text-center"
-              style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}
-            >
-              <TrendingUp size={20} className="mx-auto mb-2" style={{ color: totalPnl >= 0 ? '#10B981' : '#EF4444' }} />
-              <div 
-                className="text-xl sm:text-2xl font-bold"
-                style={{ color: totalPnl >= 0 ? '#10B981' : '#EF4444' }}
-              >
-                {totalPnl >= 0 ? '+' : '-'}${formatAmount(Math.abs(totalPnl))}
-              </div>
-              <div className="text-xs sm:text-sm" style={{ color: COLORS.data }}>Combined PnL</div>
-            </div>
-          </div>
-        )}
-        
+
         {/* Traders Section */}
         <div 
           className="border overflow-hidden"
