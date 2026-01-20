@@ -110,9 +110,11 @@ interface RawTrade {
   baseAmount: number;
   tokenInMint: string;
   tokenInAmount: number;
-  tokenInPreBalance: number;  // NEW: Leader's pre-trade balance for ratio calculation
+  tokenInPreBalance: number;  // Leader's pre-trade balance for ratio calculation
+  tokenInDecimals?: number;   // Extracted from payload for optimization
   tokenOutMint: string;
   tokenOutAmount: number;
+  tokenOutDecimals?: number;  // Extracted from payload for optimization
   timestamp: number;
   source: string;
   gas: number;
@@ -210,6 +212,31 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   
   if (tokenAmount < 0.000001) return null;
   
+  // OPTIMIZATION: Extract token decimals from accountData (avoids API calls later)
+  // Look for decimals in tokenBalanceChanges for both input and output tokens
+  let tokenInDecimals: number | undefined;
+  let tokenOutDecimals: number | undefined;
+  
+  for (const account of tx.accountData || []) {
+    for (const change of account.tokenBalanceChanges || []) {
+      const decimals = change.rawTokenAmount?.decimals;
+      if (typeof decimals === 'number') {
+        if (change.mint === tokenInMint) {
+          tokenInDecimals = decimals;
+        }
+        if (change.mint === tokenOutMint) {
+          tokenOutDecimals = decimals;
+        }
+      }
+    }
+  }
+  
+  // Handle SOL/wSOL decimals (not in tokenBalanceChanges)
+  const SOL_DECIMALS = 9;
+  const WSOL = 'So11111111111111111111111111111111111111112';
+  if (tokenInMint === 'SOL' || tokenInMint === WSOL) tokenInDecimals = SOL_DECIMALS;
+  if (tokenOutMint === 'SOL' || tokenOutMint === WSOL) tokenOutDecimals = SOL_DECIMALS;
+  
   return {
     signature: tx.signature,
     wallet: fp,
@@ -222,8 +249,10 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
     tokenInPreBalance: tokensSent.length > 0 
       ? Number(tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b).preTokenBalance || 0)
       : 0,
+    tokenInDecimals,
     tokenOutMint,
     tokenOutAmount,
+    tokenOutDecimals,
     timestamp: tx.timestamp,
     source: tx.source || 'UNKNOWN',
     gas: fee / 1e9
@@ -627,11 +656,14 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   }
 
   // 4. GET JUPITER QUOTE
-  // VERCEL OPTIMIZATION: Fetch both decimals in parallel
-  const [sourceDecimals, destDecimals] = await Promise.all([
-    getTokenDecimals(sourceMint),
-    getTokenDecimals(destMint)
-  ]);
+  // OPTIMIZATION: Use decimals from payload, fall back to API only if missing
+  const sourceDecimals = trade.tokenInDecimals ?? await getTokenDecimals(sourceMint);
+  const destDecimals = trade.tokenOutDecimals ?? await getTokenDecimals(destMint);
+  
+  if (trade.tokenInDecimals !== undefined || trade.tokenOutDecimals !== undefined) {
+    console.log(`  [DECIMALS] Using payload: in=${trade.tokenInDecimals ?? 'API'}, out=${trade.tokenOutDecimals ?? 'API'}`);
+  }
+  
   const rawInputAmount = Math.floor(copyAmount * Math.pow(10, sourceDecimals));
 
   const quoteUrl = new URL('https://api.jup.ag/swap/v1/quote');

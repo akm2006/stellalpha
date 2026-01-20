@@ -196,6 +196,11 @@ export default function TraderStateDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
+  // Pagination state
+  const [tradesPage, setTradesPage] = useState(1);
+  const [pagination, setPagination] = useState({ page: 1, pageSize: 20, totalCount: 0, totalPages: 0 });
+  const [tradeStats, setTradeStats] = useState({ avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0 });
+  
   // Init Modal State
   const [showInitModal, setShowInitModal] = useState(false);
   const [previewPortfolio, setPreviewPortfolio] = useState<any[]>([]);
@@ -245,12 +250,14 @@ export default function TraderStateDetailPage() {
       
       setPortfolio(portfolioData);
       
-      // Fetch trades
+      // Fetch trades with pagination
       const tradesRes = await fetch(
-        `/api/demo-vault/trades?wallet=${walletAddress}&traderStateId=${traderStateId}`
+        `/api/demo-vault/trades?wallet=${walletAddress}&traderStateId=${traderStateId}&page=${tradesPage}&pageSize=20`
       );
       const tradesData = await tradesRes.json();
       setTrades(tradesData.trades || []);
+      setPagination(tradesData.pagination || { page: 1, pageSize: 20, totalCount: 0, totalPages: 0 });
+      setTradeStats(tradesData.stats || { avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0 });
       
       // Collect all mints for metadata fetching
       const mints = new Set<string>();
@@ -269,7 +276,7 @@ export default function TraderStateDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [walletAddress, traderStateId, fetchTokenMetadata]);
+  }, [walletAddress, traderStateId, tradesPage, fetchTokenMetadata]);
   
   useEffect(() => {
     if (connected && walletAddress) {
@@ -410,11 +417,11 @@ export default function TraderStateDetailPage() {
     realizedPnlUsd, unrealizedPnL 
   } = portfolio;
   
-  const avgLatency = trades.length > 0 
-    ? trades.reduce((s, t) => s + (t.latency_diff_ms || 0), 0) / trades.length 
-    : 0;
+  // Use stats from API (calculated from ALL trades, not just current page)
+  const avgLatency = tradeStats.avgLatency;
   
-  // Win rate: profitable sells / total sells
+  // Win rate can still be calculated from visible trades for now
+  // (or you could add to API stats later)
   const sellTrades = trades.filter(t => t.type === 'sell');
   const profitableSells = sellTrades.filter(t => t.realized_pnl !== null && t.realized_pnl > 0).length;
   const winRate = sellTrades.length > 0 ? (profitableSells / sellTrades.length) * 100 : 0;
@@ -782,6 +789,42 @@ export default function TraderStateDetailPage() {
                 })
               )}
             </div>
+            
+            {/* Pagination Controls */}
+            {pagination.totalPages > 1 && (
+              <div className="flex items-center justify-between px-6 py-3 border-t" style={{ borderColor: COLORS.structure }}>
+                <div className="text-xs" style={{ color: COLORS.data }}>
+                  Showing {trades.length} of {pagination.totalCount} trades
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setTradesPage(p => Math.max(1, p - 1))}
+                    disabled={tradesPage === 1}
+                    className="px-3 py-1.5 rounded text-xs font-medium transition-all disabled:opacity-40"
+                    style={{ 
+                      backgroundColor: tradesPage === 1 ? COLORS.structure : COLORS.brand + '20',
+                      color: tradesPage === 1 ? COLORS.data : COLORS.brand
+                    }}
+                  >
+                    ← Prev
+                  </button>
+                  <span className="text-xs px-3" style={{ color: COLORS.text }}>
+                    Page {pagination.page} of {pagination.totalPages}
+                  </span>
+                  <button
+                    onClick={() => setTradesPage(p => Math.min(pagination.totalPages, p + 1))}
+                    disabled={tradesPage >= pagination.totalPages}
+                    className="px-3 py-1.5 rounded text-xs font-medium transition-all disabled:opacity-40"
+                    style={{ 
+                      backgroundColor: tradesPage >= pagination.totalPages ? COLORS.structure : COLORS.brand + '20',
+                      color: tradesPage >= pagination.totalPages ? COLORS.data : COLORS.brand
+                    }}
+                  >
+                    Next →
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
         
