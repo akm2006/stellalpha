@@ -175,7 +175,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to fetch positions' }, { status: 500 });
     }
     
-    const positions = dbPositions || [];
+    // Filter out 0-balance positions (they clutter the UI)
+    const positions = (dbPositions || []).filter(p => Number(p.size) > 0);
     
     // 3. Fetch live prices from Jupiter
     const mints = positions.map(p => p.token_mint);

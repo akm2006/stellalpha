@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
-// GET: Fetch trades for a specific trader state
+// GET: Fetch trades for a specific trader state with pagination and stats
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const wallet = searchParams.get('wallet');
   const starTrader = searchParams.get('starTrader');
   const traderStateId = searchParams.get('traderStateId');
-  const limit = parseInt(searchParams.get('limit') || '50', 10);
+  
+  // Pagination params
+  const page = parseInt(searchParams.get('page') || '1', 10);
+  const pageSize = parseInt(searchParams.get('pageSize') || '20', 10);
+  const offset = (page - 1) * pageSize;
   
   if (!wallet) {
     return NextResponse.json({ error: 'Wallet address required' }, { status: 400 });
@@ -25,26 +29,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Vault not found' }, { status: 404 });
     }
     
-    // If traderStateId provided, use it directly
-    if (traderStateId) {
-      const { data: trades, error } = await supabase
-        .from('demo_trades')
-        .select('*')
-        .eq('trader_state_id', traderStateId)
-        .order('created_at', { ascending: false })
-        .limit(limit);
-      
-      if (error) {
-        console.error('Trades fetch error:', error);
-        return NextResponse.json({ error: 'Failed to fetch trades' }, { status: 500 });
-      }
-      
-      return NextResponse.json({ trades: trades || [], total: trades?.length || 0 });
-    }
+    // Determine trader state ID
+    let tsId = traderStateId;
     
-    // Otherwise, find by star trader
-    if (starTrader) {
-      // Find trader state for this star trader
+    if (!tsId && starTrader) {
       const { data: traderState } = await supabase
         .from('demo_trader_states')
         .select('id')
@@ -53,56 +41,75 @@ export async function GET(request: NextRequest) {
         .single();
       
       if (!traderState) {
-        return NextResponse.json({ trades: [], total: 0 });
+        return NextResponse.json({ 
+          trades: [], 
+          pagination: { page: 1, pageSize, totalCount: 0, totalPages: 0 },
+          stats: { avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0 }
+        });
       }
-      
-      const { data: trades, error } = await supabase
-        .from('demo_trades')
-        .select('*')
-        .eq('trader_state_id', traderState.id)
-        .order('created_at', { ascending: false })
-        .limit(limit);
-      
-      if (error) {
-        console.error('Trades fetch error:', error);
-        return NextResponse.json({ error: 'Failed to fetch trades' }, { status: 500 });
-      }
-      
-      return NextResponse.json({ trades: trades || [], total: trades?.length || 0 });
+      tsId = traderState.id;
     }
     
-    // If no filter, get all trades for all trader states in this vault
-    const { data: traderStates } = await supabase
-      .from('demo_trader_states')
-      .select('id, star_trader')
-      .eq('vault_id', vault.id);
-    
-    if (!traderStates || traderStates.length === 0) {
-      return NextResponse.json({ trades: [], total: 0 });
+    if (!tsId) {
+      // No specific trader state - return empty with proper structure
+      return NextResponse.json({ 
+        trades: [], 
+        pagination: { page: 1, pageSize, totalCount: 0, totalPages: 0 },
+        stats: { avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0 }
+      });
     }
     
-    const tsIds = traderStates.map(ts => ts.id);
-    const tsMap = Object.fromEntries(traderStates.map(ts => [ts.id, ts.star_trader]));
+    // Get total count for pagination
+    const { count: totalCount } = await supabase
+      .from('demo_trades')
+      .select('*', { count: 'exact', head: true })
+      .eq('trader_state_id', tsId);
     
+    // Get aggregate stats from ALL completed trades
+    const { data: allTrades } = await supabase
+      .from('demo_trades')
+      .select('status, latency_diff_ms, realized_pnl')
+      .eq('trader_state_id', tsId);
+    
+    const completedTrades = (allTrades || []).filter(t => t.status === 'completed');
+    const failedTrades = (allTrades || []).filter(t => t.status === 'failed');
+    
+    const totalLatency = completedTrades.reduce((sum, t) => sum + (t.latency_diff_ms || 0), 0);
+    const avgLatency = completedTrades.length > 0 ? totalLatency / completedTrades.length : 0;
+    const totalRealizedPnl = completedTrades.reduce((sum, t) => sum + (t.realized_pnl || 0), 0);
+    
+    // Get paginated trades for display
     const { data: trades, error } = await supabase
       .from('demo_trades')
       .select('*')
-      .in('trader_state_id', tsIds)
+      .eq('trader_state_id', tsId)
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .range(offset, offset + pageSize - 1);
     
     if (error) {
       console.error('Trades fetch error:', error);
       return NextResponse.json({ error: 'Failed to fetch trades' }, { status: 500 });
     }
     
-    // Add star_trader to each trade for display
-    const tradesWithTrader = (trades || []).map(trade => ({
-      ...trade,
-      star_trader: tsMap[trade.trader_state_id] || null
-    }));
+    const total = totalCount || 0;
+    const totalPages = Math.ceil(total / pageSize);
     
-    return NextResponse.json({ trades: tradesWithTrader, total: tradesWithTrader.length });
+    return NextResponse.json({ 
+      trades: trades || [],
+      pagination: {
+        page,
+        pageSize,
+        totalCount: total,
+        totalPages
+      },
+      stats: {
+        avgLatency: Math.round(avgLatency),
+        totalRealizedPnl,
+        completedCount: completedTrades.length,
+        failedCount: failedTrades.length
+      }
+    });
+    
   } catch (error) {
     console.error('Demo trades fetch error:', error);
     return NextResponse.json({ error: 'Failed to fetch trades' }, { status: 500 });
