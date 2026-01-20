@@ -412,9 +412,11 @@ export default function TraderDetailPage() {
                 <button onClick={fetchTrades} className="px-3 py-1.5 text-xs border transition-colors hover:opacity-80 rounded" style={{ borderColor: COLORS.structure, color: COLORS.brand }}>
                   <RefreshCw size={12} className="inline mr-1" /> Refresh
                 </button>
+                {/* 
                 <button onClick={syncTrades} disabled={syncing} className="px-3 py-1.5 text-xs border transition-colors hover:opacity-80 rounded" style={{ borderColor: COLORS.structure, color: '#F59E0B' }}>
                   <Download size={12} className="inline mr-1" /> {syncing ? 'Syncing...' : 'Sync'}
                 </button>
+                */}
               </div>
             </div>
             
