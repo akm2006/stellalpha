@@ -101,6 +101,40 @@ function getTokenSymbol(mint: string): string {
   return KNOWN_TOKENS[mint] || mint.slice(0, 6);
 }
 
+// Background enrichment: fetch real symbols from Jupiter and update trades table
+async function enrichTradeSymbols(signature: string, tokenInMint: string, tokenOutMint: string): Promise<void> {
+  try {
+    // Collect mints that need enrichment (not in KNOWN_TOKENS)
+    const mintsToFetch: string[] = [];
+    if (!KNOWN_TOKENS[tokenInMint] && tokenInMint !== 'SOL') mintsToFetch.push(tokenInMint);
+    if (!KNOWN_TOKENS[tokenOutMint] && tokenOutMint !== 'SOL') mintsToFetch.push(tokenOutMint);
+    
+    if (mintsToFetch.length === 0) return; // All known, nothing to do
+    
+    // Fetch metadata from Jupiter
+    const symbolMap: Record<string, string> = {};
+    for (const mint of mintsToFetch) {
+      const meta = await getTokenMetadata(mint);
+      if (meta?.symbol && meta.symbol.length <= 12) {
+        symbolMap[mint] = meta.symbol;
+      }
+    }
+    
+    if (Object.keys(symbolMap).length === 0) return; // No symbols found
+    
+    // Update trades table with real symbols
+    const updates: Record<string, string> = {};
+    if (symbolMap[tokenInMint]) updates.token_in_symbol = symbolMap[tokenInMint];
+    if (symbolMap[tokenOutMint]) updates.token_out_symbol = symbolMap[tokenOutMint];
+    
+    if (Object.keys(updates).length > 0) {
+      await supabase.from('trades').update(updates).eq('signature', signature);
+    }
+  } catch (err) {
+    // Silently fail - enrichment is best-effort
+  }
+}
+
 interface RawTrade {
   signature: string;
   wallet: string;
@@ -110,11 +144,9 @@ interface RawTrade {
   baseAmount: number;
   tokenInMint: string;
   tokenInAmount: number;
-  tokenInPreBalance: number;  // Leader's pre-trade balance for ratio calculation
-  tokenInDecimals?: number;   // Extracted from payload for optimization
+  tokenInPreBalance: number;  // NEW: Leader's pre-trade balance for ratio calculation
   tokenOutMint: string;
   tokenOutAmount: number;
-  tokenOutDecimals?: number;  // Extracted from payload for optimization
   timestamp: number;
   source: string;
   gas: number;
@@ -212,31 +244,6 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   
   if (tokenAmount < 0.000001) return null;
   
-  // OPTIMIZATION: Extract token decimals from accountData (avoids API calls later)
-  // Look for decimals in tokenBalanceChanges for both input and output tokens
-  let tokenInDecimals: number | undefined;
-  let tokenOutDecimals: number | undefined;
-  
-  for (const account of tx.accountData || []) {
-    for (const change of account.tokenBalanceChanges || []) {
-      const decimals = change.rawTokenAmount?.decimals;
-      if (typeof decimals === 'number') {
-        if (change.mint === tokenInMint) {
-          tokenInDecimals = decimals;
-        }
-        if (change.mint === tokenOutMint) {
-          tokenOutDecimals = decimals;
-        }
-      }
-    }
-  }
-  
-  // Handle SOL/wSOL decimals (not in tokenBalanceChanges)
-  const SOL_DECIMALS = 9;
-  const WSOL = 'So11111111111111111111111111111111111111112';
-  if (tokenInMint === 'SOL' || tokenInMint === WSOL) tokenInDecimals = SOL_DECIMALS;
-  if (tokenOutMint === 'SOL' || tokenOutMint === WSOL) tokenOutDecimals = SOL_DECIMALS;
-  
   return {
     signature: tx.signature,
     wallet: fp,
@@ -249,10 +256,8 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
     tokenInPreBalance: tokensSent.length > 0 
       ? Number(tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b).preTokenBalance || 0)
       : 0,
-    tokenInDecimals,
     tokenOutMint,
     tokenOutAmount,
-    tokenOutDecimals,
     timestamp: tx.timestamp,
     source: tx.source || 'UNKNOWN',
     gas: fee / 1e9
@@ -419,9 +424,7 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
     // Current balance is POST-trade, so add back the traded amount
     leaderBeforeBalance = currentBalance + trade.tokenInAmount;
     
-    // ENHANCED: Flag if leader has exited completely
-    const leaderExited = currentBalance === 0;
-    console.log(`[PRODUCER] Leader ${getTokenSymbol(sourceMint)}: postTrade=${currentBalance.toFixed(6)}, preTrade=${leaderBeforeBalance.toFixed(6)}${leaderExited ? ' [LEADER EXITED]' : ''}`);
+    console.log(`[PRODUCER] Leader real-time portfolio: current=${currentBalance.toFixed(4)}, before=${leaderBeforeBalance.toFixed(4)} ${getTokenSymbol(sourceMint)}`);
   } catch (err: any) {
     console.warn(`[PRODUCER] Helius DAS API failed, using trade amount as fallback:`, err.message);
     leaderBeforeBalance = trade.tokenInAmount; // Fallback = 100% ratio
@@ -429,7 +432,7 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 
   // Calculate trade ratio for logging
   const tradeRatio = leaderBeforeBalance > 0 ? trade.tokenInAmount / leaderBeforeBalance : 1;
-  console.log(`[PRODUCER] Trade ratio: ${(tradeRatio * 100).toFixed(2)}% (${trade.tokenInAmount.toFixed(6)} / ${leaderBeforeBalance.toFixed(6)})`);
+  console.log(`[PRODUCER] Trade ratio: ${(tradeRatio * 100).toFixed(1)}% (${trade.tokenInAmount.toFixed(4)} / ${leaderBeforeBalance.toFixed(4)})`);
 
   // 3. Pre-calculate leader's USD value for transparency (even if copy fails)
   let leaderUsdValue = 0;
@@ -643,27 +646,22 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   let tradeRatio = leaderBeforeBalance > 0 ? leaderTradeAmount / leaderBeforeBalance : 1;
   tradeRatio = Math.min(Math.max(tradeRatio, 0), 1);
 
+  console.log(`  Ratio=${(tradeRatio*100).toFixed(1)}% (Leader: ${leaderTradeAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)})`);
+
   // Apply Ratio to Follower's Balance
   let copyAmount = sourceBalance * tradeRatio;
   copyAmount = Math.min(copyAmount, sourceBalance);
-
-  // ENHANCED DIAGNOSTIC LOGGING
-  const followerBalanceAfter = sourceBalance - copyAmount;
-  console.log(`  [RATIO DEBUG] ${getTokenSymbol(sourceMint)}: Leader=${leaderTradeAmount.toFixed(6)}/${leaderBeforeBalance.toFixed(6)} (${(tradeRatio*100).toFixed(2)}%) | Follower=${sourceBalance.toFixed(6)} - ${copyAmount.toFixed(6)} = ${followerBalanceAfter.toFixed(6)}`);
 
   if (copyAmount <= 0) {
     throw new Error(`Copy amount 0 after ratio calculation`);
   }
 
   // 4. GET JUPITER QUOTE
-  // OPTIMIZATION: Use decimals from payload, fall back to API only if missing
-  const sourceDecimals = trade.tokenInDecimals ?? await getTokenDecimals(sourceMint);
-  const destDecimals = trade.tokenOutDecimals ?? await getTokenDecimals(destMint);
-  
-  if (trade.tokenInDecimals !== undefined || trade.tokenOutDecimals !== undefined) {
-    console.log(`  [DECIMALS] Using payload: in=${trade.tokenInDecimals ?? 'API'}, out=${trade.tokenOutDecimals ?? 'API'}`);
-  }
-  
+  // VERCEL OPTIMIZATION: Fetch both decimals in parallel
+  const [sourceDecimals, destDecimals] = await Promise.all([
+    getTokenDecimals(sourceMint),
+    getTokenDecimals(destMint)
+  ]);
   const rawInputAmount = Math.floor(copyAmount * Math.pow(10, sourceDecimals));
 
   const quoteUrl = new URL('https://api.jup.ag/swap/v1/quote');
@@ -680,9 +678,7 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   });
 
   if (!quoteResponse.ok) {
-    const errorBody = await quoteResponse.text();
-    console.error(`[JUPITER ERROR] Status: ${quoteResponse.status}, Body: ${errorBody}, Params: source=${sourceMint}, dest=${destMint}, amount=${rawInputAmount}`);
-    throw new Error(`Jupiter quote failed: ${errorBody || quoteResponse.status}`);
+    throw new Error(`Jupiter quote failed with status ${quoteResponse.status}`);
   }
 
   const quote = await quoteResponse.json();
@@ -861,7 +857,7 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
 export async function POST(request: NextRequest) {
   const receivedAt = Date.now();
   
-  // 1. VALIDATE AUTH (fast - in memory)
+  // Verify auth header - REJECT if invalid
   const authHeader = request.headers.get('authorization');
   if (!HELIUS_WEBHOOK_SECRET) {
     console.error('HELIUS_WEBHOOK_SECRET not configured!');
@@ -869,157 +865,97 @@ export async function POST(request: NextRequest) {
   }
   
   if (authHeader !== HELIUS_WEBHOOK_SECRET) {
-    console.warn('Webhook auth failed - rejecting request');
+    console.warn('Webhook auth failed - rejecting request. Header:', authHeader?.slice(0, 10) + '...');
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   
   try {
-    // 2. PARSE AND QUEUE (fast - single batch INSERT)
     const body = await request.json();
     const transactions = Array.isArray(body) ? body : [body];
     
-    // Filter valid transactions and prepare for queue
-    const events = transactions
-      .filter(tx => tx.signature && tx.feePayer)
-      .map(tx => ({
-        signature: tx.signature,
-        fee_payer: tx.feePayer,
-        raw_payload: tx,
-        status: 'pending',
-        received_at: new Date(receivedAt).toISOString()
-      }));
-
-    let queued = 0;
-    if (events.length > 0) {
-      const { error, count } = await supabase
-        .from('webhook_events')
-        .upsert(events, { onConflict: 'signature', ignoreDuplicates: true, count: 'exact' });
+    console.log(`Received ${transactions.length} transaction(s) from webhook`);
+    
+    let processed = 0;
+    let inserted = 0;
+    
+    for (const tx of transactions) {
+      if (!tx.signature || !tx.feePayer) continue;
       
-      if (error) {
-        console.error('[WEBHOOK] Queue insert error:', error.message);
+      // SECURITY: Only process trades from known star traders
+      // Star traders must be added via database, not auto-discovered via webhook
+      const { data: starTrader } = await supabase
+        .from('star_traders')
+        .select('address')
+        .eq('address', tx.feePayer)
+        .single();
+      
+      if (!starTrader) {
+        console.log(`Rejected trade from unknown wallet: ${tx.feePayer.slice(0, 8)}...`);
+        continue;  // Skip this transaction - wallet not in star_traders
+      }
+      
+      const trade = await detectTrade(tx, tx.feePayer);
+      if (!trade) continue;
+      
+      processed++;
+      
+      // Calculate latency (time from on-chain to now)
+      const latencyMs = receivedAt - (trade.timestamp * 1000);
+      
+      // Update position and get PnL
+      const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
+      
+      // Insert trade (ignore if duplicate)
+      const { error } = await supabase.from('trades').upsert({
+        signature: trade.signature,
+        wallet: trade.wallet,
+        type: trade.type,
+        token_mint: trade.tokenMint,
+        token_symbol: getTokenSymbol(trade.tokenMint),
+        token_in_mint: trade.tokenInMint,
+        token_in_symbol: getTokenSymbol(trade.tokenInMint),
+        token_in_amount: trade.tokenInAmount,
+        token_out_mint: trade.tokenOutMint,
+        token_out_symbol: getTokenSymbol(trade.tokenOutMint),
+        token_out_amount: trade.tokenOutAmount,
+        usd_value: trade.baseAmount,
+        realized_pnl: realizedPnl,
+        avg_cost_basis: avgCostBasis,
+        block_timestamp: trade.timestamp,
+        source: trade.source,
+        gas: trade.gas,
+        latency_ms: latencyMs
+      }, { onConflict: 'signature', ignoreDuplicates: true });
+      
+      if (!error) {
+        inserted++;
+        console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0,8)}... | Latency: ${latencyMs}ms`);
+        
+        // COPY TRADE ENGINE: Process copy trades
+        // CRITICAL: We MUST await on Vercel serverless - CPU freezes when response returns!
+        // With batch limit of 5 trades and parallel fetching, this completes in ~3-5 seconds.
+        await executeCopyTrades(trade, receivedAt);
+        
+        // BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
+        enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => {});
+        
+        // NOTE: Star traders are no longer auto-added here.
+        // They must be added manually via database to prevent unauthorized wallet tracking.
       } else {
-        queued = count || events.length;
-        console.log(`[WEBHOOK] Queued ${queued} event(s) for processing`);
+        console.log(`Trade insert error for ${trade.signature}:`, error.message);
       }
     }
-
-    // 3. RETURN IMMEDIATELY (< 500ms total)
-    const response = NextResponse.json({ 
+    
+    return NextResponse.json({ 
       ok: true, 
-      received: transactions.length,
-      queued,
+      processed, 
+      inserted,
       receivedAt: new Date(receivedAt).toISOString()
     });
-
-    // 4. FIRE-AND-FORGET: Process queue in background
-    // Railway keeps process alive so this works; on Vercel use waitUntil
-    processWebhookQueue().catch(err => {
-      console.error('[QUEUE] Background processing error:', err);
-    });
-
-    return response;
   } catch (error) {
     console.error('Webhook error:', error);
-    // Always return 200 to prevent Helius retries for parse errors
-    return NextResponse.json({ ok: true, error: 'Parse failed' });
-  }
-}
-
-// ============ BACKGROUND QUEUE PROCESSOR ============
-async function processWebhookQueue() {
-  // Atomic claim: Update status to 'processing' and return claimed rows
-  const { data: events, error: claimError } = await supabase
-    .from('webhook_events')
-    .update({ status: 'processing' })
-    .eq('status', 'pending')
-    .order('created_at', { ascending: true })
-    .limit(10)
-    .select();
-
-  if (claimError || !events?.length) {
-    if (claimError) console.error('[QUEUE] Claim error:', claimError.message);
-    return;
-  }
-
-  console.log(`[QUEUE] Processing ${events.length} queued event(s)`);
-
-  for (const event of events) {
-    try {
-      await processWebhookEvent(event);
-      
-      await supabase.from('webhook_events').update({
-        status: 'completed',
-        processed_at: new Date().toISOString()
-      }).eq('id', event.id);
-      
-    } catch (err: any) {
-      console.error(`[QUEUE] Event ${event.signature.slice(0,8)} failed:`, err.message);
-      await supabase.from('webhook_events').update({
-        status: 'failed',
-        error_message: err.message?.slice(0, 500)
-      }).eq('id', event.id);
-    }
-  }
-}
-
-// ============ PROCESS SINGLE WEBHOOK EVENT ============
-async function processWebhookEvent(event: { id: string; signature: string; fee_payer: string; raw_payload: any; received_at: string }) {
-  const tx = event.raw_payload;
-  const receivedAt = new Date(event.received_at).getTime();
-
-  // SECURITY: Only process trades from known star traders
-  const { data: starTrader } = await supabase
-    .from('star_traders')
-    .select('address')
-    .eq('address', event.fee_payer)
-    .single();
-  
-  if (!starTrader) {
-    console.log(`[QUEUE] Skipped: ${event.fee_payer.slice(0, 8)}... not a star trader`);
-    return; // Not a star trader, skip silently
-  }
-
-  const trade = await detectTrade(tx, event.fee_payer);
-  if (!trade) {
-    console.log(`[QUEUE] Skipped: ${event.signature.slice(0, 8)}... no detectable trade`);
-    return;
-  }
-
-  // Calculate latency
-  const latencyMs = Date.now() - (trade.timestamp * 1000);
-
-  // Update position and get PnL
-  const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
-
-  // Insert trade (ignore if duplicate)
-  const { error } = await supabase.from('trades').upsert({
-    signature: trade.signature,
-    wallet: trade.wallet,
-    type: trade.type,
-    token_mint: trade.tokenMint,
-    token_symbol: getTokenSymbol(trade.tokenMint),
-    token_in_mint: trade.tokenInMint,
-    token_in_symbol: getTokenSymbol(trade.tokenInMint),
-    token_in_amount: trade.tokenInAmount,
-    token_out_mint: trade.tokenOutMint,
-    token_out_symbol: getTokenSymbol(trade.tokenOutMint),
-    token_out_amount: trade.tokenOutAmount,
-    usd_value: trade.baseAmount,
-    realized_pnl: realizedPnl,
-    avg_cost_basis: avgCostBasis,
-    block_timestamp: trade.timestamp,
-    source: trade.source,
-    gas: trade.gas,
-    latency_ms: latencyMs
-  }, { onConflict: 'signature', ignoreDuplicates: true });
-
-  if (!error) {
-    console.log(`[QUEUE] Processed: ${trade.type} ${getTokenSymbol(trade.tokenMint)} | Latency: ${latencyMs}ms`);
-    
-    // Execute copy trades for followers
-    await executeCopyTrades(trade, receivedAt);
-  } else {
-    console.log(`[QUEUE] Trade insert skipped for ${trade.signature.slice(0,8)}: ${error.message}`);
+    // Always return 200 to prevent Helius retries
+    return NextResponse.json({ ok: true, error: 'Processing failed' });
   }
 }
 
