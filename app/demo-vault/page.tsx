@@ -394,66 +394,68 @@ export default function DemoVaultPage() {
         {/* ===== VAULT DASHBOARD ===== */}
         {connected && isAuthenticated && vault && (
           <>
-            {/* Stats HUD */}
-            <div className="border border-white/10 mb-3 flex items-stretch divide-x divide-white/10" style={{ backgroundColor: COLORS.surface }}>
-              <div className="flex-1 px-6 py-4 bg-white/[0.03]">
-                <div className="text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>Unallocated</div>
-                <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(unallocated)}</div>
+            {/* Stats HUD - Responsive */}
+            <div className="border border-white/10 mb-3 grid grid-cols-2 sm:grid-cols-4 divide-x divide-white/10" style={{ backgroundColor: COLORS.surface }}>
+              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03] border-b border-white/10 sm:border-b-0">
+                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>Unallocated</div>
+                <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(unallocated)}</div>
               </div>
-              <div className="flex-1 px-6 py-4 bg-white/[0.03]">
-                <div className="text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>Allocated</div>
-                <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(totalAllocated)}</div>
+              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03] border-b border-white/10 sm:border-b-0">
+                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>Allocated</div>
+                <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(totalAllocated)}</div>
               </div>
-              <div className="flex-1 px-6 py-4 bg-white/[0.03]">
-                <div className="text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>Total Value</div>
-                <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(totalValue + unallocated)}</div>
+              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03]">
+                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>Total Value</div>
+                <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(totalValue + unallocated)}</div>
               </div>
-              <div className="flex-1 px-6 py-4 bg-white/[0.03]">
-                <div className="text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>PNL</div>
-                <div className={`text-lg font-mono font-semibold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03]">
+                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>PNL</div>
+                <div className={`text-base sm:text-lg font-mono font-semibold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                   {totalPnl >= 0 ? '+' : ''}{formatUsd(totalPnl)}
                 </div>
               </div>
             </div>
 
-            {/* Description + Action Bar */}
-            <div className="flex items-center justify-between mb-3 py-3 px-5 border border-white/10" style={{ backgroundColor: COLORS.surface }}>
-              <p className="text-sm leading-relaxed" style={{ color: COLORS.data }}>
-                <span className="font-medium" style={{ color: COLORS.text }}>Demo Vault</span> · Experience our autonomous copy-trading engine in a risk-free environment. Allocate virtual funds to Star Traders, track real-time performance, and master the platform before going live.
+            {/* Description + Action Bar - Responsive */}
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-3 py-3 px-4 sm:px-5 border border-white/10" style={{ backgroundColor: COLORS.surface }}>
+              <p className="text-xs sm:text-sm leading-relaxed hidden sm:block" style={{ color: COLORS.data }}>
+                <span className="font-medium" style={{ color: COLORS.text }}>Demo Vault</span> · Autonomous copy-trading in a risk-free environment.
               </p>
-              <div className="flex items-center gap-3 shrink-0 ml-8">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">
                 <button
                   onClick={() => { setShowFollowModal(true); setAllocationUsd(Math.min(500, unallocated)); }}
                   disabled={unallocated < 10}
-                  className="px-4 py-2 text-sm font-medium flex items-center gap-2 transition-opacity hover:opacity-90 disabled:opacity-50 rounded"
+                  className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 transition-opacity hover:opacity-90 disabled:opacity-50 rounded"
                   style={{ backgroundColor: COLORS.brand, color: '#000' }}
                 >
-                  Create Trader State
+                  <span className="hidden sm:inline">Create</span> Trader State
                 </button>
                 <button
                   onClick={fetchVault}
-                  className="px-4 py-2 text-sm font-medium flex items-center gap-2 border border-white/20 hover:bg-white/5 rounded transition-colors"
+                  className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 border border-white/20 hover:bg-white/5 rounded transition-colors"
                   style={{ color: COLORS.text }}
                 >
-                  <RefreshCw size={14} /> Refresh
+                  <RefreshCw size={14} /> <span className="hidden sm:inline">Refresh</span>
                 </button>
                 <button
                   onClick={deleteVault}
-                  className="px-4 py-2 text-sm font-medium flex items-center gap-2 border border-red-500/50 text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                  className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 border border-red-500/50 text-red-400 hover:bg-red-500/10 rounded transition-colors"
                 >
-                  Delete Vault
+                  <span className="hidden sm:inline">Delete</span> Vault
                 </button>
               </div>
             </div>
 
-            {/* Trader States Table */}
+            {/* Trader States Table - Responsive with horizontal scroll */}
             <div className="border border-white/10 overflow-hidden" style={{ backgroundColor: COLORS.surface }}>
-              <div className="px-5 py-3 border-b border-white/10 bg-white/[0.02]">
+              <div className="px-4 sm:px-5 py-3 border-b border-white/10 bg-white/[0.02]">
                 <h2 className="text-sm font-medium" style={{ color: COLORS.text }}>Trader States</h2>
               </div>
               
+              {/* Horizontal scroll container for table */}
+              <div className="overflow-x-auto">
               {/* Table Header */}
-              <div className="grid grid-cols-[50px_1fr_1.4fr_0.7fr_0.7fr_0.6fr_0.7fr_0.6fr_100px] gap-3 px-5 py-2.5 text-xs uppercase tracking-wider border-b border-white/10 font-mono bg-white/[0.04]" style={{ color: COLORS.data }}>
+              <div className="grid grid-cols-[50px_1fr_1.4fr_0.7fr_0.7fr_0.6fr_0.7fr_0.6fr_100px] gap-3 px-4 sm:px-5 py-2.5 text-[10px] sm:text-xs uppercase tracking-wider border-b border-white/10 font-mono bg-white/[0.04] min-w-[900px]" style={{ color: COLORS.data }}>
                 <div>Rank</div>
                 <div>Star Trader</div>
                 <div>PnL (7D)</div>
@@ -488,7 +490,7 @@ export default function DemoVaultPage() {
                     return (
                       <div 
                         key={ts.id} 
-                        className={`grid grid-cols-[50px_1fr_1.4fr_0.7fr_0.7fr_0.6fr_0.7fr_0.6fr_100px] gap-3 px-5 py-3 items-center hover:bg-white/[0.04] transition-colors ${index % 2 === 1 ? 'bg-white/[0.02]' : ''}`}
+                        className={`grid grid-cols-[50px_1fr_1.4fr_0.7fr_0.7fr_0.6fr_0.7fr_0.6fr_100px] gap-3 px-4 sm:px-5 py-3 items-center hover:bg-white/[0.04] transition-colors min-w-[900px] ${index % 2 === 1 ? 'bg-white/[0.02]' : ''}`}
                       >
                         {/* Rank */}
                         <div className="flex items-center gap-1 font-mono text-sm">
@@ -567,6 +569,7 @@ export default function DemoVaultPage() {
                   })
                 )}
               </div>
+              </div>{/* End horizontal scroll */}
             </div>
           </>
         )}
