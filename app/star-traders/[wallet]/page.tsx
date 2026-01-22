@@ -1,10 +1,26 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { useState, useEffect, useRef, ReactNode, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { COLORS } from '@/lib/theme';
-import { ArrowUpRight, ArrowRight, ArrowLeft, RefreshCw, Download, TrendingUp, Wallet, BarChart3, AlertTriangle, Info } from 'lucide-react';
+import { 
+  ArrowLeft, 
+  ArrowRight, 
+  ArrowUpRight, 
+  RefreshCw, 
+  Wallet, 
+  BarChart3, 
+  Info, 
+  ExternalLink,
+  Copy,
+  Check
+} from 'lucide-react';
+
+// =============================================================================
+// TYPES
+// =============================================================================
 
 interface TraderStats {
   totalPnl: number;
@@ -12,6 +28,7 @@ interface TraderStats {
   wins: number;
   losses: number;
   tradesCount: number;
+  profitFactor: number;
 }
 
 interface Trade {
@@ -61,10 +78,30 @@ interface TokenMeta {
   logoURI: string | null;
 }
 
-function formatAmount(amount: number): string {
+// =============================================================================
+// FORMATTING UTILITIES 
+// =============================================================================
+
+function formatAmount(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined) return '—';
+  if (amount === 0) return '0';
   if (Math.abs(amount) >= 1000000) return (amount / 1000000).toFixed(2) + 'M';
   if (Math.abs(amount) >= 1000) return (amount / 1000).toFixed(2) + 'K';
-  if (Math.abs(amount) < 0.01) return amount.toFixed(6);
+  
+  // Use subscript notation for very small numbers: 0.0₈3436
+  if (Math.abs(amount) < 0.01) {
+    const absAmount = Math.abs(amount);
+    const str = absAmount.toFixed(20);
+    const match = str.match(/^0\.0*([1-9]\d*)/);
+    if (match) {
+      const leadingZeros = str.indexOf(match[1]) - 2;
+      const significantDigits = match[1].slice(0, 4);
+      const subscripts = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'];
+      const subscriptNum = String(leadingZeros).split('').map(d => subscripts[parseInt(d)]).join('');
+      return (amount < 0 ? '-' : '') + '0.0' + subscriptNum + significantDigits;
+    }
+  }
+  
   return amount.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
@@ -76,7 +113,7 @@ function formatUsd(amount: number | null): string {
   if (amount >= 0.01) return '$' + amount.toFixed(2);
   if (amount >= 0.0001) return '$' + amount.toFixed(4);
   if (amount >= 0.000001) return '$' + amount.toFixed(6);
-  if (amount > 0) return '$' + amount.toExponential(2); // Very small values
+  if (amount > 0) return '$' + amount.toExponential(2);
   return '$0.00';
 }
 
@@ -112,8 +149,23 @@ function calculateStats(trades: Trade[]): TraderStats {
   const totalWithPnl = wins + losses;
   const winRate = totalWithPnl > 0 ? Math.round((wins / totalWithPnl) * 100) : 0;
   
-  return { totalPnl, winRate, wins, losses, tradesCount: trades.length };
+  // Calculate Profit Factor
+  let totalProfit = 0;
+  let totalLoss = 0;
+  for (const trade of trades) {
+    if (trade.realizedPnl !== null) {
+      if (trade.realizedPnl > 0) totalProfit += trade.realizedPnl;
+      else totalLoss += Math.abs(trade.realizedPnl);
+    }
+  }
+  const profitFactor = totalLoss > 0 ? (totalProfit / totalLoss) : (totalProfit > 0 ? 999 : 0);
+  
+  return { totalPnl, winRate, wins, losses, tradesCount: trades.length, profitFactor };
 }
+
+// =============================================================================
+// COMPONENTS
+// =============================================================================
 
 function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | null }) {
   const [imgError, setImgError] = useState(false);
@@ -123,7 +175,7 @@ function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | nul
       <img 
         src={logoURI}
         alt={symbol}
-        className="w-6 h-6 rounded-full"
+        className="w-7 h-7 rounded-full"
         onError={() => setImgError(true)}
       />
     );
@@ -131,49 +183,168 @@ function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | nul
   
   return (
     <div 
-      className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
-      style={{ backgroundColor: COLORS.structure, color: COLORS.text }}
+      className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
+      style={{ backgroundColor: '#262626', color: '#fff' }}
     >
-      {symbol.charAt(0)}
+      {symbol?.charAt(0) || '?'}
     </div>
   );
 }
+
+function TraderAvatar({ address }: { address: string }) {
+  const hue = address.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
+  const bgColor = `hsl(${hue}, 50%, 30%)`;
+  
+  return (
+    <div 
+      className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0 border-2 border-white/5"
+      style={{ backgroundColor: bgColor, color: '#fff' }}
+    >
+      {address.slice(0, 2).toUpperCase()}
+    </div>
+  );
+}
+
+// Portfolio Progress Bar
+function PortfolioBar({ percent }: { percent: number }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden min-w-[60px]">
+        <div 
+          className="h-full rounded-full transition-all duration-500"
+          style={{ 
+            width: `${Math.min(100, percent)}%`,
+            background: 'linear-gradient(90deg, #10B981 0%, #34D399 100%)'
+          }}
+        />
+      </div>
+      <span className="font-mono text-xs font-medium min-w-[40px] text-right" style={{ color: COLORS.text }}>{percent.toFixed(1)}%</span>
+    </div>
+  );
+}
+
+// Enhanced InfoTooltip to support custom triggers
+function InfoTooltip({ children, trigger }: { children: ReactNode; trigger?: ReactNode }) {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
+  const triggerRef = useRef<HTMLDivElement>(null);
+  
+  const updateTooltipPosition = () => {
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      const tooltipWidth = 256;
+      let left = rect.left + rect.width / 2;
+      
+      const minLeft = tooltipWidth / 2 + 8;
+      const maxLeft = window.innerWidth - tooltipWidth / 2 - 8;
+      left = Math.max(minLeft, Math.min(maxLeft, left));
+      
+      setTooltipPosition({
+        top: rect.bottom + 10,
+        left
+      });
+    }
+  };
+  
+  const handleMouseEnter = () => {
+    updateTooltipPosition();
+    setShowTooltip(true);
+  };
+  
+  useEffect(() => {
+    if (showTooltip) {
+      updateTooltipPosition();
+      const handleScroll = () => updateTooltipPosition();
+      const handleResize = () => updateTooltipPosition();
+      window.addEventListener('scroll', handleScroll, true);
+      window.addEventListener('resize', handleResize);
+      return () => {
+        window.removeEventListener('scroll', handleScroll, true);
+        window.removeEventListener('resize', handleResize);
+      };
+    }
+  }, [showTooltip]);
+  
+  return (
+    <>
+      <div 
+        ref={triggerRef}
+        className="relative inline-flex items-center"
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={() => setShowTooltip(false)}
+      >
+        {trigger ? (
+          trigger
+        ) : (
+          <button
+            className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-white/20 hover:bg-white/5 transition-colors"
+            style={{ color: COLORS.data }}
+            type="button"
+          >
+            <Info size={12} />
+          </button>
+        )}
+      </div>
+      {showTooltip && typeof window !== 'undefined' && createPortal(
+        <div 
+          className="fixed w-64 p-3 rounded border shadow-lg pointer-events-auto"
+          style={{ 
+            backgroundColor: COLORS.surface, 
+            borderColor: COLORS.structure,
+            zIndex: 99999,
+            top: `${tooltipPosition.top}px`,
+            left: `${tooltipPosition.left}px`,
+            transform: 'translate(-50%, 0)',
+            marginTop: '8px'
+          }}
+          onMouseEnter={() => setShowTooltip(true)}
+          onMouseLeave={() => setShowTooltip(false)}
+        >
+          <div className="text-xs leading-relaxed" style={{ color: COLORS.text }}>
+            {children}
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
+
+
+
+// =============================================================================
+// MAIN COMPONENT
+// =============================================================================
 
 export default function TraderDetailPage() {
   const params = useParams();
   const router = useRouter();
   const wallet = params.wallet as string;
   
-  const [traderName, setTraderName] = useState(`Trader ${wallet.slice(0, 6)}`);
   const [activeTab, setActiveTab] = useState<'trades' | 'portfolio'>('trades');
   const [trades, setTrades] = useState<Trade[]>([]);
   const [portfolioTokens, setPortfolioTokens] = useState<PortfolioToken[]>([]);
   const [solBalance, setSolBalance] = useState<SolBalance | null>(null);
   const [totalPortfolioValue, setTotalPortfolioValue] = useState(0);
   const [tokenMeta, setTokenMeta] = useState<Record<string, TokenMeta>>({});
-  const [loading, setLoading] = useState(false);
-  const [portfolioLoading, setPortfolioLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [portfolioError, setPortfolioError] = useState<string | null>(null);
   const [stats, setStats] = useState<TraderStats | null>(null);
-  const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const [showDust, setShowDust] = useState(false);
+  const [traderName, setTraderName] = useState('Star Trader');
   
   const fetchTokenMetadata = async (mints: string[]) => {
     if (mints.length === 0) return;
-    
     try {
       const response = await fetch(`/api/tokens?mints=${mints.join(',')}`);
       const data = await response.json();
       if (data) {
-        // Ensure SOL is present if needed (though API might return it)
         if (!data['SOL']) {
           data['SOL'] = {
             symbol: 'SOL',
             name: 'Solana',
             logoURI: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png',
-            decimals: 9 // Add missing decimals property to match TokenMeta
           };
         }
         setTokenMeta(prev => ({ ...prev, ...data }));
@@ -182,267 +353,340 @@ export default function TraderDetailPage() {
       console.error('Failed to fetch token metadata:', err);
     }
   };
+
+  const fetchTraderProfile = async () => {
+    try {
+      const response = await fetch('/api/star-traders');
+      const data = await response.json();
+      if (data.traders) {
+        const trader = data.traders.find((t: any) => t.address === wallet);
+        if (trader && trader.name) {
+          setTraderName(trader.name);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch trader profile:', err);
+    }
+  };
   
-  const fetchTrades = async () => {
+  const refreshData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/trades?wallet=${wallet}&limit=100`);
-      const data = await response.json();
-      if (data.error) {
-        setError(data.error);
-      } else {
-        const tradesList = data.trades || [];
-        setTrades(tradesList);
-        const calculatedStats = calculateStats(tradesList);
-        setStats(calculatedStats);
-        
-        const mints = new Set<string>();
-        tradesList.forEach((t: Trade) => {
-          if (t.tokenInMint && t.tokenInMint !== 'SOL') mints.add(t.tokenInMint);
-          if (t.tokenOutMint && t.tokenOutMint !== 'SOL') mints.add(t.tokenOutMint);
-        });
-        if (mints.size > 0) await fetchTokenMetadata(Array.from(mints));
+      // Fetch Trader Profile
+      fetchTraderProfile();
+
+      // Fetch Trades
+      const tradesRes = await fetch(`/api/trades?wallet=${wallet}&limit=100`);
+      const tradesData = await tradesRes.json();
+      
+      // Fetch Portfolio
+      const portfolioRes = await fetch(`/api/portfolio?wallet=${wallet}`);
+      const portfolioData = await portfolioRes.json();
+      
+      if (tradesData.error && portfolioData.error) {
+        throw new Error(tradesData.error || portfolioData.error);
       }
-    } catch {
-      setError('Failed to fetch trades');
+      
+      const tradesList = tradesData.trades || [];
+      setTrades(tradesList);
+      setStats(calculateStats(tradesList));
+      
+      setPortfolioTokens(portfolioData.tokens || []);
+      setSolBalance(portfolioData.solBalance || null);
+      setTotalPortfolioValue(portfolioData.totalPortfolioValue || 0);
+
+      // Metadata
+      const mints = new Set<string>();
+      tradesList.forEach((t: Trade) => {
+        if (t.tokenInMint && t.tokenInMint !== 'SOL') mints.add(t.tokenInMint);
+        if (t.tokenOutMint && t.tokenOutMint !== 'SOL') mints.add(t.tokenOutMint);
+      });
+      portfolioData.tokens?.forEach((t: PortfolioToken) => mints.add(t.mint));
+      
+      if (mints.size > 0) await fetchTokenMetadata(Array.from(mints));
+      
+    } catch (e: any) {
+      setError(e.message || 'Failed to fetch data');
     } finally {
       setLoading(false);
     }
   };
   
-  const fetchPortfolio = async () => {
-    setPortfolioLoading(true);
-    setPortfolioError(null);
-    try {
-      const response = await fetch(`/api/portfolio?wallet=${wallet}`);
-      const data = await response.json();
-      if (data.error) {
-        setPortfolioError(data.error);
-      } else {
-        setPortfolioTokens(data.tokens || []);
-        setSolBalance(data.solBalance || null);
-        setTotalPortfolioValue(data.totalPortfolioValue || 0);
-      }
-    } catch {
-      setPortfolioError('Failed to fetch portfolio');
-    } finally {
-      setPortfolioLoading(false);
-    }
-  };
-  
-  const syncTrades = async () => {
-    setSyncing(true);
-    setSyncResult(null);
-    try {
-      const response = await fetch('/api/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wallet, limit: 100 })
-      });
-      const data = await response.json();
-      if (data.error) {
-        setSyncResult(`Error: ${data.error}`);
-      } else {
-        setSyncResult(`Synced ${data.inserted} trades from ${data.fetched} transactions`);
-        fetchTrades();
-      }
-    } catch {
-      setSyncResult('Sync failed');
-    } finally {
-      setSyncing(false);
-    }
-  };
-  
   useEffect(() => {
     if (wallet) {
-      fetchTrades();
-      fetchPortfolio();
+      refreshData();
     }
   }, [wallet]);
+
+  const copyAddress = () => {
+    navigator.clipboard.writeText(wallet);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
   
-  // Filter tokens based on dust toggle
-  const displayTokens = showDust 
-    ? portfolioTokens 
-    : portfolioTokens.filter(t => !t.isDust);
-  
+  // Filter tokens
+  const displayTokens = showDust ? portfolioTokens : portfolioTokens.filter(t => !t.isDust);
   const dustCount = portfolioTokens.filter(t => t.isDust).length;
   
-  return (
-    <div className="min-h-screen font-sans" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
-      <Link 
-        href="/star-traders"
-        className="fixed top-20 left-4 z-50 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-lg border transition-all hover:bg-white/10 md:w-auto"
-        style={{ 
-          borderColor: COLORS.structure,
-          backgroundColor: COLORS.surface,
-          color: COLORS.text,
-        }}
-      >
-        <ArrowLeft size={16} />
-        <span className="hidden sm:inline">Back to Traders</span>
-      </Link>
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center font-sans tracking-tight" style={{ backgroundColor: COLORS.canvas }}>
+        <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
+      </div>
+    );
+  }
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 pt-32 sm:pt-24">
-        {/* Header */}
-        <div className="mb-8">
-          
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div className="flex items-center gap-3 sm:gap-4">
-              <div 
-                className="w-12 h-12 sm:w-14 sm:h-14 rounded-full flex items-center justify-center font-bold text-lg sm:text-xl flex-shrink-0"
-                style={{ backgroundColor: COLORS.structure, color: COLORS.text }}
-              >
-                {traderName.charAt(0)}
+  return (
+    <div className="min-h-screen font-sans tracking-tight animate-in fade-in duration-700" style={{ backgroundColor: COLORS.canvas, color: COLORS.text, fontFamily: 'Inter, system-ui, sans-serif' }}>
+      <style jsx global>{`
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-up {
+          animation: fadeUp 0.5s ease-out forwards;
+        }
+        .delay-100 { animation-delay: 100ms; }
+        .delay-200 { animation-delay: 200ms; }
+        .delay-300 { animation-delay: 300ms; }
+      `}</style>
+      <main className="w-full px-5 py-4 pt-20">
+        
+        {/* Back Button */}
+        <Link 
+          href="/star-traders"
+          className="group inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-white/10 rounded hover:bg-white/5 transition-all duration-200 mb-4 hover:border-white/20 active:scale-[0.98]"
+          style={{ color: COLORS.text }}
+        >
+          <ArrowLeft size={14} className="group-hover:-translate-x-1 transition-transform duration-200" /> Back
+        </Link>
+        
+        {/* ===== CONTROL DECK ROW 1: Header ===== */}
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-3 py-4 px-5 border border-white/10 bg-white/[0.02] animate-fade-up" style={{ backgroundColor: COLORS.surface }}>
+          {/* Trader Identity */}
+          <div className="flex items-center gap-4">
+            <div className="transition-transform duration-300 hover:scale-105">
+              <TraderAvatar address={wallet} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 mb-0.5">
+                <h1 className="text-xl font-semibold" style={{ color: COLORS.text }}>{traderName}</h1>
               </div>
-              <div className="min-w-0">
-                <h1 className="text-xl sm:text-2xl font-semibold truncate" style={{ color: COLORS.text }}>
-                  {traderName}
-                </h1>
+              <div className="flex items-center gap-2">
+                <code className="font-mono text-sm" style={{ color: COLORS.data }}>
+                  {wallet.slice(0, 6)}...{wallet.slice(-6)}
+                </code>
+                <button 
+                  onClick={copyAddress}
+                  className="p-1.5 hover:bg-white/10 rounded transition-all duration-200 active:scale-90 group"
+                  style={{ color: copied ? '#10B981' : COLORS.data }}
+                  title="Copy Address"
+                >
+                  {copied ? (
+                    <Check size={12} className="animate-in zoom-in duration-200" />
+                  ) : (
+                    <Copy size={12} className="group-hover:text-white transition-colors" />
+                  )}
+                </button>
                 <a 
                   href={`https://solscan.io/account/${wallet}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs sm:text-sm font-mono flex items-center gap-1 hover:opacity-80 transition-opacity"
+                  className="p-1.5 hover:bg-white/10 rounded transition-all duration-200 hover:scale-110 active:scale-90 group"
                   style={{ color: COLORS.data }}
+                  title="View on Solscan"
                 >
-                  <span className="truncate">{wallet.slice(0, 8)}...{wallet.slice(-6)}</span>
-                  <ArrowUpRight size={12} className="flex-shrink-0" />
+                  <ExternalLink size={12} className="group-hover:text-white transition-colors" />
                 </a>
               </div>
             </div>
-
-            {/* GMGN Link with Context */}
-            <div className="flex flex-col items-end gap-2 self-start sm:self-center">
-              <a 
-                href={`https://gmgn.ai/sol/address/${wallet}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border transition-all hover:bg-white/5 hover:border-white/20"
-                style={{ 
-                  borderColor: COLORS.structure, 
-                  backgroundColor: COLORS.surface,
-                }}
-              >
-                <span className="text-sm font-medium" style={{ color: COLORS.text }}>View on</span>
-                <img src="https://gmgn.ai/static/GMGNLogoDark.svg" alt="GMGN" className="h-5 w-auto" />
-                <ArrowUpRight size={14} style={{ color: COLORS.data }} />
-              </a>
-              <div className="flex items-start gap-1.5 text-xs font-medium max-w-[220px] text-right" style={{ color: COLORS.data }}>
-                <Info size={14} className="mt-0.5 flex-shrink-0" style={{ color: COLORS.brand }} />
-                <span>Analysis based on recent trades. Use GMGN for full history.</span>
-              </div>
-            </div>
           </div>
-        </div>
-        
-        {/* Sync Result */}
-        {syncResult && (
-          <div 
-            className="mb-6 p-3 border text-sm"
-            style={{ borderColor: COLORS.structure, color: syncResult.includes('Error') ? '#EF4444' : COLORS.brand }}
-          >
-            {syncResult}
-          </div>
-        )}
-        
-        {/* Stats Summary */}
-        {stats && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-8">
-            <div className="p-4 sm:p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-1 sm:mb-2" style={{ color: COLORS.data }}>Total PnL</div>
-              <div className="text-lg sm:text-xl font-semibold" style={{ color: stats.totalPnl >= 0 ? '#10B981' : '#EF4444' }}>
-                {stats.totalPnl >= 0 ? '+' : '-'}${formatAmount(Math.abs(stats.totalPnl))}
-              </div>
-            </div>
-            <div className="p-4 sm:p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-1 sm:mb-2" style={{ color: COLORS.data }}>Win Rate</div>
-              <div className="text-lg sm:text-xl font-semibold" style={{ color: COLORS.brand }}>{stats.winRate}%</div>
-            </div>
-            <div className="p-4 sm:p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-1 sm:mb-2" style={{ color: COLORS.data }}>Wins / Losses</div>
-              <div className="text-lg sm:text-xl font-semibold">
-                <span style={{ color: '#10B981' }}>{stats.wins}</span>
-                <span style={{ color: COLORS.data }}> / </span>
-                <span style={{ color: '#EF4444' }}>{stats.losses}</span>
-              </div>
-            </div>
-            <div className="p-4 sm:p-5 border" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-1 sm:mb-2" style={{ color: COLORS.data }}>Portfolio</div>
-              <div className="text-lg sm:text-xl font-semibold" style={{ color: COLORS.brand }}>{formatUsd(totalPortfolioValue)}</div>
-            </div>
-          </div>
-        )}
-        
-        {/* Tabs */}
-        <div className="flex gap-2 mb-6">
-          <button
-            onClick={() => setActiveTab('trades')}
-            className="px-5 py-2.5 text-sm font-medium transition-colors flex items-center gap-2"
-            style={{
-              backgroundColor: activeTab === 'trades' ? COLORS.surface : 'transparent',
-              color: activeTab === 'trades' ? COLORS.brand : COLORS.data,
-              borderBottom: activeTab === 'trades' ? `2px solid ${COLORS.brand}` : '2px solid transparent'
-            }}
-          >
-            <BarChart3 size={16} /> Trades ({trades.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('portfolio')}
-            className="px-5 py-2.5 text-sm font-medium transition-colors flex items-center gap-2"
-            style={{
-              backgroundColor: activeTab === 'portfolio' ? COLORS.surface : 'transparent',
-              color: activeTab === 'portfolio' ? COLORS.brand : COLORS.data,
-              borderBottom: activeTab === 'portfolio' ? `2px solid ${COLORS.brand}` : '2px solid transparent'
-            }}
-          >
-            <Wallet size={16} /> Portfolio ({portfolioTokens.length})
-          </button>
-        </div>
-        
-        {/* Trades Tab */}
-        {activeTab === 'trades' && (
-          <div className="border overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-            <div className="px-4 sm:px-6 py-4 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3" style={{ borderColor: COLORS.structure }}>
-              <div>
-                <h2 className="font-medium" style={{ color: COLORS.text }}>Recent Trades</h2>
-                <p className="text-xs" style={{ color: COLORS.data }}>Last 100 trades with PnL calculation</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={fetchTrades} className="px-3 py-1.5 text-xs border transition-colors hover:opacity-80 rounded" style={{ borderColor: COLORS.structure, color: COLORS.brand }}>
-                  <RefreshCw size={12} className="inline mr-1" /> Refresh
-                </button>
-                {/* 
-                <button onClick={syncTrades} disabled={syncing} className="px-3 py-1.5 text-xs border transition-colors hover:opacity-80 rounded" style={{ borderColor: COLORS.structure, color: '#F59E0B' }}>
-                  <Download size={12} className="inline mr-1" /> {syncing ? 'Syncing...' : 'Sync'}
-                </button>
-                */}
-              </div>
-            </div>
-            
-            {/* Scrollable table wrapper for mobile */}
-            <div className="overflow-x-auto">
-              <div className="min-w-[700px]">
-                <div className="grid grid-cols-8 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
-                  <div>Type</div>
-                  <div className="col-span-2">Token In → Token Out</div>
-                  <div>USD Value</div>
-                  <div>Profit</div>
-                  <div>Age</div>
-                  <div>Gas</div>
-                  <div>Actions</div>
+          
+          {/* Analyze Button */}
+          <div className="flex items-center gap-3">
+             <div className="hidden sm:flex items-center gap-1.5 text-xs font-medium text-right mr-2" style={{ color: COLORS.data }}>
+                <div className="flex items-center gap-1">
+                  <InfoTooltip>
+                    <strong>Recent History Analysis</strong><br/><br/>
+                    This analysis is generated based on the last 100 on-chain trades.<br/><br/>
+                    For a complete historical analysis including all past transactions, please view the full profile on GMGN.
+                  </InfoTooltip>
+                  <span>Analysis based on recent trades. Use GMGN for full history.</span>
                 </div>
-            
-                <div className="max-h-[500px] overflow-y-auto">
-                  {loading ? (
-                    <div className="flex items-center justify-center py-16">
-                      <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
+              </div>
+            <a 
+              href={`https://gmgn.ai/sol/address/${wallet}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group flex items-center gap-2 px-5 py-2.5 rounded-lg border transition-all hover:bg-emerald-500/10 hover:border-emerald-500/30"
+              style={{ 
+                borderColor: COLORS.structure, 
+                backgroundColor: 'rgba(16, 185, 129, 0.05)',
+              }}
+            >
+              <span className="text-sm font-bold tracking-wide group-hover:text-emerald-400 transition-colors" style={{ color: COLORS.text }}>Analyze on</span>
+              <img src="https://gmgn.ai/static/GMGNLogoDark.svg" alt="GMGN" className="h-5 w-auto opacity-90 group-hover:opacity-100 transition-opacity" />
+              <ArrowUpRight size={14} className="text-emerald-500 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
+            </a>
+          </div>
+        </div>
+        
+        {/* ===== CONTROL DECK ROW 2: Stats HUD Strip ===== */}
+        {stats && (
+          <div className="border border-white/10 mb-4 overflow-x-auto animate-fade-up delay-100" style={{ backgroundColor: COLORS.surface }}>
+            <div className="flex items-stretch divide-x divide-white/10 min-w-[700px]">
+              <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center transition-colors duration-300 hover:bg-white/[0.06]">
+                <div className="flex items-center justify-center gap-1.5 mb-1.5">
+                   <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.data }}>Total PNL (7D)</div>
+                   <InfoTooltip>
+                      <strong>7-Day Profit/Loss</strong><br/><br/>
+                      Calculated from realized trades within the last 7 days. Does not include unrealized positions.
+                   </InfoTooltip>
+                </div>
+                <div className={`text-lg font-mono font-semibold ${stats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {stats.totalPnl >= 0 ? '+' : ''}{formatAmount(stats.totalPnl)}
+                </div>
+              </div>
+              
+              <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center transition-colors duration-300 hover:bg-white/[0.06]">
+                <div className="flex items-center justify-center gap-1.5 mb-1.5">
+                   <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.data }}>Win Rate</div>
+                   <InfoTooltip>
+                      <strong>Win Rate</strong><br/><br/>
+                      Percentage of profitable trades out of total closed trades in the fetched history.<br/>
+                      Based on last 100 trades.
+                   </InfoTooltip>
+                </div>
+                <div className="text-lg font-mono font-semibold" style={{ color: COLORS.brand }}>
+                  {stats.winRate}%
+                </div>
+              </div>
+              
+              <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center transition-colors duration-300 hover:bg-white/[0.06]">
+                 <div className="flex items-center justify-center gap-1.5 mb-1.5">
+                   <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.data }}>Profit Factor</div>
+                   <InfoTooltip>
+                      <strong>Profit Factor</strong><br/><br/>
+                      Measures trading efficiency: (Total Gains / Total Losses).<br/>
+                      &gt; 1.0 means profitable. &gt; 2.0 is excellent.
+                   </InfoTooltip>
+                </div>
+                <div className={`text-lg font-mono font-semibold ${stats.profitFactor >= 1.5 ? 'text-emerald-400' : stats.profitFactor >= 1 ? 'text-emerald-200' : 'text-gray-400'}`}>
+                  {stats.profitFactor >= 999 ? '∞' : stats.profitFactor.toFixed(2)}x
+                </div>
+              </div>
+
+              <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center transition-colors duration-300 hover:bg-white/[0.06]">
+                 <div className="flex items-center justify-center gap-1.5 mb-1.5">
+                   <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.data }}>Wins / Losses</div>
+                </div>
+                <div className="text-lg font-mono font-semibold">
+                  <span className="text-emerald-400">{stats.wins}</span>
+                  <span className="mx-2 text-gray-600">/</span>
+                  <span className="text-red-400">{stats.losses}</span>
+                </div>
+              </div>
+              
+              <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center transition-colors duration-300 hover:bg-white/[0.06]">
+                 <div className="flex items-center justify-center gap-1.5 mb-1.5">
+                   <div className="text-xs uppercase tracking-wider" style={{ color: COLORS.data }}>Portfolio Value</div>
+                   <InfoTooltip>
+                      <strong>Total Portfolio Value</strong><br/><br/>
+                      Current USD value of all token addresses held by this wallet, including SOL.
+                   </InfoTooltip>
+                </div>
+                <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>
+                  {formatUsd(totalPortfolioValue)}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        
+          {/* ===== TAB SWITCHER & CONTROL BAR ===== */}
+          <div className="border border-white/10 overflow-hidden animate-fade-up delay-200" style={{ backgroundColor: COLORS.surface }}>
+            <div className="px-5 py-3 border-b border-white/10 bg-white/[0.02] flex items-center justify-between">
+              <div className="flex items-center gap-1">
+                <button 
+                  onClick={() => setActiveTab('trades')}
+                  className={`px-4 py-2 text-sm font-medium rounded-t transition-all duration-200 ${activeTab === 'trades' ? 'bg-white/[0.05] border-b-2' : 'hover:bg-white/[0.03] opacity-70 hover:opacity-100'}`}
+                  style={{ 
+                    color: activeTab === 'trades' ? COLORS.text : COLORS.data,
+                    borderColor: activeTab === 'trades' ? COLORS.brand : 'transparent'
+                  }}
+                >
+                  Recent Trades <span className="text-xs opacity-60 font-normal ml-1">(Last {trades.length})</span>
+                </button>
+                <button 
+                  onClick={() => setActiveTab('portfolio')}
+                  className={`px-4 py-2 text-sm font-medium rounded-t transition-all duration-200 ${activeTab === 'portfolio' ? 'bg-white/[0.05] border-b-2' : 'hover:bg-white/[0.03] opacity-70 hover:opacity-100'}`}
+                  style={{ 
+                    color: activeTab === 'portfolio' ? COLORS.text : COLORS.data,
+                    borderColor: activeTab === 'portfolio' ? COLORS.brand : 'transparent'
+                  }}
+                >
+                  Portfolio ({portfolioTokens.length})
+                </button>
+              </div>
+              
+              <div className="flex items-center gap-3">
+                 {/* Dust Toggle (Visible only on Portfolio Tab) */}
+                 {activeTab === 'portfolio' && (
+                    <div className="hidden sm:block">
+                      <InfoTooltip 
+                        trigger={
+                          <button 
+                            onClick={() => setShowDust(!showDust)}
+                            className="text-xs px-3 py-1.5 rounded transition-all duration-200 flex items-center gap-1.5 border hover:scale-[1.02] active:scale-[0.98]"
+                            style={{ 
+                              borderColor: showDust ? COLORS.brand : 'rgba(255,255,255,0.1)', 
+                              backgroundColor: showDust ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255,255,255,0.03)',
+                              color: showDust ? COLORS.brand : COLORS.data
+                            }}
+                          >
+                            <Info size={12} />
+                            {showDust ? 'Hide Dust' : `Show ${dustCount} Dust`}
+                          </button>
+                        }
+                      >
+                        <strong>Dust Tokens</strong><br/><br/>
+                        Small balances valued under $0.01 or less than 0.1% of portfolio.<br/>
+                        Hiding them keeps your view clean.
+                      </InfoTooltip>
                     </div>
-                  ) : error ? (
-                    <div className="text-center py-16" style={{ color: '#EF4444' }}>{error}</div>
-                  ) : trades.length === 0 ? (
-                    <div className="text-center py-16" style={{ color: COLORS.data }}>
-                      No trades found. Click "Sync" to import historical trades.
+                 )}
+                 
+                <button 
+                  onClick={refreshData} 
+                  disabled={loading}
+                  className="group px-3 py-1.5 text-xs border border-white/20 rounded hover:bg-white/5 disabled:opacity-50 transition-all duration-200 active:scale-[0.98] flex items-center gap-1.5"
+                  style={{ color: COLORS.text }}
+                >
+                  <RefreshCw size={12} className={`transition-transform duration-500 ${loading ? 'animate-spin' : 'group-hover:rotate-180'}`} /> 
+                  Refresh
+                </button>
+              </div>
+            </div>
+          
+          {/* ===== RECENT TRADES TAB ===== */}
+          {activeTab === 'trades' && (
+            <div className="overflow-x-auto">
+              <div className="min-w-[800px]">
+                <div className="grid grid-cols-[80px_1fr_120px_120px_100px_100px_80px] gap-4 px-6 py-2.5 text-[11px] font-mono uppercase tracking-wider border-b border-white/10 bg-white/[0.04]" style={{ color: COLORS.data }}>
+                  <div>Type</div>
+                  <div>Token In → Out</div>
+                  <div className="text-right">USD Value</div>
+                  <div className="text-right">Profit</div>
+                  <div className="text-right">Age</div>
+                  <div className="text-right">Gas</div>
+                  <div className="text-center">Action</div>
+                </div>
+                
+                <div className="max-h-[600px] overflow-y-auto">
+                  {trades.length === 0 ? (
+                    <div className="text-center py-20 text-sm" style={{ color: COLORS.data }}>
+                       No recent trades found for this wallet.
                     </div>
                   ) : (
                     trades.map((trade) => {
@@ -452,30 +696,53 @@ export default function TraderDetailPage() {
                       const outMeta = tokenMeta[trade.tokenOutMint] || { symbol: trade.tokenOutSymbol, logoURI: null };
                       
                       return (
-                        <div key={trade.signature} className="grid grid-cols-8 gap-4 items-center px-6 py-3 hover:bg-white/[0.02] transition-colors border-b" style={{ borderColor: COLORS.structure }}>
+                        <div key={trade.signature} className="grid grid-cols-[80px_1fr_120px_120px_100px_100px_80px] gap-4 items-center px-6 py-3 border-b border-white/5 hover:bg-white/[0.04] transition-colors duration-200 group">
                           <div>
-                            <span className="px-2.5 py-1 rounded text-xs font-medium" style={{ backgroundColor: isBuy ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)', color: isBuy ? '#10B981' : '#EF4444' }}>
-                              {isBuy ? 'Buy' : 'Sell'}
+                            <span className={`inline-flex items-center justify-center px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider w-14 ${isBuy ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'}`}>
+                              {isBuy ? 'BUY' : 'SELL'}
                             </span>
                           </div>
-                          <div className="col-span-2 flex items-center gap-2">
-                            <div className="flex items-center gap-1.5">
-                              <TokenIcon symbol={inMeta.symbol} logoURI={inMeta.logoURI} />
-                              <span style={{ color: COLORS.text }} className="text-sm">{formatAmount(trade.tokenInAmount)} {inMeta.symbol}</span>
-                            </div>
-                            <ArrowRight size={14} style={{ color: COLORS.data }} />
-                            <div className="flex items-center gap-1.5">
-                              <TokenIcon symbol={outMeta.symbol} logoURI={outMeta.logoURI} />
-                              <span style={{ color: COLORS.text }} className="text-sm">{formatAmount(trade.tokenOutAmount)} {outMeta.symbol}</span>
-                            </div>
+                          
+                         <div className="flex items-center gap-2">
+                           <div className="flex items-center gap-1.5">
+                             <TokenIcon symbol={inMeta.symbol} logoURI={inMeta.logoURI} />
+                             <span className="font-mono text-sm" style={{ color: COLORS.text }}>
+                               {formatAmount(trade.tokenInAmount)} <span className="font-bold ml-1 px-1.5 py-0.5 rounded bg-white/10 text-white">{inMeta.symbol}</span>
+                             </span>
+                           </div>
+                           <ArrowRight size={14} style={{ color: COLORS.data }} />
+                           <div className="flex items-center gap-1.5">
+                             <TokenIcon symbol={outMeta.symbol} logoURI={outMeta.logoURI} />
+                             <span className="font-mono text-sm" style={{ color: COLORS.text }}>
+                               {formatAmount(trade.tokenOutAmount)} <span className="font-bold ml-1 px-1.5 py-0.5 rounded bg-white/10 text-white">{outMeta.symbol}</span>
+                             </span>
+                           </div>
+                         </div>
+                          
+                          <div className="text-right font-mono text-sm" style={{ color: COLORS.text }}>
+                            ${formatAmount(trade.usdValue)}
                           </div>
-                          <div style={{ color: COLORS.brand }} className="font-medium">${formatAmount(trade.usdValue)}</div>
-                          <div style={{ color: pnl.color }} className="font-medium">{pnl.text}</div>
-                          <div style={{ color: COLORS.data }}>{timeAgo(trade.timestamp)}</div>
-                          <div style={{ color: COLORS.data }}>${(trade.gas * 200).toFixed(3)}</div>
-                          <div>
-                            <a href={`https://solscan.io/tx/${trade.signature}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs hover:opacity-80 transition-opacity" style={{ color: COLORS.data }}>
-                              View <ArrowUpRight size={12} />
+                          
+                          <div className="text-right font-mono text-sm" style={{ color: pnl.color }}>
+                            {pnl.text}
+                          </div>
+                          
+                          <div className="text-right text-xs" style={{ color: COLORS.data }}>
+                            {timeAgo(trade.timestamp)}
+                          </div>
+                          
+                          <div className="text-right text-xs" style={{ color: COLORS.data }}>
+                            ${(trade.gas * 200).toFixed(3)}
+                          </div>
+                          
+                          <div className="text-center">
+                            <a 
+                              href={`https://solscan.io/tx/${trade.signature}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center px-2 py-1 rounded border border-cyan-500/30 bg-cyan-500/10 text-cyan-400 text-[10px] font-bold uppercase tracking-wider hover:bg-cyan-500/20 transition-all duration-200 hover:scale-105 active:scale-95"
+                            >
+                              TX <ArrowUpRight size={10} className="ml-0.5" />
                             </a>
                           </div>
                         </div>
@@ -485,112 +752,88 @@ export default function TraderDetailPage() {
                 </div>
               </div>
             </div>
-          </div>
-        )}
-        
-        {/* Portfolio Tab */}
-        {activeTab === 'portfolio' && (
-          <div className="border overflow-hidden" style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}>
-            <div className="px-4 sm:px-6 py-4 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3" style={{ borderColor: COLORS.structure }}>
-              <div>
-                <h2 className="font-medium" style={{ color: COLORS.text }}>Portfolio</h2>
-                <p className="text-xs" style={{ color: COLORS.data }}>Real-time on-chain holdings</p>
-              </div>
-              <div className="flex items-center gap-4">
-                {dustCount > 0 && (
-                  <button 
-                    onClick={() => setShowDust(!showDust)}
-                    className="text-xs flex items-center gap-1 hover:opacity-80 transition-opacity"
-                    style={{ color: COLORS.data }}
-                  >
-                    <AlertTriangle size={12} />
-                    {showDust ? `Hide ${dustCount} dust` : `Show ${dustCount} dust`}
-                  </button>
-                )}
-                <div className="text-lg font-medium" style={{ color: COLORS.brand }}>
-                  {formatUsd(totalPortfolioValue)}
-                </div>
-              </div>
-            </div>
-            
-            {/* Scrollable table wrapper for mobile */}
+          )}
+          
+          {/* ===== PORTFOLIO TAB ===== */}
+          {activeTab === 'portfolio' && (
             <div className="overflow-x-auto">
-              <div className="min-w-[600px]">
-                <div className="grid grid-cols-6 gap-4 px-6 py-3 text-xs font-mono uppercase tracking-wider border-b" style={{ color: COLORS.data, borderColor: COLORS.structure }}>
+              <div className="min-w-[800px]">
+                <div className="grid grid-cols-[1.5fr_1fr_1fr_1fr_1.5fr_80px] gap-4 px-6 py-2.5 text-[11px] font-mono uppercase tracking-wider border-b border-white/10 bg-white/[0.04]" style={{ color: COLORS.data }}>
                   <div>Token</div>
-                  <div>Balance</div>
-                  <div>Price</div>
-                  <div>Value</div>
-                  <div>% Portfolio</div>
-                  <div>Actions</div>
+                  <div className="text-right">Price</div>
+                  <div className="text-right">Balance</div>
+                  <div className="text-right">Value</div>
+                  <div className="pl-4">% Portfolio</div>
+                  <div className="text-center">Action</div>
                 </div>
-            
-                <div className="max-h-[500px] overflow-y-auto">
-                  {portfolioLoading ? (
-                    <div className="flex items-center justify-center py-16">
-                      <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
-                    </div>
-                  ) : portfolioError ? (
-                    <div className="text-center py-16" style={{ color: '#EF4444' }}>{portfolioError}</div>
-                  ) : (
-                <>
-                  {/* Native SOL */}
-                  {solBalance && (
-                    <div className="grid grid-cols-6 gap-4 items-center px-6 py-3 hover:bg-white/[0.02] transition-colors border-b" style={{ borderColor: COLORS.structure, backgroundColor: 'rgba(16, 185, 129, 0.03)' }}>
-                      <div className="flex items-center gap-2">
-                        <TokenIcon symbol="SOL" logoURI="https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png" />
-                        <div>
-                          <div style={{ color: COLORS.text }} className="font-medium">SOL</div>
-                          <div className="text-xs" style={{ color: COLORS.data }}>Solana (Native)</div>
+                
+                <div className="max-h-[600px] overflow-y-auto">
+                   {/* SOL Balance */}
+                   {solBalance && (
+                     <div className="grid grid-cols-[1.5fr_1fr_1fr_1fr_1.5fr_80px] gap-4 items-center px-6 py-3 border-b border-white/5 hover:bg-white/[0.02] transition-colors bg-emerald-500/[0.02]">
+                        <div className="flex items-center gap-3">
+                           <img src="https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png" className="w-8 h-8 rounded-full" alt="SOL" />
+                           <div>
+                              <div className="font-bold text-sm text-white">Solana</div>
+                              <div className="text-xs font-mono" style={{ color: COLORS.data }}>SOL</div>
+                           </div>
+                        </div>
+                        <div className="text-right font-mono text-sm" style={{ color: COLORS.data }}>{formatUsd(solBalance.pricePerToken)}</div>
+                        <div className="text-right font-mono text-sm" style={{ color: COLORS.text }}>{formatAmount(solBalance.balance)}</div>
+                        <div className="text-right font-mono text-sm font-medium" style={{ color: COLORS.brand }}>{formatUsd(solBalance.totalValue)}</div>
+                        <div className="pl-4">
+                           <PortfolioBar percent={solBalance.holdingPercent || 0} />
+                        </div>
+                        <div className="text-center">
+                            <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-500">Native</span>
+                        </div>
+                     </div>
+                   )}
+                   
+                   {/* Tokens */}
+                   {displayTokens.map((token) => (
+                      <div key={token.mint} className="grid grid-cols-[1.5fr_1fr_1fr_1fr_1.5fr_80px] gap-4 items-center px-6 py-3 border-b border-white/5 hover:bg-white/[0.04] transition-colors duration-200 group" style={{ opacity: token.isDust ? 0.5 : 1 }}>
+                        <div className="flex items-center gap-3">
+                           <TokenIcon symbol={token.symbol} logoURI={token.logoURI} />
+                           <div>
+                              <div className="flex items-center gap-1.5">
+                                 <span className="font-bold text-sm text-white">{token.symbol}</span>
+                                 {token.isDust && <span className="text-[9px] bg-yellow-500/20 text-yellow-500 px-1 rounded uppercase">Dust</span>}
+                              </div>
+                              <div className="text-xs font-mono truncate max-w-[120px]" style={{ color: COLORS.data }}>{token.name}</div>
+                           </div>
+                        </div>
+                        <div className="text-right font-mono text-sm" style={{ color: COLORS.data }}>{formatUsd(token.pricePerToken)}</div>
+                        <div className="text-right font-mono text-sm" style={{ color: COLORS.text }}>{formatAmount(token.balance)}</div>
+                        <div className="text-right font-mono text-sm font-medium" style={{ color: COLORS.brand }}>{formatUsd(token.totalValue)}</div>
+                        <div className="pl-4">
+                           <PortfolioBar percent={token.holdingPercent || 0} />
+                        </div>
+                        <div className="text-center">
+                            <a 
+                              href={`https://solscan.io/token/${token.mint}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center p-1.5 rounded hover:bg-white/10 transition-all duration-200 hover:scale-110"
+                              style={{ color: COLORS.data }}
+                            >
+                              <ExternalLink size={14} />
+                            </a>
                         </div>
                       </div>
-                      <div style={{ color: COLORS.text }}>{formatAmount(solBalance.balance)}</div>
-                      <div style={{ color: COLORS.data }}>{formatUsd(solBalance.pricePerToken)}</div>
-                      <div style={{ color: COLORS.brand }} className="font-medium">{formatUsd(solBalance.totalValue)}</div>
-                      <div style={{ color: COLORS.text }}>{solBalance.holdingPercent !== null ? `${solBalance.holdingPercent.toFixed(1)}%` : '—'}</div>
-                      <div><span className="text-xs" style={{ color: COLORS.data }}>Native</span></div>
-                    </div>
-                  )}
-                  
-                  {/* Tokens */}
-                  {displayTokens.map((token) => (
-                    <div 
-                      key={token.mint} 
-                      className="grid grid-cols-6 gap-4 items-center px-6 py-3 hover:bg-white/[0.02] transition-colors border-b" 
-                      style={{ borderColor: COLORS.structure, opacity: token.isDust ? 0.5 : 1 }}
-                    >
-                      <div className="flex items-center gap-2">
-                        <TokenIcon symbol={token.symbol} logoURI={token.logoURI} />
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span style={{ color: COLORS.text }} className="font-medium">{token.symbol}</span>
-                            {token.isDust && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: 'rgba(234, 179, 8, 0.2)', color: '#EAB308' }}>
-                                DUST
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs truncate max-w-[120px]" style={{ color: COLORS.data }}>{token.name}</div>
-                        </div>
+                   ))}
+                   
+                   {/* Empty State */}
+                   {displayTokens.length === 0 && !solBalance && (
+                      <div className="text-center py-20 text-sm" style={{ color: COLORS.data }}>
+                         No tokens found in portfolio.
                       </div>
-                      <div style={{ color: COLORS.text }}>{formatAmount(token.balance)}</div>
-                      <div style={{ color: COLORS.data }}>{token.pricePerToken ? formatUsd(token.pricePerToken) : '—'}</div>
-                      <div style={{ color: COLORS.brand }} className="font-medium">{formatUsd(token.totalValue)}</div>
-                      <div style={{ color: COLORS.text }}>{token.holdingPercent !== null ? `${token.holdingPercent.toFixed(1)}%` : '—'}</div>
-                      <div>
-                        <a href={`https://solscan.io/token/${token.mint}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs hover:opacity-80 transition-opacity" style={{ color: COLORS.data }}>
-                          View <ArrowUpRight size={12} />
-                        </a>
-                      </div>
-                    </div>
-                  ))}
-                </>
-              )}
+                   )}
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </main>
     </div>
   );

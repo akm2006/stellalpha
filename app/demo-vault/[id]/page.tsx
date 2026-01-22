@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+
+import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useWallet } from '@solana/wallet-adapter-react';
@@ -20,6 +22,7 @@ import {
   ExternalLink,
   X,
   Loader2,
+  Info,
 } from 'lucide-react';
 
 // =============================================================================
@@ -213,6 +216,88 @@ function PortfolioBar({ percent }: { percent: number }) {
       </div>
       <span className="font-mono text-xs font-medium min-w-[45px] text-right" style={{ color: COLORS.text }}>{percent.toFixed(1)}%</span>
     </div>
+  );
+}
+
+// Info Tooltip Component
+function InfoTooltip({ children }: { children: ReactNode }) {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  
+  const updateTooltipPosition = () => {
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      const tooltipWidth = 256; // w-64 = 16rem = 256px
+      let left = rect.left + rect.width / 2;
+      
+      // Clamp to viewport edges
+      const minLeft = tooltipWidth / 2 + 8;
+      const maxLeft = window.innerWidth - tooltipWidth / 2 - 8;
+      left = Math.max(minLeft, Math.min(maxLeft, left));
+      
+      setTooltipPosition({
+        top: rect.bottom + 10,
+        left
+      });
+    }
+  };
+  
+  const handleMouseEnter = () => {
+    updateTooltipPosition();
+    setShowTooltip(true);
+  };
+  
+  useEffect(() => {
+    if (showTooltip) {
+      updateTooltipPosition();
+      const handleScroll = () => updateTooltipPosition();
+      const handleResize = () => updateTooltipPosition();
+      window.addEventListener('scroll', handleScroll, true);
+      window.addEventListener('resize', handleResize);
+      return () => {
+        window.removeEventListener('scroll', handleScroll, true);
+        window.removeEventListener('resize', handleResize);
+      };
+    }
+  }, [showTooltip]);
+  
+  return (
+    <>
+      <div className="relative inline-flex items-center">
+        <button
+          ref={buttonRef}
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={() => setShowTooltip(false)}
+          className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-white/20 hover:bg-white/5 transition-colors"
+          style={{ color: COLORS.data }}
+          type="button"
+        >
+          <Info size={12} />
+        </button>
+      </div>
+      {showTooltip && typeof window !== 'undefined' && createPortal(
+        <div 
+          className="fixed w-64 p-3 rounded border shadow-lg pointer-events-auto"
+          style={{ 
+            backgroundColor: COLORS.surface, 
+            borderColor: COLORS.structure,
+            zIndex: 99999,
+            top: `${tooltipPosition.top}px`,
+            left: `${tooltipPosition.left}px`,
+            transform: 'translate(-50%, 0)',
+            marginTop: '8px'
+          }}
+          onMouseEnter={() => setShowTooltip(true)}
+          onMouseLeave={() => setShowTooltip(false)}
+        >
+          <div className="text-xs leading-relaxed" style={{ color: COLORS.text }}>
+            {children}
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 
@@ -464,20 +549,32 @@ export default function TraderStateDetailPage() {
   // =============================================================================
   
   return (
-    <div className="min-h-screen" style={{ backgroundColor: COLORS.canvas, color: COLORS.text, fontFamily: 'Inter, system-ui, sans-serif' }}>
+    <div className="min-h-screen animate-in fade-in duration-700" style={{ backgroundColor: COLORS.canvas, color: COLORS.text, fontFamily: 'Inter, system-ui, sans-serif' }}>
+      <style jsx global>{`
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-up {
+          animation: fadeUp 0.5s ease-out forwards;
+        }
+        .delay-100 { animation-delay: 100ms; }
+        .delay-200 { animation-delay: 200ms; }
+        .delay-300 { animation-delay: 300ms; }
+      `}</style>
       <main className="w-full px-5 py-4 pt-20">
         
         {/* Back Button */}
         <Link 
           href="/demo-vault"
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-white/10 rounded hover:bg-white/5 transition-colors mb-4"
+          className="group inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-white/10 rounded hover:bg-white/5 transition-all duration-200 mb-4 hover:border-white/20 active:scale-[0.98]"
           style={{ color: COLORS.text }}
         >
-          <ArrowLeft size={14} /> Back
+          <ArrowLeft size={14} className="group-hover:-translate-x-1 transition-transform duration-200" /> Back
         </Link>
         
         {/* ===== CONTROL DECK ROW 1: Header - Responsive ===== */}
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-3 py-3 px-4 sm:px-5 border border-white/10 bg-white/[0.02]" style={{ backgroundColor: COLORS.surface }}>
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-3 py-3 px-4 sm:px-5 border border-white/10 bg-white/[0.02] animate-fade-up" style={{ backgroundColor: COLORS.surface }}>
           {/* Top Row: Title + Status + UUID */}
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-lg sm:text-xl font-semibold" style={{ color: COLORS.text }}>Trader State</h1>
@@ -510,83 +607,110 @@ export default function TraderStateDetailPage() {
             <span className="text-[10px] uppercase tracking-wider" style={{ color: COLORS.data }}>Following:</span>
             <Link 
               href={`/star-traders/${starTrader}`}
-              className="flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-white/[0.03] border border-white/10 rounded hover:bg-white/5 transition-colors"
+              className="flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-white/[0.03] border border-white/10 rounded hover:bg-white/5 transition-all duration-200 hover:scale-[1.02] group"
             >
-              <TraderAvatar address={starTrader} />
+              <div className="transition-transform duration-200 group-hover:scale-110">
+                <TraderAvatar address={starTrader} />
+              </div>
               <span className="font-mono text-xs sm:text-sm" style={{ color: COLORS.text }}>
                 {starTrader.slice(0, 4)}...{starTrader.slice(-4)}
               </span>
-              <span className="hidden sm:inline text-xs" style={{ color: COLORS.brand }}>Profile</span>
-              <ArrowUpRight size={12} style={{ color: COLORS.brand }} />
+              <span className="hidden sm:inline text-xs group-hover:underline" style={{ color: COLORS.brand }}>Profile</span>
+              <ArrowUpRight size={12} style={{ color: COLORS.brand }} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform duration-200" />
             </Link>
           </div>
           
           {/* Right: Action Buttons - Professional Outline Style */}
           <div className="flex items-center gap-2">
             {!isInitialized && !isSettled && (
-              <button 
-                onClick={handleInitClick} 
-                disabled={actionLoading} 
-                className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all hover:opacity-90 disabled:opacity-50" 
-                style={{ 
-                  backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                  borderColor: 'rgba(16, 185, 129, 0.5)',
-                  color: '#10B981'
-                }}
-              >
-                Initialize
-              </button>
-            )}
-            
-            {isInitialized && !isSettled && (
-              isPaused ? (
+              <div className="flex items-center gap-1">
                 <button 
-                  onClick={() => handleAction('resume')} 
+                  onClick={handleInitClick} 
                   disabled={actionLoading} 
-                  className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all hover:opacity-90 disabled:opacity-50"
+                  className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 shadow-lg shadow-emerald-500/10" 
                   style={{ 
                     backgroundColor: 'rgba(16, 185, 129, 0.1)',
                     borderColor: 'rgba(16, 185, 129, 0.5)',
                     color: '#10B981'
                   }}
                 >
-                  <span className="flex items-center gap-1.5"><Play size={12} /> Resume</span>
+                  <span className="flex items-center gap-1.5"><RefreshCw size={12} /> Sync & Initialize</span>
                 </button>
+                <InfoTooltip>
+                  <strong>Sync & Initialize</strong><br/><br/>
+                  First syncs your Vault with the latest on-chain state, then initializes this trader state to begin following. <br/><br/>
+                  This two-step process ensures accuracy before allocating funds.
+                </InfoTooltip>
+              </div>
+            )}
+            
+            {isInitialized && !isSettled && (
+              isPaused ? (
+                <div className="flex items-center gap-1">
+                  <button 
+                    onClick={() => handleAction('resume')} 
+                    disabled={actionLoading} 
+                    className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 shadow-lg shadow-emerald-500/10"
+                    style={{ 
+                      backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                      borderColor: 'rgba(16, 185, 129, 0.5)',
+                      color: '#10B981'
+                    }}
+                  >
+                    <span className="flex items-center gap-1.5"><Play size={12} /> Resume</span>
+                  </button>
+                  <InfoTooltip>
+                    <strong>Resume Copy Trading</strong><br/><br/>
+                    Re-enables automatic trade mirroring. Any open positions will be managed again, and new trades from the star trader will be copied.
+                  </InfoTooltip>
+                </div>
               ) : (
-                <button 
-                  onClick={() => handleAction('pause')} 
-                  disabled={actionLoading} 
-                  className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all hover:opacity-90 disabled:opacity-50"
-                  style={{ 
-                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                    borderColor: 'rgba(245, 158, 11, 0.5)',
-                    color: '#F59E0B'
-                  }}
-                >
-                  <span className="flex items-center gap-1.5"><Pause size={12} /> Pause</span>
-                </button>
+                <div className="flex items-center gap-1">
+                  <button 
+                    onClick={() => handleAction('pause')} 
+                    disabled={actionLoading} 
+                    className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 shadow-lg shadow-amber-500/10"
+                    style={{ 
+                      backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                      borderColor: 'rgba(245, 158, 11, 0.5)',
+                      color: '#F59E0B'
+                    }}
+                  >
+                    <span className="flex items-center gap-1.5"><Pause size={12} /> Pause</span>
+                  </button>
+                  <InfoTooltip>
+                    <strong>Pause Copy Trading</strong><br/><br/>
+                    Temporarily stops copying new trades. Existing positions remain open but will not be modified by the auto-trader until resumed.
+                  </InfoTooltip>
+                </div>
               )
             )}
             
-            <button 
-              onClick={handleWithdraw} 
-              disabled={actionLoading} 
-              className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all hover:opacity-90 disabled:opacity-50"
-              style={{ 
-                backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                borderColor: 'rgba(239, 68, 68, 0.5)',
-                color: '#EF4444'
-              }}
-            >
-              Withdraw
-            </button>
+            <div className="flex items-center gap-1">
+              <button 
+                onClick={handleWithdraw} 
+                disabled={actionLoading} 
+                className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 hover:bg-red-500/20"
+                style={{ 
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  borderColor: 'rgba(239, 68, 68, 0.5)',
+                  color: '#EF4444'
+                }}
+              >
+                Withdraw
+              </button>
+              <InfoTooltip>
+                <strong>Withdraw & Close</strong><br/><br/>
+                Sells all open positions to USDC and returns funds to your main vault balance. This permanently closes this trader state.
+              </InfoTooltip>
+            </div>
           </div>
         </div>
         
         {/* ===== CONTROL DECK ROW 2: Stats HUD Strip ===== */}
-        <div className="border border-white/10 mb-4 overflow-x-auto" style={{ backgroundColor: COLORS.surface }}>
+        <div className="border border-white/10 mb-4 overflow-x-auto animate-fade-up delay-100" style={{ backgroundColor: COLORS.surface }}>
           <div className="flex items-stretch divide-x divide-white/10 min-w-[700px]">
-            <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">
+            <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center transition-colors duration-300 hover:bg-white/[0.06]">
               <div className="text-xs uppercase tracking-wider mb-1.5" style={{ color: COLORS.data }}>Allocated</div>
               <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(allocatedUsd)}</div>
             </div>
@@ -623,12 +747,12 @@ export default function TraderStateDetailPage() {
         </div>
         
         {/* ===== TAB SWITCHER ===== */}
-        <div className="border border-white/10 overflow-hidden" style={{ backgroundColor: COLORS.surface }}>
+        <div className="border border-white/10 overflow-hidden animate-fade-up delay-200" style={{ backgroundColor: COLORS.surface }}>
           <div className="px-5 py-3 border-b border-white/10 bg-white/[0.02] flex items-center justify-between">
             <div className="flex items-center gap-1">
               <button 
                 onClick={() => setActiveTab('portfolio')}
-                className={`px-4 py-2 text-sm font-medium rounded-t transition-colors ${activeTab === 'portfolio' ? 'bg-white/[0.05] border-b-2' : 'hover:bg-white/[0.03]'}`}
+                className={`px-4 py-2 text-sm font-medium rounded-t transition-all duration-200 ${activeTab === 'portfolio' ? 'bg-white/[0.05] border-b-2' : 'hover:bg-white/[0.03] opacity-70 hover:opacity-100'}`}
                 style={{ 
                   color: activeTab === 'portfolio' ? COLORS.text : COLORS.data,
                   borderColor: activeTab === 'portfolio' ? COLORS.brand : 'transparent'
@@ -638,7 +762,7 @@ export default function TraderStateDetailPage() {
               </button>
               <button 
                 onClick={() => setActiveTab('trades')}
-                className={`px-4 py-2 text-sm font-medium rounded-t transition-colors ${activeTab === 'trades' ? 'bg-white/[0.05] border-b-2' : 'hover:bg-white/[0.03]'}`}
+                className={`px-4 py-2 text-sm font-medium rounded-t transition-all duration-200 ${activeTab === 'trades' ? 'bg-white/[0.05] border-b-2' : 'hover:bg-white/[0.03] opacity-70 hover:opacity-100'}`}
                 style={{ 
                   color: activeTab === 'trades' ? COLORS.text : COLORS.data,
                   borderColor: activeTab === 'trades' ? COLORS.brand : 'transparent'
@@ -647,8 +771,13 @@ export default function TraderStateDetailPage() {
                 Copy Trades ({pagination.totalCount || trades.length})
               </button>
             </div>
-            <button onClick={fetchData} className="px-3 py-1.5 text-xs border border-white/20 rounded hover:bg-white/5 transition-colors flex items-center gap-1.5" style={{ color: COLORS.text }}>
-              <RefreshCw size={12} /> Refresh
+            <button 
+              onClick={fetchData} 
+              disabled={loading}
+              className="group px-3 py-1.5 text-xs border border-white/20 rounded hover:bg-white/5 transition-all duration-200 active:scale-[0.98] flex items-center gap-1.5 disabled:opacity-50" 
+              style={{ color: COLORS.text }}
+            >
+              <RefreshCw size={12} className={loading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'} /> Refresh
             </button>
           </div>
           
@@ -658,12 +787,53 @@ export default function TraderStateDetailPage() {
               {/* Table Header */}
               <div className="grid grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_0.8fr_1fr_1.2fr] gap-2 px-5 py-2.5 text-[11px] uppercase tracking-wider border-b border-white/10 font-mono bg-white/[0.04] min-w-[700px]" style={{ color: COLORS.data }}>
                 <div>Token</div>
-                <div>Amount</div>
-                <div>Avg Entry</div>
-                <div>Price</div>
-                <div>Value</div>
-                <div>PNL</div>
-                <div>% Portfolio</div>
+                <div className="flex items-center gap-1">
+                  Amount
+                  <InfoTooltip>
+                    <strong>Token Amount</strong><br/><br/>
+                    The total quantity of this token currently held in your trader state portfolio.
+                  </InfoTooltip>
+                </div>
+                <div className="flex items-center gap-1">
+                  Avg Entry
+                  <InfoTooltip>
+                    <strong>Average Entry Price</strong><br/><br/>
+                    The weighted average cost per token for your current position.<br/><br/>
+                    = Total Cost Basis / Token Amount
+                  </InfoTooltip>
+                </div>
+                <div className="flex items-center gap-1">
+                  Price
+                  <InfoTooltip>
+                    <strong>Current Price</strong><br/><br/>
+                    The real-time market price of the token.<br/><br/>
+                    Fetched from Jupiter/Birdeye APIs.
+                  </InfoTooltip>
+                </div>
+                <div className="flex items-center gap-1">
+                  Value
+                  <InfoTooltip>
+                    <strong>Position Value</strong><br/><br/>
+                    The current USD value of this holding.<br/><br/>
+                    = Token Amount × Current Price
+                  </InfoTooltip>
+                </div>
+                <div className="flex items-center gap-1">
+                  PNL
+                  <InfoTooltip>
+                    <strong>Unrealized Profit/Loss</strong><br/><br/>
+                    The paper profit or loss on this open position.<br/><br/>
+                    = (Current Price - Avg Entry) × Token Amount
+                  </InfoTooltip>
+                </div>
+                <div className="flex items-center gap-1">
+                  % Portfolio
+                  <InfoTooltip>
+                    <strong>Portfolio Weight</strong><br/><br/>
+                    How much of your total trader state value is in this token.<br/><br/>
+                    = Position Value / Total Portfolio Value
+                  </InfoTooltip>
+                </div>
               </div>
               
               {/* Table Rows */}
@@ -776,14 +946,14 @@ export default function TraderStateDetailPage() {
                           <div className="flex items-center gap-1.5">
                             <TokenIcon symbol={inMeta.symbol || trade.token_in_symbol} logoURI={inMeta.logoURI} />
                             <span className="font-mono text-sm" style={{ color: COLORS.text }}>
-                              {formatAmount(displayInAmount)} {inMeta.symbol || trade.token_in_symbol}
+                              {formatAmount(displayInAmount)} <span className="font-bold ml-1 px-1.5 py-0.5 rounded bg-white/10 text-white">{inMeta.symbol || trade.token_in_symbol}</span>
                             </span>
                           </div>
                           <ArrowRight size={14} style={{ color: COLORS.data }} />
                           <div className="flex items-center gap-1.5">
                             <TokenIcon symbol={outMeta.symbol || trade.token_out_symbol} logoURI={outMeta.logoURI} />
                             <span className="font-mono text-sm" style={{ color: COLORS.text }}>
-                              {formatAmount(displayOutAmount)} {outMeta.symbol || trade.token_out_symbol}
+                              {formatAmount(displayOutAmount)} <span className="font-bold ml-1 px-1.5 py-0.5 rounded bg-white/10 text-white">{outMeta.symbol || trade.token_out_symbol}</span>
                             </span>
                           </div>
                         </div>

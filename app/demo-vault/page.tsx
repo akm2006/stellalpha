@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useAuth } from '@/contexts/auth-context';
@@ -18,6 +19,8 @@ import {
   Loader2,
   Crown,
   ExternalLink,
+  Info,
+  X,
 } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 
@@ -162,6 +165,176 @@ function TraderAvatar({ address }: { address: string }) {
   );
 }
 
+// Info Tooltip Component
+function InfoTooltip({ children }: { children: ReactNode }) {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  
+  const updateTooltipPosition = () => {
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      const tooltipWidth = 256; // w-64 = 16rem = 256px
+      let left = rect.left + rect.width / 2;
+      
+      // Clamp to viewport edges
+      const minLeft = tooltipWidth / 2 + 8;
+      const maxLeft = window.innerWidth - tooltipWidth / 2 - 8;
+      left = Math.max(minLeft, Math.min(maxLeft, left));
+      
+      setTooltipPosition({
+        top: rect.bottom + 10,
+        left
+      });
+    }
+  };
+  
+  const handleMouseEnter = () => {
+    updateTooltipPosition();
+    setShowTooltip(true);
+  };
+  
+  useEffect(() => {
+    if (showTooltip) {
+      updateTooltipPosition();
+      const handleScroll = () => updateTooltipPosition();
+      const handleResize = () => updateTooltipPosition();
+      window.addEventListener('scroll', handleScroll, true);
+      window.addEventListener('resize', handleResize);
+      return () => {
+        window.removeEventListener('scroll', handleScroll, true);
+        window.removeEventListener('resize', handleResize);
+      };
+    }
+  }, [showTooltip]);
+  
+  return (
+    <>
+      <div className="relative inline-flex items-center">
+        <button
+          ref={buttonRef}
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={() => setShowTooltip(false)}
+          className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-white/20 hover:bg-white/5 transition-colors"
+          style={{ color: COLORS.data }}
+          type="button"
+        >
+          <Info size={12} />
+        </button>
+      </div>
+      {showTooltip && typeof window !== 'undefined' && createPortal(
+        <div 
+          className="fixed w-64 p-3 rounded border shadow-lg pointer-events-auto"
+          style={{ 
+            backgroundColor: COLORS.surface, 
+            borderColor: COLORS.structure,
+            zIndex: 99999,
+            top: `${tooltipPosition.top}px`,
+            left: `${tooltipPosition.left}px`,
+            transform: 'translate(-50%, 0)',
+            marginTop: '8px'
+          }}
+          onMouseEnter={() => setShowTooltip(true)}
+          onMouseLeave={() => setShowTooltip(false)}
+        >
+          <div className="text-xs leading-relaxed" style={{ color: COLORS.text }}>
+            {children}
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
+
+// Alert Bubble Component for Non-Active States
+function StatusAlertBubble({ 
+  status, 
+  onClose 
+}: { 
+  status: 'paused' | 'uninitialized' | 'stopped'; 
+  onClose: () => void;
+}) {
+  const [visible, setVisible] = useState(true);
+
+  if (!visible) return null;
+
+  const config = {
+    uninitialized: {
+      color: '#F97316', // Orange-500
+      bg: '#FFF7ED',    // Orange-50
+      border: '#FDBA74', // Orange-300
+      title: 'Action Required',
+      text: 'This trader state is created but not running. Click "View" then "Sync & Initialize" to start copying trades.'
+    },
+    paused: {
+      color: '#EAB308', // Yellow-500
+      bg: '#FEFCE8',    // Yellow-50
+      border: '#FDE047', // Yellow-300
+      title: 'Copying Paused',
+      text: 'New trades are not being copied. Existing positions remain open. Click "View" to resume.'
+    },
+    stopped: {
+      color: '#EF4444', // Red-500
+      bg: '#FEF2F2',    // Red-50
+      border: '#FCA5A5', // Red-300
+      title: 'State Stopped',
+      text: 'This state is fully stopped. Please withdraw any remaining funds to your main vault.'
+    }
+  };
+
+  const style = config[status];
+
+  return (
+    <div 
+      className="absolute z-50 flex items-start px-3 py-2 rounded-lg shadow-xl animate-in fade-in zoom-in slide-in-from-bottom-2 duration-300"
+      style={{ 
+        backgroundColor: COLORS.surface,
+        border: `1px solid ${style.color}`,
+        color: COLORS.text,
+        right: '100%', // Position to the LEFT of the element
+        marginRight: '12px',
+        top: '50%',
+        transform: 'translateY(-50%)',
+        width: '260px', // Wider for more info
+        boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
+        zIndex: 100
+      }}
+    >
+      {/* Triangle pointer (Right side pointing to element) */}
+      <div 
+        className="absolute w-3 h-3 border-r border-t transform rotate-45"
+        style={{ 
+          backgroundColor: COLORS.surface,
+          borderColor: style.color,
+          borderLeft: 'transparent',
+          borderBottom: 'transparent',
+          right: '-7px', // On the right edge
+          top: '50%',
+          marginTop: '-6px'
+        }}
+      />
+      
+      <div className="flex-1 mr-2">
+        <h4 className="text-[11px] font-bold uppercase tracking-wider mb-1" style={{ color: style.color }}>
+          {style.title}
+        </h4>
+        <p className="text-[10px] leading-relaxed opacity-90 w-full font-medium">
+          {style.text}
+        </p>
+      </div>
+      
+      <button 
+        onClick={(e) => { e.stopPropagation(); setVisible(false); onClose(); }}
+        className="p-1 hover:bg-black/5 rounded transition-colors -mr-1 -mt-1 shrink-0"
+        style={{ color: style.color }}
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
 export default function DemoVaultPage() {
   const { connected } = useWallet();
   const { isAuthenticated, isLoading: authLoading, user, signIn, openWalletModal } = useAuth();
@@ -226,6 +399,26 @@ export default function DemoVaultPage() {
       console.error('Failed to fetch star traders');
     }
   }, []);
+  
+  // Handle ?follow= query param from star-traders page (client-side only)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const followParam = params.get('follow');
+    
+    if (followParam && starTraders.length > 0 && vault) {
+      // Check if we're not already following this trader
+      const alreadyFollowing = traderStates.some(ts => ts.star_trader === followParam);
+      if (!alreadyFollowing) {
+        const availableBalance = Number(vault?.balance_usd || 0);
+        setSelectedTrader(followParam);
+        setShowFollowModal(true);
+        setAllocationUsd(Math.min(500, availableBalance));
+        // Clear the URL param after handling
+        window.history.replaceState({}, '', '/demo-vault');
+      }
+    }
+  }, [starTraders, vault, traderStates]);
   
   useEffect(() => {
     if (connected && walletAddress) {
@@ -308,18 +501,30 @@ export default function DemoVaultPage() {
   }, [traderStates]);
   
   return (
-    <div className="min-h-screen" style={{ backgroundColor: COLORS.canvas, color: COLORS.text, fontFamily: 'Inter, system-ui, sans-serif' }}>
+    <div className="min-h-screen animate-in fade-in duration-700" style={{ backgroundColor: COLORS.canvas, color: COLORS.text, fontFamily: 'Inter, system-ui, sans-serif' }}>
+      <style jsx global>{`
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-up {
+          animation: fadeUp 0.5s ease-out forwards;
+        }
+        .delay-100 { animation-delay: 100ms; }
+        .delay-200 { animation-delay: 200ms; }
+        .delay-300 { animation-delay: 300ms; }
+      `}</style>
       <main className="w-full px-5 py-4 pt-24">
         
         {/* Not Connected */}
         {!connected && (
-          <div className="border border-white/10 p-10 text-center" style={{ backgroundColor: COLORS.surface }}>
+          <div className="border border-white/10 p-10 text-center animate-fade-up" style={{ backgroundColor: COLORS.surface }}>
             <Wallet size={44} className="mx-auto mb-4" style={{ color: COLORS.brand }} />
             <h2 className="text-xl font-medium mb-3">Connect Your Wallet</h2>
             <p className="text-sm mb-5 leading-relaxed" style={{ color: COLORS.data }}>Connect your Solana wallet to create a demo vault with $1,000 virtual USD</p>
             <button
               onClick={openWalletModal}
-              className="px-6 py-2.5 text-sm font-medium transition-opacity hover:opacity-90 flex items-center gap-2 mx-auto rounded"
+              className="px-6 py-2.5 text-sm font-medium transition-all duration-200 hover:opacity-90 hover:scale-105 active:scale-95 flex items-center gap-2 mx-auto rounded shadow-lg shadow-emerald-500/20"
               style={{ backgroundColor: COLORS.brand, color: '#000' }}
             >
               <Wallet size={16} />
@@ -330,7 +535,7 @@ export default function DemoVaultPage() {
         
         {/* Connected but Not Authenticated */}
         {connected && !isAuthenticated && !authLoading && (
-          <div className="border border-white/10 p-10 text-center" style={{ backgroundColor: COLORS.surface }}>
+          <div className="border border-white/10 p-10 text-center animate-fade-up" style={{ backgroundColor: COLORS.surface }}>
             <LogIn size={44} className="mx-auto mb-4" style={{ color: COLORS.brand }} />
             <h2 className="text-xl font-medium mb-3">Sign In Required</h2>
             <p className="text-sm mb-5 leading-relaxed" style={{ color: COLORS.data }}>
@@ -339,7 +544,7 @@ export default function DemoVaultPage() {
             <button
               onClick={signIn}
               disabled={authLoading}
-              className="px-6 py-2.5 text-sm font-medium transition-opacity hover:opacity-90 disabled:opacity-50 flex items-center gap-2 mx-auto rounded"
+              className="px-6 py-2.5 text-sm font-medium transition-all duration-200 hover:opacity-90 hover:scale-105 active:scale-95 disabled:opacity-50 flex items-center gap-2 mx-auto rounded shadow-lg shadow-emerald-500/20"
               style={{ backgroundColor: COLORS.brand, color: '#000' }}
             >
               {authLoading ? <Loader2 className="animate-spin" size={16} /> : <LogIn size={16} />}
@@ -360,18 +565,76 @@ export default function DemoVaultPage() {
         
         {/* No Vault */}
         {connected && isAuthenticated && !vault && !loading && (
-          <div className="border border-white/10 p-10 text-center" style={{ backgroundColor: COLORS.surface }}>
-            <TrendingUp size={44} className="mx-auto mb-4" style={{ color: COLORS.brand }} />
-            <h2 className="text-xl font-medium mb-3">Deploy Demo Vault</h2>
-            <p className="text-sm mb-5 leading-relaxed" style={{ color: COLORS.data }}>Start with $1,000 virtual USD</p>
-            <button
-              onClick={deployVault}
-              disabled={deploying}
-              className="px-6 py-2.5 text-sm font-medium transition-opacity hover:opacity-90 disabled:opacity-50 rounded"
-              style={{ backgroundColor: COLORS.brand, color: '#000' }}
-            >
-              {deploying ? 'Deploying...' : 'Deploy Vault ($1,000 USD)'}
-            </button>
+          <div className="max-w-4xl mx-auto animate-fade-up">
+            <div className="border border-white/10 overflow-hidden" style={{ backgroundColor: COLORS.surface }}>
+              {/* Hero Section */}
+              <div className="p-8 sm:p-12 text-center border-b border-white/10 relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none" 
+                  style={{ background: `radial-gradient(circle at center, ${COLORS.brand} 0%, transparent 70%)` }} 
+                />
+                <TrendingUp size={48} className="mx-auto mb-6 relative z-10" style={{ color: COLORS.brand }} />
+                <h2 className="text-2xl sm:text-3xl font-medium mb-4 relative z-10">Start Your Risk-Free Trading Journey</h2>
+                <p className="text-sm sm:text-base leading-relaxed max-w-2xl mx-auto relative z-10" style={{ color: COLORS.data }}>
+                  Experience the power of automated copy-trading with a virtual portfolio. 
+                  Test strategies and follow top performers without risking real capital.
+                </p>
+              </div>
+
+              {/* Features Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-white/10">
+                <div className="p-6 text-center hover:bg-white/[0.04] transition-colors duration-300 group">
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-4 bg-emerald-500/10 text-emerald-400 group-hover:scale-110 transition-transform duration-300">
+                    <DollarSign size={20} />
+                  </div>
+                  <h3 className="font-medium mb-2" style={{ color: COLORS.text }}>$1,000 Virtual Balance</h3>
+                  <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
+                    Start with a pre-funded virtual wallet to allocate across multiple traders.
+                  </p>
+                </div>
+                
+                <div className="p-6 text-center hover:bg-white/[0.04] transition-colors duration-300 group">
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-4 bg-orange-500/10 text-orange-400 group-hover:scale-110 transition-transform duration-300">
+                    <Crown size={20} />
+                  </div>
+                  <h3 className="font-medium mb-2" style={{ color: COLORS.text }}>Copy Top Traders</h3>
+                  <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
+                    Automatically mirror the moves of successful star traders in real-time.
+                  </p>
+                </div>
+
+                <div className="p-6 text-center hover:bg-white/[0.04] transition-colors duration-300 group">
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-4 bg-blue-500/10 text-blue-400 group-hover:scale-110 transition-transform duration-300">
+                    <TrendingUp size={20} />
+                  </div>
+                  <h3 className="font-medium mb-2" style={{ color: COLORS.text }}>Real-Time Analytics</h3>
+                  <p className="text-xs leading-relaxed" style={{ color: COLORS.data }}>
+                    Track your PnL, ROI, and win rates in a completely isolated environment.
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Area */}
+              <div className="p-8 text-center bg-white/[0.02]">
+                <button
+                  onClick={deployVault}
+                  disabled={deploying}
+                  className="px-8 py-3 text-sm font-semibold transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:scale-100 rounded shadow-lg shadow-emerald-500/20"
+                  style={{ backgroundColor: COLORS.brand, color: '#000' }}
+                >
+                  {deploying ? (
+                    <span className="flex items-center gap-2">
+                      <Loader2 size={16} className="animate-spin" />
+                      Initializing Vault...
+                    </span>
+                  ) : (
+                    'Deploy Demo Vault & Start Trading'
+                  )}
+                </button>
+                <p className="mt-4 text-xs" style={{ color: COLORS.data }}>
+                  Takes less than 10 seconds • No gas fees • No real funds required
+                </p>
+              </div>
+            </div>
           </div>
         )}
         
@@ -395,21 +658,45 @@ export default function DemoVaultPage() {
         {connected && isAuthenticated && vault && (
           <>
             {/* Stats HUD - Responsive */}
-            <div className="border border-white/10 mb-3 grid grid-cols-2 sm:grid-cols-4 divide-x divide-white/10" style={{ backgroundColor: COLORS.surface }}>
-              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03] border-b border-white/10 sm:border-b-0">
-                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>Unallocated</div>
+            <div className="border border-white/10 mb-3 grid grid-cols-2 sm:grid-cols-4 divide-x divide-white/10 animate-fade-up" style={{ backgroundColor: COLORS.surface }}>
+              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03] border-b border-white/10 sm:border-b-0 transition-colors duration-300 hover:bg-white/[0.06]">
+                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1 flex items-center gap-1" style={{ color: COLORS.data }}>
+                  Unallocated
+                  <InfoTooltip>
+                    <strong>Unallocated</strong> is your available demo vault balance not yet assigned to any trader state.<br/><br/>
+                    Use "Create Trader State" to allocate these funds to follow a star trader.
+                  </InfoTooltip>
+                </div>
                 <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(unallocated)}</div>
               </div>
-              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03] border-b border-white/10 sm:border-b-0">
-                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>Allocated</div>
+              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03] border-b border-white/10 sm:border-b-0 transition-colors duration-300 hover:bg-white/[0.06]">
+                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1 flex items-center gap-1" style={{ color: COLORS.data }}>
+                  Allocated
+                  <InfoTooltip>
+                    <strong>Allocated</strong> is the total amount distributed across all your trader states.<br/><br/>
+                    Each trader state receives a portion that is used to copy trades from the star trader you're following.
+                  </InfoTooltip>
+                </div>
                 <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(totalAllocated)}</div>
               </div>
-              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03]">
-                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>Total Value</div>
+              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03] transition-colors duration-300 hover:bg-white/[0.06]">
+                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1 flex items-center gap-1" style={{ color: COLORS.data }}>
+                  Total Value
+                  <InfoTooltip>
+                    <strong>Total Value</strong> is the current worth of your entire demo vault.<br/><br/>
+                    = Unallocated + Current portfolio value of all trader states (including unrealized gains/losses)
+                  </InfoTooltip>
+                </div>
                 <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(totalValue + unallocated)}</div>
               </div>
-              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03]">
-                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1" style={{ color: COLORS.data }}>PNL</div>
+              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-white/[0.03] transition-colors duration-300 hover:bg-white/[0.06]">
+                <div className="text-[10px] sm:text-xs uppercase tracking-wider mb-1 flex items-center gap-1" style={{ color: COLORS.data }}>
+                  PNL
+                  <InfoTooltip>
+                    <strong>PNL (Profit/Loss)</strong> shows how much you've gained or lost across all trader states.<br/><br/>
+                    Green = profit, Red = loss. This includes both realized (closed) and unrealized (open) positions.
+                  </InfoTooltip>
+                </div>
                 <div className={`text-base sm:text-lg font-mono font-semibold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                   {totalPnl >= 0 ? '+' : ''}{formatUsd(totalPnl)}
                 </div>
@@ -417,37 +704,54 @@ export default function DemoVaultPage() {
             </div>
 
             {/* Description + Action Bar - Responsive */}
-            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-3 py-3 px-4 sm:px-5 border border-white/10" style={{ backgroundColor: COLORS.surface }}>
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-3 py-3 px-4 sm:px-5 border border-white/10 animate-fade-up delay-100" style={{ backgroundColor: COLORS.surface }}>
               <p className="text-xs sm:text-sm leading-relaxed hidden sm:block" style={{ color: COLORS.data }}>
                 <span className="font-medium" style={{ color: COLORS.text }}>Demo Vault</span> · Autonomous copy-trading in a risk-free environment.
               </p>
               <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">
-                <button
-                  onClick={() => { setShowFollowModal(true); setAllocationUsd(Math.min(500, unallocated)); }}
-                  disabled={unallocated < 10}
-                  className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 transition-opacity hover:opacity-90 disabled:opacity-50 rounded"
-                  style={{ backgroundColor: COLORS.brand, color: '#000' }}
-                >
-                  <span className="hidden sm:inline">Create</span> Trader State
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => { setShowFollowModal(true); setAllocationUsd(Math.min(500, unallocated)); }}
+                    disabled={unallocated < 10}
+                    className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 transition-all duration-200 hover:opacity-90 hover:scale-105 active:scale-95 disabled:opacity-50 rounded shadow-lg shadow-emerald-500/20"
+                    style={{ backgroundColor: COLORS.brand, color: '#000' }}
+                  >
+                    <span className="hidden sm:inline">Create</span> Trader State
+                  </button>
+                  <InfoTooltip>
+                    <strong>Create Trader State</strong> allocates a portion of your demo vault funds to follow a star trader.<br/><br/>
+                    • Each trader state has <strong>isolated funds</strong> - losses in one don't affect others<br/>
+                    • Set your allocation amount (min $10)<br/>
+                    • Once created, trades are automatically copied from the star trader
+                  </InfoTooltip>
+                </div>
                 <button
                   onClick={fetchVault}
-                  className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 border border-white/20 hover:bg-white/5 rounded transition-colors"
+                  className="group px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 border border-white/20 hover:bg-white/5 rounded transition-all duration-200 active:scale-[0.98]"
                   style={{ color: COLORS.text }}
                 >
-                  <RefreshCw size={14} /> <span className="hidden sm:inline">Refresh</span>
+                  <RefreshCw size={14} className="group-hover:rotate-180 transition-transform duration-500" /> <span className="hidden sm:inline">Refresh</span>
                 </button>
-                <button
-                  onClick={deleteVault}
-                  className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 border border-red-500/50 text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                >
-                  <span className="hidden sm:inline">Delete</span> Vault
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={deleteVault}
+                    className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 border border-red-500/50 text-red-400 hover:bg-red-500/10 rounded transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
+                  >
+                    <span className="hidden sm:inline">Delete</span> Vault
+                  </button>
+                  <InfoTooltip>
+                    <strong>Delete Vault</strong> permanently removes your entire demo vault.<br/><br/>
+                    ⚠️ <strong>Warning:</strong> This action cannot be undone!<br/>
+                    • All trader states will be deleted<br/>
+                    • All allocation history will be lost<br/>
+                    • You can create a new vault anytime
+                  </InfoTooltip>
+                </div>
               </div>
             </div>
 
             {/* Trader States Table - Responsive with horizontal scroll */}
-            <div className="border border-white/10 overflow-hidden" style={{ backgroundColor: COLORS.surface }}>
+            <div className="border border-white/10 overflow-hidden animate-fade-up delay-200" style={{ backgroundColor: COLORS.surface }}>
               <div className="px-4 sm:px-5 py-3 border-b border-white/10 bg-white/[0.02]">
                 <h2 className="text-sm font-medium" style={{ color: COLORS.text }}>Trader States</h2>
               </div>
@@ -463,15 +767,60 @@ export default function DemoVaultPage() {
                 <div>Win Rate</div>
                 <div>Trades</div>
                 <div>Allocated</div>
-                <div>Status</div>
+                <div className="flex items-center gap-1">
+                  Status
+                  <InfoTooltip>
+                    <strong>Trader State Status:</strong><br/><br/>
+                    🟢 <strong>Active</strong> - Copy trading is running. New trades will be automatically copied.<br/><br/>
+                    ⏸️ <strong>Paused</strong> - Temporarily stopped. No new trades copied, but positions remain.<br/><br/>
+                    🟠 <strong>Uninitialized</strong> - Pending setup. You need to initialize the vault to start copy trading.<br/><br/>
+                    🔴 <strong>Stopped</strong> - Fully stopped. Use withdraw to reclaim funds.
+                  </InfoTooltip>
+                </div>
                 <div></div>
               </div>
               
               {/* Table Rows */}
               <div className="divide-y divide-white/5">
                 {rankedTraderStates.length === 0 ? (
-                  <div className="text-center py-10 text-sm" style={{ color: COLORS.data }}>
-                    No trader states. Create one to start copy trading.
+                  <div className="p-8 sm:p-12 text-center" style={{ color: COLORS.data }}>
+                    <div className="max-w-3xl mx-auto">
+                      <div className="mb-8">
+                        <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 bg-white/[0.03] border border-white/10">
+                          <Crown size={32} style={{ color: COLORS.brand }} />
+                        </div>
+                        <h3 className="text-xl font-medium mb-3" style={{ color: COLORS.text }}>Start Copy Trading</h3>
+                        <p className="text-sm leading-relaxed max-w-lg mx-auto">
+                          You haven't created any trader states yet. Allocate funds to follow a star trader and automatically mirror their trades.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+                        <div className="p-4 rounded border border-white/5 bg-white/[0.02]">
+                          <div className="text-xs uppercase tracking-wider mb-2 font-medium" style={{ color: COLORS.brand }}>Step 1</div>
+                          <div className="text-sm font-medium mb-1" style={{ color: COLORS.text }}>Browse Traders</div>
+                          <div className="text-xs" style={{ color: COLORS.data }}>Find top performers suited to your style</div>
+                        </div>
+                        <div className="p-4 rounded border border-white/5 bg-white/[0.02]">
+                          <div className="text-xs uppercase tracking-wider mb-2 font-medium" style={{ color: COLORS.brand }}>Step 2</div>
+                          <div className="text-sm font-medium mb-1" style={{ color: COLORS.text }}>Allocate Funds</div>
+                          <div className="text-xs" style={{ color: COLORS.data }}>Set your investment amount (min $10)</div>
+                        </div>
+                        <div className="p-4 rounded border border-white/5 bg-white/[0.02]">
+                          <div className="text-xs uppercase tracking-wider mb-2 font-medium" style={{ color: COLORS.brand }}>Step 3</div>
+                          <div className="text-sm font-medium mb-1" style={{ color: COLORS.text }}>Monitor Results</div>
+                          <div className="text-xs" style={{ color: COLORS.data }}>Track PnL and manage your positions</div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => { setShowFollowModal(true); setAllocationUsd(Math.min(500, unallocated)); }}
+                        className="px-6 py-2.5 text-sm font-medium transition-transform hover:scale-105 active:scale-95 rounded shadow-lg shadow-emerald-500/10"
+                        style={{ backgroundColor: COLORS.brand, color: '#000' }}
+                      >
+                        Create First Trader State
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   rankedTraderStates.map((ts, index) => {
@@ -538,20 +887,47 @@ export default function DemoVaultPage() {
                         </div>
                         
                         {/* Status */}
-                        <div>
-                          {ts.is_settled ? (
-                            <span className="text-xs text-gray-400 flex items-center gap-1"><StopCircle size={12} /> Settled</span>
-                          ) : ts.is_paused ? (
-                            <span className="text-xs text-yellow-400 flex items-center gap-1"><Pause size={12} /> Paused</span>
-                          ) : ts.is_initialized ? (
-                            <span className="text-xs text-emerald-400 flex items-center gap-1">
-                              <span className="w-2 h-2 bg-emerald-400 rounded-full"></span> Active
-                            </span>
-                          ) : ts.is_syncing ? (
-                            <span className="text-xs text-blue-400 flex items-center gap-1"><RefreshCw size={12} className="animate-spin" /> Syncing</span>
-                          ) : (
-                            <span className="text-xs text-orange-400 flex items-center gap-1"><Clock size={12} /> Uninit</span>
-                          )}
+                        <div className="relative">
+                          {(() => {
+                            if (ts.is_settled) {
+                              return (
+                                <div className="relative inline-flex flex-col items-start gap-1">
+                                  <span className="text-xs text-gray-400 flex items-center gap-1"><StopCircle size={12} /> Settled</span>
+                                  <StatusAlertBubble status="stopped" onClose={() => {}} />
+                                </div>
+                              );
+                            } 
+                            if (ts.is_paused) {
+                              return (
+                                <div className="relative inline-flex flex-col items-start gap-1">
+                                  <span className="text-xs text-yellow-400 flex items-center gap-1"><Pause size={12} /> Paused</span>
+                                  <StatusAlertBubble status="paused" onClose={() => {}} />
+                                </div>
+                              );
+                            }
+                            if (ts.is_initialized) {
+                              return (
+                                <span className="text-xs text-emerald-400 flex items-center gap-1">
+                                  <span className="w-2 h-2 bg-emerald-400 rounded-full"></span> Active
+                                </span>
+                              );
+                            }
+                            if (ts.is_syncing) {
+                              return (
+                                <span className="text-xs text-blue-400 flex items-center gap-1"><RefreshCw size={12} className="animate-spin" /> Syncing</span>
+                              );
+                            }
+                            return (
+                              <div className="relative inline-flex flex-col items-start gap-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] uppercase tracking-wider font-medium rounded border border-orange-500/30 bg-orange-500/10 text-orange-400">
+                                    <Clock size={10} /> Uninit
+                                  </span>
+                                </div>
+                                <StatusAlertBubble status="uninitialized" onClose={() => {}} />
+                              </div>
+                            );
+                          })()}
                         </div>
                         
                         {/* View Button */}
