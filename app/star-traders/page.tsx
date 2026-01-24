@@ -263,7 +263,15 @@ export default function StarTradersListPage() {
     const totalTraders = traders.length;
     const totalPnl7d = traders.reduce((sum, t) => sum + (t.stats?.pnl7d ?? 0), 0);
     const topProfitFactor = traders.length > 0 ? Math.max(...traders.map(t => t.stats?.profitFactor ?? 0)) : 0;
-    const avgWinRate = traders.length > 0 ? traders.reduce((sum, t) => sum + (t.stats?.winRate ?? 0), 0) / traders.length : 0;
+    
+    // Only include traders with at least 5 trades in the average win rate calculation
+    // This prevents traders with 0 trades from dragging down the average
+    const MIN_TRADES_FOR_AVG = 5;
+    const tradersWithSufficientTrades = traders.filter(t => (t.stats?.tradesCount ?? 0) >= MIN_TRADES_FOR_AVG);
+    const avgWinRate = tradersWithSufficientTrades.length > 0 
+      ? tradersWithSufficientTrades.reduce((sum, t) => sum + (t.stats?.winRate ?? 0), 0) / tradersWithSufficientTrades.length 
+      : 0;
+    
     return { totalTraders, totalPnl7d, topProfitFactor, avgWinRate };
   }, [traders]);
   
@@ -354,8 +362,8 @@ export default function StarTradersListPage() {
               <div className="text-xs uppercase tracking-wider mb-1 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
                 Avg Win Rate
                 <InfoTooltip>
-                  <strong>Average Win Rate</strong> is the percentage of profitable trades across all star traders.<br/><br/>
-                  A higher win rate means traders are more consistent. However, win rate alone doesn't tell the full story - check Profit Factor for overall efficiency.
+                  <strong>Average Win Rate</strong> is the percentage of profitable trades across active star traders (minimum 5 trades required).<br/><br/>
+                  Traders with fewer than 5 trades are excluded to ensure statistical accuracy. A higher win rate means traders are more consistent.
                 </InfoTooltip>
               </div>
               <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>
