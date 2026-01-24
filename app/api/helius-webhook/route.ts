@@ -492,6 +492,21 @@ async function processTradeQueue(traderStateId: string) {
   activeQueueProcessors.add(traderStateId);
   console.log(`[CONSUMER] Starting queue processor for ${traderStateId.slice(0,8)}`);
 
+  // DB-LEVEL LOCK: Check if any lock exists (from another Vercel instance)
+  // This prevents concurrent processing rows which causes position corruption
+  const { data: activeTrade } = await supabase
+    .from('demo_trades')
+    .select('id')
+    .eq('trader_state_id', traderStateId)
+    .eq('status', 'processing')
+    .maybeSingle();
+
+  if (activeTrade) {
+    console.log(`[CONSUMER] Deferring to active processor for ${traderStateId.slice(0,8)} (Trade ${activeTrade.id.slice(0,8)} is processing)`);
+    activeQueueProcessors.delete(traderStateId);
+    return;
+  }
+
   let tradesProcessed = 0;
   const processorId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -539,8 +554,8 @@ async function processTradeQueue(traderStateId: string) {
 
       // If claim returned no rows, another processor got it - skip and try next
       if (!claimResult || claimResult.length === 0) {
-        console.log(`[CONSUMER] Trade ${tradeId.slice(0,8)} already claimed by another processor`);
-        continue; // Try to find another trade
+        console.log(`[CONSUMER] Trade ${tradeId.slice(0,8)} already claimed by another processor. Yielding.`);
+        break; // CRITICAL FIX: Do NOT continue to next trade. Preserve strict order.
       }
 
       // ========== PROCESS CLAIMED TRADE ==========
