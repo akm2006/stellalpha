@@ -191,6 +191,7 @@ interface RawTrade {
   timestamp: number;
   source: string;
   gas: number;
+  leaderBeforeBalance?: number;  // Shadow Ledger: DB-backed pre-trade balance
 }
 
 async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
@@ -305,10 +306,10 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   };
 }
 
-async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: number | null; avgCostBasis: number | null }> {
+async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: number | null; avgCostBasis: number | null; preTradeSize: number }> {
   const { wallet, tokenMint, type, tokenAmount, baseAmount } = trade;
   
-  // Get current position
+  // Get current position (SHADOW LEDGER: This is the pre-trade balance!)
   const { data: position } = await supabase
     .from('positions')
     .select('*')
@@ -355,7 +356,8 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
     }
   }
   
-  return { realizedPnl, avgCostBasis: avgCost };
+  // SHADOW LEDGER: Return the pre-trade size for accurate copy trade ratio calculation
+  return { realizedPnl, avgCostBasis: avgCost, preTradeSize: position?.size || 0 };
 }
 
 // ============ COPY TRADE ENGINE (Producer/Consumer Pattern) ============
@@ -403,72 +405,18 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 
   console.log(`[PRODUCER] Queueing trade for ${followers.length} trader state(s)`);
 
-  // 2. FETCH LEADER'S REAL-TIME PORTFOLIO using Helius DAS API
-  // Same method as /api/portfolio route - gets actual on-chain balances
-  // Note: The trade was already confirmed on-chain, so current balance is POST-trade
-  // We reconstruct before-balance by adding back the traded amount
-  let leaderBeforeBalance = 0;
-  const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
-  const SOL_MINT_ADDRESS = 'So11111111111111111111111111111111111111112';
+  // 2. SHADOW LEDGER: Use DB-backed pre-trade balance instead of live RPC
+  // This eliminates the "Time Travel" race condition where multiple rapid sells
+  // cause the RPC to return a depleted balance, resulting in 100% ratio
+  let leaderBeforeBalance = trade.leaderBeforeBalance || 0;
   
-  try {
-    if (!HELIUS_API_KEY) {
-      throw new Error('Helius API key not configured');
-    }
-
-    const heliusResponse = await fetch(`https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 'leader-portfolio',
-        method: 'getAssetsByOwner',
-        params: {
-          ownerAddress: starTrader,
-          page: 1,
-          limit: 1000,
-          displayOptions: {
-            showFungible: true,
-            showNativeBalance: true
-          }
-        }
-      })
-    });
-
-    const heliusData = await heliusResponse.json();
-    
-    if (heliusData.error) {
-      throw new Error(`Helius RPC error: ${heliusData.error.message}`);
-    }
-
-    const result = heliusData.result;
-    let currentBalance = 0;
-
-    // Handle source mint lookup
-    if (sourceMint === 'SOL' || sourceMint === SOL_MINT_ADDRESS) {
-      // Native SOL balance
-      currentBalance = (result.nativeBalance?.lamports || 0) / 1e9;
-    } else {
-      // SPL Token balance
-      for (const item of result.items || []) {
-        if (item.id === sourceMint && (item.interface === 'FungibleToken' || item.interface === 'FungibleAsset')) {
-          const tokenInfo = item.token_info || {};
-          const rawBalance = tokenInfo.balance || 0;
-          const decimals = tokenInfo.decimals || 0;
-          currentBalance = rawBalance / Math.pow(10, decimals);
-          break;
-        }
-      }
-    }
-
-    // Reconstruct "before" balance:
-    // Current balance is POST-trade, so add back the traded amount
-    leaderBeforeBalance = currentBalance + trade.tokenInAmount;
-    
-    console.log(`[PRODUCER] Leader real-time portfolio: current=${currentBalance.toFixed(4)}, before=${leaderBeforeBalance.toFixed(4)} ${getTokenSymbol(sourceMint)}`);
-  } catch (err: any) {
-    console.warn(`[PRODUCER] Helius DAS API failed, using trade amount as fallback:`, err.message);
-    leaderBeforeBalance = trade.tokenInAmount; // Fallback = 100% ratio
+  if (leaderBeforeBalance <= 0) {
+    // Fallback: First buy (no prior position) or missing data
+    // In this case, treat as 100% position trade
+    leaderBeforeBalance = trade.tokenInAmount;
+    console.log(`[PRODUCER] No Shadow Ledger balance, using trade amount as 100% fallback`);
+  } else {
+    console.log(`[PRODUCER] Shadow Ledger balance: ${leaderBeforeBalance.toFixed(4)} ${getTokenSymbol(sourceMint)}`);
   }
 
   // Calculate trade ratio for logging
@@ -968,8 +916,11 @@ export async function POST(request: NextRequest) {
         // Calculate latency (time from on-chain to now)
         const latencyMs = receivedAt - (trade.timestamp * 1000);
       
-        // Update position and get PnL
-        const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
+        // Update position and get PnL (SHADOW LEDGER: preTradeSize is the DB balance BEFORE this trade)
+        const { realizedPnl, avgCostBasis, preTradeSize } = await updatePositionAndGetPnL(trade);
+        
+        // Attach Shadow Ledger balance for accurate copy trade ratio calculation
+        const tradeWithBalance = { ...trade, leaderBeforeBalance: preTradeSize };
       
         // Insert trade (ignore if duplicate)
         const { error } = await supabase.from('trades').upsert({
@@ -995,12 +946,11 @@ export async function POST(request: NextRequest) {
       
         if (!error) {
           inserted++;
-          console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0,8)}... | Latency: ${latencyMs}ms`);
+          console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0,8)}... | Latency: ${latencyMs}ms | Shadow Ledger: ${preTradeSize.toFixed(4)}`);
         
-          // COPY TRADE ENGINE: Process copy trades
+          // COPY TRADE ENGINE: Process copy trades with Shadow Ledger balance
           // CRITICAL: We MUST await on Vercel serverless - CPU freezes when response returns!
-          // With batch limit of 5 trades and parallel fetching, this completes in ~3-5 seconds.
-          await executeCopyTrades(trade, receivedAt);
+          await executeCopyTrades(tradeWithBalance, receivedAt);
         
           // BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
           enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => {});
