@@ -910,6 +910,19 @@ export async function POST(request: NextRequest) {
         
         const trade = await detectTrade(tx, traderAddress);
         if (!trade) continue;
+
+        // DEDUPLICATION CHECK: Prevent double-counting on webhook retries
+        // If we processed this sig already, don't update positions again
+        const { data: existingTrade } = await supabase
+          .from('trades')
+          .select('id')
+          .eq('signature', trade.signature)
+          .maybeSingle();
+
+        if (existingTrade) {
+          console.log(`[DEDUP] Trade ${trade.signature.slice(0,8)}... already processed. Skipping.`);
+          continue;
+        }
       
         processed++;
       
