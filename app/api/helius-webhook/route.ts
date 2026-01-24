@@ -135,6 +135,47 @@ async function enrichTradeSymbols(signature: string, tokenInMint: string, tokenO
   }
 }
 
+// ============ EXTRACT ALL INVOLVED ADDRESSES FROM HELIUS PAYLOAD ============
+// Used to detect trades even when Star Trader uses a relayer/bot as feePayer
+// Performance: Uses Set for O(1) deduplication, then single DB query with .in()
+function extractInvolvedAddresses(tx: any): Set<string> {
+  const addresses = new Set<string>();
+  
+  // 1. Always include feePayer (may be the trader or a relayer)
+  if (tx.feePayer) {
+    addresses.add(tx.feePayer);
+  }
+  
+  // 2. Extract from tokenTransfers (PRIMARY - most reliable for swaps)
+  // This is where the actual trader appears even when using bots
+  for (const transfer of tx.tokenTransfers || []) {
+    if (transfer.fromUserAccount) addresses.add(transfer.fromUserAccount);
+    if (transfer.toUserAccount) addresses.add(transfer.toUserAccount);
+  }
+  
+  // 3. Extract from nativeTransfers (SOL movements)
+  for (const transfer of tx.nativeTransfers || []) {
+    if (transfer.fromUserAccount) addresses.add(transfer.fromUserAccount);
+    if (transfer.toUserAccount) addresses.add(transfer.toUserAccount);
+  }
+  
+  // 4. Extract from accountData (all touched accounts)
+  // Note: This can include many program accounts, but our star_traders
+  // table will filter to only real wallets
+  for (const acc of tx.accountData || []) {
+    if (acc.account) addresses.add(acc.account);
+  }
+  
+  // 5. Remove known system program addresses to reduce false positives
+  addresses.delete('11111111111111111111111111111111'); // System Program
+  addresses.delete('ComputeBudget111111111111111111111111111111'); // Compute Budget
+  addresses.delete('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'); // Token Program
+  addresses.delete('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'); // Associated Token
+  addresses.delete('SysvarRent111111111111111111111111111111111'); // Rent Sysvar
+  
+  return addresses;
+}
+
 interface RawTrade {
   signature: string;
   wallet: string;
@@ -879,71 +920,97 @@ export async function POST(request: NextRequest) {
     let inserted = 0;
     
     for (const tx of transactions) {
-      if (!tx.signature || !tx.feePayer) continue;
+      if (!tx.signature) continue;
       
-      // SECURITY: Only process trades from known star traders
-      // Star traders must be added via database, not auto-discovered via webhook
-      const { data: starTrader } = await supabase
+      // ============ FIX: Detect Star Traders from ANY involved address ============
+      // Handles cases where Star Trader uses a bot/relayer as feePayer
+      // Performance: Single DB query with .in() instead of per-address queries
+      
+      // 1. Extract all unique addresses involved in this transaction
+      const involvedAddresses = extractInvolvedAddresses(tx);
+      
+      if (involvedAddresses.size === 0) {
+        console.log(`No involved addresses in tx: ${tx.signature.slice(0, 12)}...`);
+        continue;
+      }
+      
+      // 2. Query star_traders for ANY match (single efficient query)
+      const { data: matchedStarTraders, error: starTraderError } = await supabase
         .from('star_traders')
         .select('address')
-        .eq('address', tx.feePayer)
-        .single();
+        .in('address', Array.from(involvedAddresses));
       
-      if (!starTrader) {
-        console.log(`Rejected trade from unknown wallet: ${tx.feePayer.slice(0, 8)}...`);
-        continue;  // Skip this transaction - wallet not in star_traders
+      if (starTraderError) {
+        console.error(`Star trader query error:`, starTraderError.message);
+        continue;
       }
       
-      const trade = await detectTrade(tx, tx.feePayer);
-      if (!trade) continue;
-      
-      processed++;
-      
-      // Calculate latency (time from on-chain to now)
-      const latencyMs = receivedAt - (trade.timestamp * 1000);
-      
-      // Update position and get PnL
-      const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
-      
-      // Insert trade (ignore if duplicate)
-      const { error } = await supabase.from('trades').upsert({
-        signature: trade.signature,
-        wallet: trade.wallet,
-        type: trade.type,
-        token_mint: trade.tokenMint,
-        token_symbol: getTokenSymbol(trade.tokenMint),
-        token_in_mint: trade.tokenInMint,
-        token_in_symbol: getTokenSymbol(trade.tokenInMint),
-        token_in_amount: trade.tokenInAmount,
-        token_out_mint: trade.tokenOutMint,
-        token_out_symbol: getTokenSymbol(trade.tokenOutMint),
-        token_out_amount: trade.tokenOutAmount,
-        usd_value: trade.baseAmount,
-        realized_pnl: realizedPnl,
-        avg_cost_basis: avgCostBasis,
-        block_timestamp: trade.timestamp,
-        source: trade.source,
-        gas: trade.gas,
-        latency_ms: latencyMs
-      }, { onConflict: 'signature', ignoreDuplicates: true });
-      
-      if (!error) {
-        inserted++;
-        console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0,8)}... | Latency: ${latencyMs}ms`);
-        
-        // COPY TRADE ENGINE: Process copy trades
-        // CRITICAL: We MUST await on Vercel serverless - CPU freezes when response returns!
-        // With batch limit of 5 trades and parallel fetching, this completes in ~3-5 seconds.
-        await executeCopyTrades(trade, receivedAt);
-        
-        // BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
-        enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => {});
-        
-        // NOTE: Star traders are no longer auto-added here.
-        // They must be added manually via database to prevent unauthorized wallet tracking.
-      } else {
-        console.log(`Trade insert error for ${trade.signature}:`, error.message);
+      if (!matchedStarTraders || matchedStarTraders.length === 0) {
+        // Log which addresses we checked (first 3 for brevity)
+        const sampleAddresses = Array.from(involvedAddresses).slice(0, 3).map(a => a.slice(0, 8));
+        console.log(`No star traders in tx ${tx.signature.slice(0, 12)}... (checked ${involvedAddresses.size} addrs: ${sampleAddresses.join(', ')}...)`);
+        continue;
       }
+      
+      // 3. Process trade for EACH matched star trader
+      // (Important: A single tx could involve multiple tracked wallets)
+      for (const starTrader of matchedStarTraders) {
+        const traderAddress = starTrader.address;
+        const isFeePayer = traderAddress === tx.feePayer;
+        
+        console.log(`Matched Star Trader: ${traderAddress.slice(0, 12)}... (${isFeePayer ? 'feePayer' : 'involved, not feePayer'})`);
+        
+        const trade = await detectTrade(tx, traderAddress);
+        if (!trade) continue;
+      
+        processed++;
+      
+        // Calculate latency (time from on-chain to now)
+        const latencyMs = receivedAt - (trade.timestamp * 1000);
+      
+        // Update position and get PnL
+        const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
+      
+        // Insert trade (ignore if duplicate)
+        const { error } = await supabase.from('trades').upsert({
+          signature: trade.signature,
+          wallet: trade.wallet,
+          type: trade.type,
+          token_mint: trade.tokenMint,
+          token_symbol: getTokenSymbol(trade.tokenMint),
+          token_in_mint: trade.tokenInMint,
+          token_in_symbol: getTokenSymbol(trade.tokenInMint),
+          token_in_amount: trade.tokenInAmount,
+          token_out_mint: trade.tokenOutMint,
+          token_out_symbol: getTokenSymbol(trade.tokenOutMint),
+          token_out_amount: trade.tokenOutAmount,
+          usd_value: trade.baseAmount,
+          realized_pnl: realizedPnl,
+          avg_cost_basis: avgCostBasis,
+          block_timestamp: trade.timestamp,
+          source: trade.source,
+          gas: trade.gas,
+          latency_ms: latencyMs
+        }, { onConflict: 'signature', ignoreDuplicates: true });
+      
+        if (!error) {
+          inserted++;
+          console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0,8)}... | Latency: ${latencyMs}ms`);
+        
+          // COPY TRADE ENGINE: Process copy trades
+          // CRITICAL: We MUST await on Vercel serverless - CPU freezes when response returns!
+          // With batch limit of 5 trades and parallel fetching, this completes in ~3-5 seconds.
+          await executeCopyTrades(trade, receivedAt);
+        
+          // BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
+          enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => {});
+        
+          // NOTE: Star traders are no longer auto-added here.
+          // They must be added manually via database to prevent unauthorized wallet tracking.
+        } else {
+          console.log(`Trade insert error for ${trade.signature}:`, error.message);
+        }
+      } // End of for (starTrader of matchedStarTraders)
     }
     
     return NextResponse.json({ 

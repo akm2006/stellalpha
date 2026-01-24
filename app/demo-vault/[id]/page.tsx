@@ -740,7 +740,15 @@ export default function TraderStateDetailPage() {
               </div>
             </div>
             <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">
-              <div className="text-xs uppercase tracking-wider mb-1.5" style={{ color: COLORS.data }}>Avg Latency</div>
+              <div className="text-xs uppercase tracking-wider mb-1.5 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
+                Avg Latency
+                <InfoTooltip>
+                  <strong>Copy Trade Latency</strong><br/><br/>
+                  Time difference between the Star Trader&apos;s transaction and your Vault&apos;s copy execution.<br/><br/>
+                  ⚠️ <strong>Simulation Mode:</strong> This demo performs <strong>no on-chain interactions</strong>. It simulates trades via database sync to show you how the logic works.<br/><br/>
+                  In production, we leverage Solana&apos;s <strong>~400ms block times</strong> for near-instant copy execution.
+                </InfoTooltip>
+              </div>
               <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatLatency(avgLatency)}</div>
             </div>
           </div>
@@ -892,7 +900,15 @@ export default function TraderStateDetailPage() {
                 <div>Token In → Token Out</div>
                 <div>USD Value</div>
                 <div>Profit</div>
-                <div>Latency</div>
+                <div className="flex items-center gap-1">
+                  Latency
+                  <InfoTooltip>
+                    <strong>Copy Trade Latency</strong><br/><br/>
+                    Time difference between the Star Trader&apos;s transaction and your Vault&apos;s copy execution.<br/><br/>
+                    ⚠️ <strong>Simulation Mode:</strong> This demo performs <strong>no on-chain interactions</strong>. It simulates trades via database sync to show you how the logic works.<br/><br/>
+                    In production, we leverage Solana&apos;s <strong>~400ms block times</strong> for near-instant copy execution.
+                  </InfoTooltip>
+                </div>
                 <div>Age</div>
                 <div>Actions</div>
               </div>
