@@ -218,7 +218,47 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   
   // Token → Token swap
   if (tokensSent.length > 0 && tokensReceived.length > 0) {
-    const inToken = tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
+    // 1. NATIVE SOL OVERRIDE Check
+    // If we see token transfers (like USD1), but SOL was ALSO spent (> 0.01 to filter gas),
+    // it's likely a SOL -> USD1 -> Token route. Trust the SOL spend as the true source.
+    if (solChangeNet < -0.01) {
+      const largestOut = tokensReceived.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
+       
+      return {
+        signature: tx.signature,
+        wallet: fp,
+        type: 'buy',
+        tokenMint: largestOut.mint,
+        tokenAmount: largestOut.tokenAmount,
+        baseAmount: (await getSolPrice()) * Math.abs(solChangeNet),
+        tokenInMint: 'SOL',           // <--- Correctly identified as SOL
+        tokenInAmount: Math.abs(solChangeNet),
+        tokenInPreBalance: 0,         
+        tokenOutMint: largestOut.mint,
+        tokenOutAmount: largestOut.tokenAmount,
+        timestamp: tx.timestamp,
+        source: tx.source || 'UNKNOWN',
+        gas: fee / 1e9
+      };
+    }
+
+    // 2. Base Asset Priority Logic
+    // Prioritize Known Bases (USDC, USDT, wSOL) over random tokens (USD1)
+    // This prevents picking intermediate routing tokens just because they have larger raw amounts.
+    const PRIORITY_MINTS = new Set([
+      'So11111111111111111111111111111111111111112', // wSOL
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+    ]);
+
+    // Try to find a priority token in the sent list
+    let inToken = tokensSent.find((t: any) => PRIORITY_MINTS.has(t.mint));
+    
+    // If no priority token, fall back to the largest one (old behavior)
+    if (!inToken) {
+      inToken = tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
+    }
+
     const outToken = tokensReceived.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
     if (inToken.mint === outToken.mint) return null;
     
