@@ -242,24 +242,65 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
       };
     }
 
-    // 2. Base Asset Priority Logic
+    // 2. NATIVE SOL SELL OVERRIDE Check
+    // Intercepts Token -> [Router] -> SOL
+    // If we gained significant SOL (> 0.01), treat this as a Sell to SOL,
+    // (ignoring wSOL/USD1), UNLESS we also received a hard Priority Asset (USDC/USDT).
+    if (solChangeNet > 0.01) {
+      // FIX For Rent Refund False Positives:
+      // If we received USDC/USDT, that is likely the real output, 
+      // and the SOL gain is just rent refund (e.g. closing multiple accounts).
+      const PRIORITY_SAFE_OUTPUTS = new Set([
+        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+        'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+      ]);
+      const hasSafeOutput = tokensReceived.some((t: any) => PRIORITY_SAFE_OUTPUTS.has(t.mint));
+
+      if (!hasSafeOutput) {
+        // Only override if we didn't get a safe stablecoin output
+        const largestIn = tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
+        
+        console.log(`[Trade] Detected SOL gain masked by routing asset. Forcing Native SOL Sell.`);
+
+        return {
+          signature: tx.signature,
+          wallet: fp,
+          type: 'sell',
+          tokenMint: largestIn.mint,
+          tokenAmount: largestIn.tokenAmount,
+          baseAmount: (await getSolPrice()) * Math.abs(solChangeNet),
+          tokenInMint: largestIn.mint,
+          tokenInAmount: largestIn.tokenAmount,
+          tokenInPreBalance: 0, 
+          tokenOutMint: 'SOL',            // <--- Correctly identified as SOL
+          tokenOutAmount: solChangeNet,   // <--- Correct SOL amount
+          timestamp: tx.timestamp,
+          source: tx.source || 'UNKNOWN',
+          gas: fee / 1e9
+        };
+      }
+    }
+
+    // 3. Base Asset Priority Logic (Input & Output)
     // Prioritize Known Bases (USDC, USDT, wSOL) over random tokens (USD1)
-    // This prevents picking intermediate routing tokens just because they have larger raw amounts.
     const PRIORITY_MINTS = new Set([
       'So11111111111111111111111111111111111111112', // wSOL
       'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
       'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
     ]);
 
-    // Try to find a priority token in the sent list
+    // INPUT SELECTION
     let inToken = tokensSent.find((t: any) => PRIORITY_MINTS.has(t.mint));
-    
-    // If no priority token, fall back to the largest one (old behavior)
     if (!inToken) {
       inToken = tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
     }
-
-    const outToken = tokensReceived.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
+    
+    // OUTPUT SELECTION (New Fix)
+    // Prioritize receiving a known base asset over a random router token
+    let outToken = tokensReceived.find((t: any) => PRIORITY_MINTS.has(t.mint));
+    if (!outToken) {
+      outToken = tokensReceived.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
+    }
     if (inToken.mint === outToken.mint) return null;
     
     tokenInMint = inToken.mint;
@@ -401,7 +442,7 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
 // ============ COPY TRADE ENGINE (Producer/Consumer Pattern) ============
 // Producer: Quick insert to queue
 // Consumer: Sequential processing to avoid race conditions
-const MIN_TRADE_THRESHOLD_USD = 0.10;
+const MIN_TRADE_THRESHOLD_USD = 0.05;
 
 // ============ VERCEL OPTIMIZATION: Batch limit to prevent timeouts ============
 // Vercel Pro has 60s limit, but we aim for <10s per batch for reliability
