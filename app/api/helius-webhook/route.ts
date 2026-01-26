@@ -819,10 +819,24 @@ async function processTradeQueue(traderStateId: string) {
 // ============ EXECUTE QUEUED TRADE (Master Fix Logic) ============
 async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: RawTrade) {
   const SOL_MINT = 'So11111111111111111111111111111111111111112';
+  const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
   
-  // Normalize 'SOL' string to wSOL mint address for position lookup
-  const sourceMint = trade.tokenInMint === 'SOL' ? SOL_MINT : trade.tokenInMint;
-  const destMint = trade.tokenOutMint === 'SOL' ? SOL_MINT : trade.tokenOutMint;
+  // V2 LOGIC: Override Source/Dest based on Trade Type (USDC-Centric)
+  // If Leader BUY (Input=SOL/USDC -> Output=Token): Follower uses Source=USDC -> Dest=Token
+  // If Leader SELL (Input=Token -> Output=SOL/USDC): Follower uses Source=Token -> Dest=USDC
+  
+  let sourceMint = '';
+  let destMint = '';
+
+  if (trade.type === 'buy') {
+    // BUY: Always spend USDC to buy the target token
+    sourceMint = USDC_MINT;
+    destMint = trade.tokenOutMint === 'SOL' ? SOL_MINT : trade.tokenOutMint;
+  } else {
+    // SELL: Always sell the target token for USDC
+    sourceMint = trade.tokenInMint === 'SOL' ? SOL_MINT : trade.tokenInMint;
+    destMint = USDC_MINT;
+  }
 
   // 1. Fetch FRESH trader state and positions (not stale from queue time)
   const { data: traderState, error: tsError } = await supabase
