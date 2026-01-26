@@ -565,7 +565,21 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
   console.log(`[PRODUCER] Queueing trade for ${followers.length} trader state(s)`);
 
   // 2. V2 EQUITY MODEL CALCULATIONS
-  const connection = new Connection(process.env.NEXT_PUBLIC_HELIUS_RPC_URL!);
+  // FIX: Safe Connection Initialization
+  // SECURITY: Use private server-side RPC URL
+  const rpcUrl = process.env.HELIUS_API_RPC_URL;
+  let connection: Connection | null = null;
+
+  if (rpcUrl && rpcUrl.startsWith('http')) {
+    try {
+      connection = new Connection(rpcUrl);
+    } catch (err) {
+      console.warn('[PRODUCER] Failed to create Connection object:', err);
+    }
+  } else {
+    console.warn('[PRODUCER] Missing HELIUS_API_RPC_URL. V2 Equity Model disabled.');
+  }
+
   const solPrice = await getSolPrice(); // Use cached price
   
   let ratio = 0;
@@ -577,21 +591,25 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
       // ================= SCENARIO A: BUY (Entry) =================
       // Logic: "How big was this bet relative to their available capital?"
       
-      // 1. Get CURRENT (Post-Trade) Buying Power
-      const postTradeBuyingPower = await getTraderBuyingPower(starTrader, connection, solPrice);
-      
-      // 2. Get Value of the Trade (The amount they spent)
-      leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
-      
-      // 3. RECONSTRUCT PRE-TRADE BUYING POWER
-      // "Wallet Before" = "Wallet Now" + "Money Spent"
-      const preTradeBuyingPower = postTradeBuyingPower + leaderUsdValue;
-      
-      // 4. Calculate Ratio
-      leaderMetric = preTradeBuyingPower;
-      ratio = preTradeBuyingPower > 0 ? leaderUsdValue / preTradeBuyingPower : 0;
-      
-      console.log(`[V2-Buy] Spent $${leaderUsdValue.toFixed(2)} / Pre-Equity $${preTradeBuyingPower.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
+      if (connection) {
+        // 1. Get CURRENT (Post-Trade) Buying Power
+        const postTradeBuyingPower = await getTraderBuyingPower(starTrader, connection, solPrice);
+        
+        // 2. Get Value of the Trade (The amount they spent)
+        leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
+        
+        // 3. RECONSTRUCT PRE-TRADE BUYING POWER
+        // "Wallet Before" = "Wallet Now" + "Money Spent"
+        const preTradeBuyingPower = postTradeBuyingPower + leaderUsdValue;
+        
+        // 4. Calculate Ratio
+        leaderMetric = preTradeBuyingPower;
+        ratio = preTradeBuyingPower > 0 ? leaderUsdValue / preTradeBuyingPower : 0;
+        
+        console.log(`[V2-Buy] Spent $${leaderUsdValue.toFixed(2)} / Pre-Equity $${preTradeBuyingPower.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
+      } else {
+        console.log('[V2-Buy] Skipped Equity Model (No RPC Connection)');
+      }
 
     } else {
       // ================= SCENARIO B: SELL (Exit) =================
@@ -601,28 +619,32 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
       const mintPubkey = new PublicKey(sourceMint);
       const ata = getAssociatedTokenAddressSync(mintPubkey, new PublicKey(starTrader));
       
-      // 1. Get CURRENT (Post-Trade) Token Balance
-      const accountInfo = await connection.getAccountInfo(ata);
-      let postTradeTokenBalance = 0;
-      
-      if (accountInfo && accountInfo.data.length >= 72) {
-        const rawAmount = Number(accountInfo.data.readBigUInt64LE(64));
-        const decimals = await getTokenDecimals(sourceMint); 
-        postTradeTokenBalance = rawAmount / Math.pow(10, decimals);
-      }
-      
-      // 2. RECONSTRUCT PRE-TRADE INVENTORY
-      // "Bag Before" = "Bag Now" + "Sold Amount"
-      const preTradeTokenBalance = postTradeTokenBalance + trade.tokenInAmount;
-      
-      // 3. Calculate Ratio
-      leaderMetric = preTradeTokenBalance;
-      ratio = preTradeTokenBalance > 0 ? trade.tokenInAmount / preTradeTokenBalance : 0;
-      
       // Calculate approximate USD value for logging
       leaderUsdValue = await getUsdValue(destMint, trade.tokenOutAmount);
-      
-      console.log(`[V2-Sell] Sold ${trade.tokenInAmount.toFixed(2)} / Pre-Bag ${preTradeTokenBalance.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
+
+      if (connection) {
+        // 1. Get CURRENT (Post-Trade) Token Balance
+        const accountInfo = await connection.getAccountInfo(ata);
+        let postTradeTokenBalance = 0;
+        
+        if (accountInfo && accountInfo.data.length >= 72) {
+          const rawAmount = Number(accountInfo.data.readBigUInt64LE(64));
+          const decimals = await getTokenDecimals(sourceMint); 
+          postTradeTokenBalance = rawAmount / Math.pow(10, decimals);
+        }
+        
+        // 2. RECONSTRUCT PRE-TRADE INVENTORY
+        // "Bag Before" = "Bag Now" + "Sold Amount"
+        const preTradeTokenBalance = postTradeTokenBalance + trade.tokenInAmount;
+        
+        // 3. Calculate Ratio
+        leaderMetric = preTradeTokenBalance;
+        ratio = preTradeTokenBalance > 0 ? trade.tokenInAmount / preTradeTokenBalance : 0;
+        
+        console.log(`[V2-Sell] Sold ${trade.tokenInAmount.toFixed(2)} / Pre-Bag ${preTradeTokenBalance.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
+      } else {
+        console.log('[V2-Sell] Skipped Equity Model (No RPC Connection)');
+      }
     }
   } catch (err: any) {
     console.warn(`[PRODUCER] V2 Calculation Logic Failed:`, err.message);

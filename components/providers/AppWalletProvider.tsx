@@ -22,9 +22,11 @@ export default function AppWalletProvider({
   // 1. Force Mainnet
   const network = WalletAdapterNetwork.Mainnet;
 
-  // 2. Use Helius mainnet RPC
-  const endpoint = process.env.NEXT_PUBLIC_HELIUS_RPC_URL || 
-    "https://mainnet.helius-rpc.com/?api-key=demo";
+  // 2. Use Public RPC for Frontend (Wallet Adapter)
+  // SECURITY: This is exposed to the client. Do NOT use the secret Helius API key here.
+  // Use a rate-limited public endpoint or a safe proxy.
+  const endpoint = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 
+    "https://api.mainnet-beta.solana.com";
 
   // 3. Wallet Standard: Leave array empty to auto-detect all installed wallets 
   // that support the Solana Wallet Standard (Phantom, Solflare, Backpack, etc.)
