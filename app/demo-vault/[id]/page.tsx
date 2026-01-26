@@ -338,7 +338,7 @@ export default function TraderStateDetailPage() {
   
   const fetchTokenMetadata = useCallback(async (mints: string[]) => {
     if (mints.length === 0) return;
-    const missing = mints.filter(m => !tokenMeta[m] && m !== 'SOL');
+    const missing = mints.filter(m => !tokenMeta[m]);
     if (missing.length === 0) return;
     
     try {

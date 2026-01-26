@@ -408,8 +408,8 @@ export default function TraderDetailPage() {
       // Metadata
       const mints = new Set<string>();
       tradesList.forEach((t: Trade) => {
-        if (t.tokenInMint && t.tokenInMint !== 'SOL') mints.add(t.tokenInMint);
-        if (t.tokenOutMint && t.tokenOutMint !== 'SOL') mints.add(t.tokenOutMint);
+        if (t.tokenInMint) mints.add(t.tokenInMint);
+        if (t.tokenOutMint) mints.add(t.tokenOutMint);
       });
       portfolioData.tokens?.forEach((t: PortfolioToken) => mints.add(t.mint));
       
