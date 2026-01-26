@@ -780,24 +780,46 @@ async function processTradeQueue(traderStateId: string) {
 
       console.log(`[CONSUMER] Processing trade ${tradeRow.id.slice(0,8)} (sig: ${trade.signature?.slice(0,12)})`);
 
-      try {
-        await executeQueuedTrade(traderStateId, tradeRow, trade);
+      let success = false;
+      let lastError: any = null;
+      const MAX_RETRIES = 3;
 
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          if (attempt > 1) console.log(`[CONSUMER] Retrying trade ${tradeRow.id.slice(0,8)} (Attempt ${attempt}/${MAX_RETRIES})...`);
+          
+          await executeQueuedTrade(traderStateId, tradeRow, trade);
+          success = true;
+          break; // Success! Exit loop
+          
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`[CONSUMER] Attempt ${attempt} failed:`, err.message);
+          
+          // Don't retry on fatal logic errors (e.g. "No Balance"), only on potentially transient ones?
+          // For simplicity/robustness in V2, we retry EVERYTHING except explicit skips.
+          // Exponential Backoff: 1s, 2s, 3s
+          if (attempt < MAX_RETRIES) {
+             await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+          }
+        }
+      }
+
+      if (success) {
         // Mark as completed
         await supabase.from('demo_trades').update({
           status: 'completed'
         }).eq('id', tradeRow.id);
 
         console.log(`[CONSUMER] Trade ${tradeRow.id.slice(0,8)} completed successfully`);
-
-      } catch (processError: any) {
-        // Mark as failed with error message
+      } else {
+        // Mark as failed with final error message
         await supabase.from('demo_trades').update({
           status: 'failed',
-          error_message: processError.message || 'Unknown processing error'
+          error_message: lastError?.message || 'Unknown processing error after retries'
         }).eq('id', tradeRow.id);
 
-        console.error(`[CONSUMER] Trade ${tradeRow.id.slice(0,8)} failed:`, processError.message);
+        console.error(`[CONSUMER] Trade ${tradeRow.id.slice(0,8)} PERMANENTLY FAILED after ${MAX_RETRIES} attempts:`, lastError?.message);
       }
 
       tradesProcessed++;
@@ -896,11 +918,24 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   ]);
   const rawInputAmount = Math.floor(copyAmount * Math.pow(10, sourceDecimals));
 
+  // Dynamic Slippage Scaling
+  let slippageBps = '100'; // Default 1%
+  const STABLE_OR_BLUE_CHIP = new Set([...STABLECOIN_MINTS, SOL_MINT, WSOL]);
+  
+  if (STABLE_OR_BLUE_CHIP.has(sourceMint) && STABLE_OR_BLUE_CHIP.has(destMint)) {
+    slippageBps = '50'; // 0.5% for Stable/Major pairs
+  } else {
+    // SNIPER-GRADE SLIPPAGE for Micro-Caps / Memes
+    // Research shows $5k vol coins need 25-40%. We start at 15% to be safe but effective.
+    slippageBps = '1500'; // 15.0% for Memecoins
+  }
+
   const quoteUrl = new URL('https://api.jup.ag/swap/v1/quote');
   quoteUrl.searchParams.append('inputMint', sourceMint);
   quoteUrl.searchParams.append('outputMint', destMint);
   quoteUrl.searchParams.append('amount', rawInputAmount.toString());
-  quoteUrl.searchParams.append('slippageBps', '100');
+  quoteUrl.searchParams.append('slippageBps', slippageBps);
+  // Also request auto-slippage if available, or just rely on the wider 4% band
 
   const quoteResponse = await fetch(quoteUrl.toString(), {
     headers: {
@@ -950,7 +985,11 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   const latencyDiff = copyTradeTimestamp - (trade.timestamp * 1000);
 
   await supabase.from('demo_trades').update({
+    token_in_mint: sourceMint,  // <--- V2 FIX: Save actual source (USDC)
+    token_in_symbol: getTokenSymbol(sourceMint),
     token_in_amount: copyAmount,
+    token_out_mint: destMint,   // <--- V2 FIX: Save actual dest (Token)
+    token_out_symbol: getTokenSymbol(destMint),
     token_out_amount: quoteOutAmount,
     usd_value: tradeUsdValue,
     quote_in_amount: copyAmount,
