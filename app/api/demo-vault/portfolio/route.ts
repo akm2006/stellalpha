@@ -13,6 +13,7 @@ const SOL_LOGO = 'https://raw.githubusercontent.com/solana-labs/token-list/main/
 const STABLECOIN_MINTS = new Set([
   USDC_MINT,
   'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenUb9', // USDT
+  'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', // USD1
 ]);
 
 interface Position {
@@ -62,6 +63,7 @@ interface PortfolioResponse {
   
   // Price status
   hasStalePrices: boolean;
+  usdcBalance?: number;
 }
 
 // ============================================
@@ -290,7 +292,8 @@ export async function GET(request: NextRequest) {
       unrealizedPnLPercent,
       
       invariantValid,
-      hasStalePrices
+      hasStalePrices,
+      usdcBalance: positions.find(p => p.token_mint === USDC_MINT)?.size || 0, // <--- New Field for V2 Logic
     };
     
     return NextResponse.json(response);

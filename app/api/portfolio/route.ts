@@ -8,6 +8,13 @@ const HELIUS_RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const NATIVE_SOL = 'NATIVE_SOL'; // Special identifier for native SOL
 
+// Add Stablecoins to ensure price fetching (even if mocked as $1 by some UIs, we want real data if possible or consistent $1)
+const STABLE_MINTS = [
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+  'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB'  // USD1
+];
+
 // Configuration for Jupiter API batching
 const BATCH_SIZE = 30; // Jupiter works well with ~30 tokens per request
 const REQUEST_TIMEOUT_MS = 8000; // 8 seconds timeout per batch

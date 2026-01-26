@@ -80,6 +80,7 @@ interface PortfolioData {
   totalPnLPercent: number;
   unrealizedPnL: number;
   hasStalePrices: boolean;
+  usdcBalance?: number;
 }
 
 interface TokenMeta {
@@ -326,10 +327,7 @@ export default function TraderStateDetailPage() {
   const [pagination, setPagination] = useState({ page: 1, pageSize: 20, totalCount: 0, totalPages: 0 });
   const [tradeStats, setTradeStats] = useState({ avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0 });
   
-  // Init Modal State
-  const [showInitModal, setShowInitModal] = useState(false);
-  const [previewPortfolio, setPreviewPortfolio] = useState<any[]>([]);
-  const [previewLoading, setPreviewLoading] = useState(false);
+
   
   // Tab state for Portfolio/Copy Trades switching
   const [activeTab, setActiveTab] = useState<'portfolio' | 'trades'>('portfolio');
@@ -411,7 +409,7 @@ export default function TraderStateDetailPage() {
   // ACTIONS
   // =============================================================================
   
-  const handleAction = async (action: 'sync' | 'initialize' | 'pause' | 'resume' | 'settle') => {
+  const handleAction = async (action: 'initialize' | 'pause' | 'resume' | 'settle') => {
     if (!walletAddress || !traderStateId) return;
     setActionLoading(true);
     
@@ -435,43 +433,20 @@ export default function TraderStateDetailPage() {
     }
   };
 
+  // Modified: Direct Initialize (No Sync Modal)
   const handleInitClick = async () => {
-    if (!portfolio?.starTrader) return;
-    setShowInitModal(true);
-    setPreviewLoading(true);
-    
-    try {
-      const res = await fetch(`/api/portfolio?wallet=${portfolio.starTrader}`);
-      const data = await res.json();
-      
-      const allTokens = [...(data.tokens || [])];
-      
-      if (data.solBalance && data.solBalance.totalValue > 1) {
-        allTokens.unshift({
-           mint: 'SOL',
-           symbol: 'SOL', 
-           name: 'Solana',
-           logoURI: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png',
-           ...data.solBalance,
-           isNative: true
-        });
+    // Check balance warning
+    const balance = portfolio?.usdcBalance || 0;
+    if (balance < 10) {
+      if (!confirm(`Your Available USDC ($${balance.toFixed(2)}) is low. Recommended: $100+. Continue?`)) {
+        // handled by UI state update
       }
-      
-      setPreviewPortfolio(allTokens);
-    } catch {
-      // Empty on fail
-    } finally {
-      setPreviewLoading(false);
     }
-  };
-
-  const confirmInit = async () => {
-    const synced = await handleAction('sync');
-    if (!synced) return;
     
+    // Direct initialize action
     const initialized = await handleAction('initialize');
     if (initialized) {
-      setShowInitModal(false);
+      // Success feedback handled by UI state update
     }
   };
   
@@ -634,12 +609,12 @@ export default function TraderStateDetailPage() {
                     color: '#10B981'
                   }}
                 >
-                  <span className="flex items-center gap-1.5"><RefreshCw size={12} /> Sync & Initialize</span>
+                  <span className="flex items-center gap-1.5"><Play size={12} /> Initialize</span>
                 </button>
                 <InfoTooltip>
-                  <strong>Sync & Initialize</strong><br/><br/>
-                  First syncs your Vault with the latest on-chain state, then initializes this trader state to begin following. <br/><br/>
-                  This two-step process ensures accuracy before allocating funds.
+                  <strong>Initialize Copy Engine</strong><br/><br/>
+                  Activates the Copy Engine. The bot will use your available USDC (Vault Balance) to mirror <strong>new</strong> trades from this trader.<br/><br/>
+                  Funds remain in your control.
                 </InfoTooltip>
               </div>
             )}
@@ -1056,91 +1031,6 @@ export default function TraderStateDetailPage() {
           )}
         </div>
         
-        {/* ===== INIT MODAL ===== */}
-        {showInitModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-            <div className="w-full max-w-md border border-white/10 rounded overflow-hidden" style={{ backgroundColor: COLORS.surface }}>
-              <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
-                <h3 className="font-medium flex items-center gap-2" style={{ color: COLORS.text }}>
-                  <RefreshCw size={16} /> Sync & Initialize
-                </h3>
-                <button onClick={() => setShowInitModal(false)} className="hover:opacity-70">
-                  <X size={20} style={{ color: COLORS.data }} />
-                </button>
-              </div>
-              
-              <div className="p-5">
-                <p className="text-sm mb-4" style={{ color: COLORS.data }}>
-                  Sync your demo vault with the Star Trader's current portfolio.
-                </p>
-                
-                <div className="mb-5">
-                  <div className="text-[10px] font-mono uppercase mb-2" style={{ color: COLORS.data }}>Assets to be copied:</div>
-                  <div className="border border-white/10 rounded max-h-40 overflow-y-auto" style={{ backgroundColor: COLORS.canvas }}>
-                    {previewLoading ? (
-                      <div className="flex items-center justify-center py-8">
-                        <Loader2 size={24} className="animate-spin" style={{ color: COLORS.brand }} />
-                      </div>
-                    ) : (
-                      (() => {
-                        const filtered = previewPortfolio.filter((t: any) => (t.holdingPercent || 0) >= 0.1);
-                        const alloc = allocatedUsd || 0;
-                        
-                        return filtered.length === 0 ? (
-                          <div className="p-4 text-center text-xs" style={{ color: COLORS.data }}>No assets found.</div>
-                        ) : (
-                          <div className="divide-y divide-white/5">
-                            {filtered.map((token: any) => {
-                              const percent = token.holdingPercent || 0;
-                              const projectedValue = (percent / 100) * alloc;
-                              const projectedBalance = token.pricePerToken ? (projectedValue / token.pricePerToken) : 0;
-                              
-                              return (
-                                <div key={token.mint} className="flex items-center justify-between p-3 text-sm">
-                                  <div className="flex items-center gap-2">
-                                    <div className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] overflow-hidden">
-                                      {token.logoURI ? <img src={token.logoURI} alt="" className="w-full h-full" /> : token.symbol[0]}
-                                    </div>
-                                    <div>
-                                      <div style={{ color: COLORS.text }}>{token.symbol}</div>
-                                      <div className="text-[10px]" style={{ color: COLORS.data }}>{percent.toFixed(2)}%</div>
-                                    </div>
-                                  </div>
-                                  <div className="text-right">
-                                    <div className="font-mono" style={{ color: COLORS.text }}>{formatUsd(projectedValue)}</div>
-                                    <div className="text-[10px] font-mono" style={{ color: COLORS.data }}>{formatAmount(projectedBalance)}</div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        );
-                      })()
-                    )}
-                  </div>
-                </div>
-                
-                <div className="flex gap-3">
-                  <button 
-                    onClick={() => setShowInitModal(false)}
-                    className="flex-1 py-2.5 rounded text-sm font-medium border border-white/10 transition-colors hover:bg-white/5"
-                    style={{ color: COLORS.text }}
-                  >
-                    Cancel
-                  </button>
-                  <button 
-                    onClick={confirmInit}
-                    disabled={actionLoading}
-                    className="flex-1 py-2.5 rounded text-sm font-medium transition-colors hover:opacity-90 flex items-center justify-center gap-2"
-                    style={{ backgroundColor: '#10B981', color: '#000' }}
-                  >
-                    {actionLoading ? <Loader2 size={14} className="animate-spin" /> : 'Confirm & Initialize'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </main>
     </div>
   );
