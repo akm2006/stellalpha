@@ -265,7 +265,7 @@ function StatusAlertBubble({
       bg: '#FFF7ED',    // Orange-50
       border: '#FDBA74', // Orange-300
       title: 'Action Required',
-      text: 'This trader state is created but not running. Click "View" then "Sync & Initialize" to start copying trades.'
+      text: 'This trader state is created but not running. Click "View" then "Initialize" to start copying trades.'
     },
     paused: {
       color: '#EAB308', // Yellow-500
