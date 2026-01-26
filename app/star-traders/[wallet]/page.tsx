@@ -15,8 +15,11 @@ import {
   Info, 
   ExternalLink,
   Copy,
-  Check
+  Check,
+  UserPlus,
+  UserCheck
 } from 'lucide-react';
+import { useAuth } from '@/contexts/auth-context';
 
 // =============================================================================
 // TYPES
@@ -320,6 +323,7 @@ export default function TraderDetailPage() {
   const params = useParams();
   const router = useRouter();
   const wallet = params.wallet as string;
+  const { user, isAuthenticated } = useAuth();
   
   const [activeTab, setActiveTab] = useState<'trades' | 'portfolio'>('trades');
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -333,6 +337,7 @@ export default function TraderDetailPage() {
   const [copied, setCopied] = useState(false);
   const [showDust, setShowDust] = useState(false);
   const [traderName, setTraderName] = useState('Star Trader');
+  const [isFollowing, setIsFollowing] = useState(false);
   
   const fetchTokenMetadata = async (mints: string[]) => {
     if (mints.length === 0) return;
@@ -356,12 +361,16 @@ export default function TraderDetailPage() {
 
   const fetchTraderProfile = async () => {
     try {
-      const response = await fetch('/api/star-traders');
+      const url = user?.wallet 
+        ? `/api/star-traders?userWallet=${user.wallet}`
+        : '/api/star-traders';
+      const response = await fetch(url);
       const data = await response.json();
       if (data.traders) {
-        const trader = data.traders.find((t: any) => t.address === wallet);
-        if (trader && trader.name) {
-          setTraderName(trader.name);
+        const trader = data.traders.find((t: any) => t.wallet === wallet);
+        if (trader) {
+          if (trader.name) setTraderName(trader.name);
+          setIsFollowing(!!trader.isFollowing);
         }
       }
     } catch (err) {
@@ -417,7 +426,7 @@ export default function TraderDetailPage() {
     if (wallet) {
       refreshData();
     }
-  }, [wallet]);
+  }, [wallet, user?.wallet]);
 
   const copyAddress = () => {
     navigator.clipboard.writeText(wallet);
@@ -428,6 +437,14 @@ export default function TraderDetailPage() {
   // Filter tokens
   const displayTokens = showDust ? portfolioTokens : portfolioTokens.filter(t => !t.isDust);
   const dustCount = portfolioTokens.filter(t => t.isDust).length;
+
+  const handleFollow = () => {
+    if (!isAuthenticated) {
+      router.push('/demo-vault');
+      return;
+    }
+    router.push(`/demo-vault?follow=${wallet}`);
+  };
   
   if (loading) {
     return (
@@ -503,32 +520,56 @@ export default function TraderDetailPage() {
             </div>
           </div>
           
-          {/* Analyze Button */}
-          <div className="flex items-center gap-3">
-             <div className="hidden sm:flex items-center gap-1.5 text-xs font-medium text-right mr-2" style={{ color: COLORS.data }}>
-                <div className="flex items-center gap-1">
-                  <InfoTooltip>
-                    <strong>Recent History Analysis</strong><br/><br/>
-                    This analysis is generated based on the last 100 on-chain trades.<br/><br/>
-                    For a complete historical analysis including all past transactions, please view the full profile on GMGN.
-                  </InfoTooltip>
-                  <span>Analysis based on recent trades. Use GMGN for full history.</span>
+          {/* Actions: Follow + Analyze */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Analyze Button */}
+            <div className="flex items-center gap-2">
+               <div className="hidden sm:flex items-center gap-1.5 text-xs font-medium text-right mr-2" style={{ color: COLORS.data }}>
+                  <div className="flex items-center gap-1">
+                    <InfoTooltip>
+                      <strong>Recent History Analysis</strong><br/><br/>
+                      This analysis is generated based on the last 100 on-chain trades.<br/><br/>
+                      For a complete historical analysis including all past transactions, please view the full profile on GMGN.
+                    </InfoTooltip>
+                    <span>Analysis based on recent trades. Use GMGN for full history.</span>
+                  </div>
                 </div>
-              </div>
-            <a 
-              href={`https://gmgn.ai/sol/address/${wallet}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group flex items-center gap-2 px-5 py-2.5 rounded-lg border transition-all hover:bg-emerald-500/10 hover:border-emerald-500/30"
-              style={{ 
-                borderColor: COLORS.structure, 
-                backgroundColor: 'rgba(16, 185, 129, 0.05)',
-              }}
-            >
-              <span className="text-sm font-bold tracking-wide group-hover:text-emerald-400 transition-colors" style={{ color: COLORS.text }}>Analyze on</span>
-              <img src="https://gmgn.ai/static/GMGNLogoDark.svg" alt="GMGN" className="h-5 w-auto opacity-90 group-hover:opacity-100 transition-opacity" />
-              <ArrowUpRight size={14} className="text-emerald-500 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
-            </a>
+              <a 
+                href={`https://gmgn.ai/sol/address/${wallet}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group flex items-center gap-2 px-4 py-2 rounded-lg border transition-all hover:bg-emerald-500/10 hover:border-emerald-500/30"
+                style={{ 
+                  borderColor: COLORS.structure, 
+                  backgroundColor: 'rgba(16, 185, 129, 0.05)',
+                  color: COLORS.text 
+                }}
+              >
+                <img src="https://gmgn.ai/static/GMGNLogoDark.svg" alt="GMGN" className="h-4 w-auto opacity-70 group-hover:opacity-100 transition-opacity" />
+                <span className="text-xs font-semibold tracking-wide hidden sm:inline">ANALYZE</span>
+                <ArrowUpRight size={12} className="text-emerald-500 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
+              </a>
+            </div>
+
+            {/* Follow Button */}
+            {isFollowing ? (
+              <button 
+                className="px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center gap-2 border border-cyan-400/50 cursor-default"
+                style={{ backgroundColor: 'rgba(34, 211, 238, 0.10)', color: '#22D3EE' }}
+              >
+                <UserCheck size={14} />
+                Following
+              </button>
+            ) : (
+              <button 
+                onClick={handleFollow}
+                className="px-5 py-2 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center gap-2 transition-all duration-200 hover:opacity-90 hover:scale-105 active:scale-95 shadow-lg shadow-cyan-500/20"
+                style={{ backgroundColor: '#22D3EE', color: '#000' }}
+              >
+                <UserPlus size={14} />
+                Follow
+              </button>
+            )}
           </div>
         </div>
         
