@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { Connection, PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 
 const HELIUS_WEBHOOK_SECRET = process.env.HELIUS_WEBHOOK_SECRET;
 const WSOL = "So11111111111111111111111111111111111111112";
@@ -281,7 +283,25 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
       }
     }
 
-    // 3. Base Asset Priority Logic (Input & Output)
+
+    // 3. ROUTER TOKEN EXCLUSION (Intersection Logic)
+    // Identify tokens that act as intermediate hops (appear in BOTH Sent and Received)
+    // e.g. Swap Token A -> USD1 -> Token B usually shows:
+    // Sent: [Token A, USD1]
+    // Received: [USD1, Token B]
+    // We must exclude USD1 to find the real source (Token A) and dest (Token B).
+    const sentMints = new Set(tokensSent.map((t: any) => t.mint));
+    const receivedMints = new Set(tokensReceived.map((t: any) => t.mint));
+    const routingMints = new Set([...sentMints].filter(x => receivedMints.has(x)));
+    
+    // Filter candidates (unless they are the ONLY candidate)
+    const validSent = tokensSent.filter((t: any) => !routingMints.has(t.mint));
+    const validReceived = tokensReceived.filter((t: any) => !routingMints.has(t.mint));
+    
+    const candidatesSent = validSent.length > 0 ? validSent : tokensSent;
+    const candidatesReceived = validReceived.length > 0 ? validReceived : tokensReceived;
+
+    // 4. Base Asset Priority Logic (Input & Output)
     // Prioritize Known Bases (USDC, USDT, wSOL) over random tokens (USD1)
     const PRIORITY_MINTS = new Set([
       'So11111111111111111111111111111111111111112', // wSOL
@@ -290,16 +310,18 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
     ]);
 
     // INPUT SELECTION
-    let inToken = tokensSent.find((t: any) => PRIORITY_MINTS.has(t.mint));
+    let inToken = candidatesSent.find((t: any) => PRIORITY_MINTS.has(t.mint));
     if (!inToken) {
-      inToken = tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
+      inToken = candidatesSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
     }
     
     // OUTPUT SELECTION (New Fix)
     // Prioritize receiving a known base asset over a random router token
-    let outToken = tokensReceived.find((t: any) => PRIORITY_MINTS.has(t.mint));
+    // OUTPUT SELECTION
+    // Prioritize receiving a known base asset over a random router token
+    let outToken = candidatesReceived.find((t: any) => PRIORITY_MINTS.has(t.mint));
     if (!outToken) {
-      outToken = tokensReceived.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
+      outToken = candidatesReceived.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
     }
     if (inToken.mint === outToken.mint) return null;
     
@@ -452,10 +474,68 @@ const MAX_TRADES_PER_BATCH = 5;
 const activeQueueProcessors = new Set<string>();
 
 // ============ PRODUCER: Fast Queue Insert ============
+// Helper: Fetches CURRENT (Post-Trade) Liquid Equity
+// Helper: Fetches CURRENT (Post-Trade) Liquid Equity
+async function getTraderBuyingPower(walletAddress: string, connection: Connection, solPrice: number): Promise<number> {
+  try {
+    const wallet = new PublicKey(walletAddress);
+    
+    // 1. Derive ATAs locally (Instant - 0ms)
+    const usdcAta = getAssociatedTokenAddressSync(new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'), wallet);
+    const usdtAta = getAssociatedTokenAddressSync(new PublicKey('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'), wallet);
+    const usd1Ata = getAssociatedTokenAddressSync(new PublicKey('USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB'), wallet); // USD1
+    const wsolAta = getAssociatedTokenAddressSync(new PublicKey('So11111111111111111111111111111111111111112'), wallet);
+
+    // 2. Fetch ALL accounts in ONE RPC call (~100ms)
+    // Index mapping: [0: SOL, 1: USDC, 2: USDT, 3: USD1, 4: wSOL]
+    const accounts = await connection.getMultipleAccountsInfo([wallet, usdcAta, usdtAta, usd1Ata, wsolAta]);
+
+    let totalUsdValue = 0;
+
+    // Helper to read u64 Amount from Raw SPL Token Account Data (Offset 64)
+    const parseAmount = (data: Buffer) => {
+      if (data.length < 72) return BigInt(0);
+      return data.readBigUInt64LE(64);
+    };
+
+    // Process Native SOL
+    if (accounts[0]) {
+      totalUsdValue += (accounts[0].lamports / 1e9) * solPrice;
+    }
+
+    // Process USDC (6 decimals, $1)
+    if (accounts[1]) {
+      totalUsdValue += Number(parseAmount(accounts[1].data)) / 1e6;
+    }
+
+    // Process USDT (6 decimals, $1)
+    if (accounts[2]) {
+      totalUsdValue += Number(parseAmount(accounts[2].data)) / 1e6;
+    }
+
+    // Process USD1 (6 decimals - Verified on-chain, $1)
+    if (accounts[3]) {
+      totalUsdValue += Number(parseAmount(accounts[3].data)) / 1e6;
+    }
+
+    // Process wSOL (9 decimals, SOL Price)
+    if (accounts[4]) {
+      totalUsdValue += (Number(parseAmount(accounts[4].data)) / 1e9) * solPrice;
+    }
+
+    return totalUsdValue;
+  } catch (e) {
+    console.error(`[BuyingPower] Error for ${walletAddress}:`, e);
+    return 0; // Safe fallback
+  }
+}
+
+// ============ PRODUCER: Fast Queue Insert ============
 async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
   const starTrader = trade.wallet;
   const sourceMint = trade.tokenInMint;
   const destMint = trade.tokenOutMint;
+  const type = trade.type;
 
   console.log(`[PRODUCER] Star trader: ${starTrader.slice(0, 20)}... | Source: ${sourceMint?.slice(0,6)} → Dest: ${destMint?.slice(0,6)}`);
 
@@ -484,114 +564,100 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 
   console.log(`[PRODUCER] Queueing trade for ${followers.length} trader state(s)`);
 
-  // 2. FETCH LEADER'S REAL-TIME PORTFOLIO using Helius DAS API
-  // Same method as /api/portfolio route - gets actual on-chain balances
-  // Note: The trade was already confirmed on-chain, so current balance is POST-trade
-  // We reconstruct before-balance by adding back the traded amount
-  let leaderBeforeBalance = 0;
-  const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
-  const SOL_MINT_ADDRESS = 'So11111111111111111111111111111111111111112';
+  // 2. V2 EQUITY MODEL CALCULATIONS
+  const connection = new Connection(process.env.NEXT_PUBLIC_HELIUS_RPC_URL!);
+  const solPrice = await getSolPrice(); // Use cached price
   
-  try {
-    if (!HELIUS_API_KEY) {
-      throw new Error('Helius API key not configured');
-    }
-
-    const heliusResponse = await fetch(`https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 'leader-portfolio',
-        method: 'getAssetsByOwner',
-        params: {
-          ownerAddress: starTrader,
-          page: 1,
-          limit: 1000,
-          displayOptions: {
-            showFungible: true,
-            showNativeBalance: true
-          }
-        }
-      })
-    });
-
-    const heliusData = await heliusResponse.json();
-    
-    if (heliusData.error) {
-      throw new Error(`Helius RPC error: ${heliusData.error.message}`);
-    }
-
-    const result = heliusData.result;
-    let currentBalance = 0;
-
-    // Handle source mint lookup
-    if (sourceMint === 'SOL' || sourceMint === SOL_MINT_ADDRESS) {
-      // Native SOL balance
-      currentBalance = (result.nativeBalance?.lamports || 0) / 1e9;
-    } else {
-      // SPL Token balance
-      for (const item of result.items || []) {
-        if (item.id === sourceMint && (item.interface === 'FungibleToken' || item.interface === 'FungibleAsset')) {
-          const tokenInfo = item.token_info || {};
-          const rawBalance = tokenInfo.balance || 0;
-          const decimals = tokenInfo.decimals || 0;
-          currentBalance = rawBalance / Math.pow(10, decimals);
-          break;
-        }
-      }
-    }
-
-    // Reconstruct "before" balance:
-    // Current balance is POST-trade, so add back the traded amount
-    leaderBeforeBalance = currentBalance + trade.tokenInAmount;
-    
-    console.log(`[PRODUCER] Leader real-time portfolio: current=${currentBalance.toFixed(4)}, before=${leaderBeforeBalance.toFixed(4)} ${getTokenSymbol(sourceMint)}`);
-  } catch (err: any) {
-    console.warn(`[PRODUCER] Helius DAS API failed, using trade amount as fallback:`, err.message);
-    leaderBeforeBalance = trade.tokenInAmount; // Fallback = 100% ratio
-  }
-
-  // Calculate trade ratio for logging
-  const tradeRatio = leaderBeforeBalance > 0 ? trade.tokenInAmount / leaderBeforeBalance : 1;
-  console.log(`[PRODUCER] Trade ratio: ${(tradeRatio * 100).toFixed(1)}% (${trade.tokenInAmount.toFixed(4)} / ${leaderBeforeBalance.toFixed(4)})`);
-
-  // 3. Pre-calculate leader's USD value for transparency (even if copy fails)
+  let ratio = 0;
+  let leaderMetric = 0; // "Buying Power" (Buy) or "Inventory" (Sell)
   let leaderUsdValue = 0;
+
   try {
-    leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
-    if (!leaderUsdValue || leaderUsdValue <= 0) {
+    if (type === 'buy') {
+      // ================= SCENARIO A: BUY (Entry) =================
+      // Logic: "How big was this bet relative to their available capital?"
+      
+      // 1. Get CURRENT (Post-Trade) Buying Power
+      const postTradeBuyingPower = await getTraderBuyingPower(starTrader, connection, solPrice);
+      
+      // 2. Get Value of the Trade (The amount they spent)
+      leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
+      
+      // 3. RECONSTRUCT PRE-TRADE BUYING POWER
+      // "Wallet Before" = "Wallet Now" + "Money Spent"
+      const preTradeBuyingPower = postTradeBuyingPower + leaderUsdValue;
+      
+      // 4. Calculate Ratio
+      leaderMetric = preTradeBuyingPower;
+      ratio = preTradeBuyingPower > 0 ? leaderUsdValue / preTradeBuyingPower : 0;
+      
+      console.log(`[V2-Buy] Spent $${leaderUsdValue.toFixed(2)} / Pre-Equity $${preTradeBuyingPower.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
+
+    } else {
+      // ================= SCENARIO B: SELL (Exit) =================
+      // Logic: "What % of their specific position did they close?"
+      // STRICT RPC FETCH (No Helius DAS) for minimal latency
+      
+      const mintPubkey = new PublicKey(sourceMint);
+      const ata = getAssociatedTokenAddressSync(mintPubkey, new PublicKey(starTrader));
+      
+      // 1. Get CURRENT (Post-Trade) Token Balance
+      const accountInfo = await connection.getAccountInfo(ata);
+      let postTradeTokenBalance = 0;
+      
+      if (accountInfo && accountInfo.data.length >= 72) {
+        const rawAmount = Number(accountInfo.data.readBigUInt64LE(64));
+        const decimals = await getTokenDecimals(sourceMint); 
+        postTradeTokenBalance = rawAmount / Math.pow(10, decimals);
+      }
+      
+      // 2. RECONSTRUCT PRE-TRADE INVENTORY
+      // "Bag Before" = "Bag Now" + "Sold Amount"
+      const preTradeTokenBalance = postTradeTokenBalance + trade.tokenInAmount;
+      
+      // 3. Calculate Ratio
+      leaderMetric = preTradeTokenBalance;
+      ratio = preTradeTokenBalance > 0 ? trade.tokenInAmount / preTradeTokenBalance : 0;
+      
+      // Calculate approximate USD value for logging
       leaderUsdValue = await getUsdValue(destMint, trade.tokenOutAmount);
+      
+      console.log(`[V2-Sell] Sold ${trade.tokenInAmount.toFixed(2)} / Pre-Bag ${preTradeTokenBalance.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
     }
-  } catch {
-    leaderUsdValue = 0;
+  } catch (err: any) {
+    console.warn(`[PRODUCER] V2 Calculation Logic Failed:`, err.message);
+    ratio = 0;
   }
 
-  // 4. Insert queued trade for each follower with LEADER TRADE AMOUNTS
+  // Safety Clamp (0% to 100%)
+  ratio = Math.min(Math.max(ratio, 0), 1);
+  if (isNaN(ratio)) ratio = 0;
+
+  // 4. Insert queued trade for each follower
   for (const traderState of followers) {
     const traderStateId = traderState.id;
 
     try {
-      // Insert with status='queued' and STORE LEADER AMOUNTS for transparency
+      // Insert with status='queued' and STORE V2 COPY RATIO
       const { error: insertError } = await supabase.from('demo_trades').upsert({
         trader_state_id: traderStateId,
         star_trade_signature: trade.signature,
         type: trade.type,
         token_in_mint: sourceMint,
         token_in_symbol: getTokenSymbol(sourceMint),
-        token_in_amount: null,  // Copy amount - populated by Consumer
+        token_in_amount: null,  // Copy amount - populated by Consumer using copy_ratio
         token_out_mint: destMint,
         token_out_symbol: getTokenSymbol(destMint),
-        token_out_amount: null, // Copy amount - populated by Consumer
+        token_out_amount: null,
         star_trade_timestamp: trade.timestamp,
         status: 'queued',
-        // Store leader's actual trade amounts for transparency
+        // Store metadata
         leader_in_amount: trade.tokenInAmount,
         leader_out_amount: trade.tokenOutAmount,
         leader_usd_value: leaderUsdValue,
-        // NEW: Store leader's before-balance for accurate ratio calculation
-        leader_before_balance: leaderBeforeBalance,
-        raw_data: trade  // Store full trade object for processing
+        leader_before_balance: leaderMetric,
+        copy_ratio: ratio,  // <--- V2 CRITICAL FIELD
+        raw_data: trade
       }, { onConflict: 'trader_state_id,star_trade_signature', ignoreDuplicates: true });
 
       if (insertError) {
@@ -599,9 +665,9 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         continue;
       }
 
-      console.log(`  TS ${traderStateId.slice(0,8)}: Trade queued (Leader: ${trade.tokenInAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)} ${getTokenSymbol(sourceMint)} = ${(tradeRatio*100).toFixed(1)}%)`);
+      console.log(`  TS ${traderStateId.slice(0,8)}: Trade queued (Ratio: ${(ratio*100).toFixed(2)}%)`);
 
-      // 5. Trigger queue processor (fire and forget - don't await to keep webhook fast)
+      // 5. Trigger queue processor (fire and forget)
       processTradeQueue(traderStateId).catch(err => {
         console.error(`[PRODUCER] Queue processor error for ${traderStateId.slice(0,8)}:`, err);
       });
@@ -758,17 +824,25 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   }
 
   // 3. DYNAMIC RATIO CALCULATION
-  // Use leader_before_balance from trade row (set by Producer from positions table)
-  // This is more accurate than Helius tokenInPreBalance which is often 0 or missing
-  const leaderTradeAmount = trade.tokenInAmount;
-  const leaderBeforeBalance = Number(tradeRow.leader_before_balance) > 0
-      ? Number(tradeRow.leader_before_balance)
-      : leaderTradeAmount; // Fallback only if DB value missing
-  
-  let tradeRatio = leaderBeforeBalance > 0 ? leaderTradeAmount / leaderBeforeBalance : 1;
-  tradeRatio = Math.min(Math.max(tradeRatio, 0), 1);
+  let tradeRatio = 0;
 
-  console.log(`  Ratio=${(tradeRatio*100).toFixed(1)}% (Leader: ${leaderTradeAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)})`);
+  // V2: Use pre-calculated Equity Model ratio from Producer (High Precision)
+  if (tradeRow.copy_ratio !== undefined && tradeRow.copy_ratio !== null) {
+      tradeRatio = Number(tradeRow.copy_ratio);
+      console.log(`  [V2] Using Pre-calculated Ratio: ${(tradeRatio*100).toFixed(2)}%`);
+  } 
+  // V1 Fallback (Legacy)
+  else {
+      const leaderTradeAmount = trade.tokenInAmount;
+      const leaderBeforeBalance = Number(tradeRow.leader_before_balance) > 0
+          ? Number(tradeRow.leader_before_balance)
+          : leaderTradeAmount; 
+      
+      tradeRatio = leaderBeforeBalance > 0 ? leaderTradeAmount / leaderBeforeBalance : 1;
+      console.log(`  [V1-Legacy] Dynamic Ratio: ${(tradeRatio*100).toFixed(1)}% (Leader: ${leaderTradeAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)})`);
+  }
+
+  tradeRatio = Math.min(Math.max(tradeRatio, 0), 1);
 
   // Apply Ratio to Follower's Balance
   let copyAmount = sourceBalance * tradeRatio;
@@ -832,7 +906,7 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   }
 
   if (!tradeUsdValue || isNaN(tradeUsdValue) || tradeUsdValue < MIN_TRADE_THRESHOLD_USD) {
-    throw new Error(`Trade value $${tradeUsdValue?.toFixed(2) || 0} below threshold or invalid`);
+    throw new Error(`Skipping: Value $${tradeUsdValue?.toFixed(2) || 0} is less than minimum $${MIN_TRADE_THRESHOLD_USD}`);
   }
 
   // 7. UPDATE TRADE ROW WITH QUOTE DATA
