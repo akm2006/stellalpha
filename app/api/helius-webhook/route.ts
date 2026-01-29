@@ -464,7 +464,7 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
 // ============ COPY TRADE ENGINE (Producer/Consumer Pattern) ============
 // Producer: Quick insert to queue
 // Consumer: Sequential processing to avoid race conditions
-const MIN_TRADE_THRESHOLD_USD = 0.05;
+// MIN_TRADE_THRESHOLD_USD removed - intent-based copy trading mirrors star trader regardless of value
 
 // ============ VERCEL OPTIMIZATION: Batch limit to prevent timeouts ============
 // Vercel Pro has 60s limit, but we aim for <10s per batch for reliability
@@ -976,8 +976,11 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
     tradeUsdValue = await getUsdValue(destMint, quoteOutAmount);
   }
 
-  if (!tradeUsdValue || isNaN(tradeUsdValue) || tradeUsdValue < MIN_TRADE_THRESHOLD_USD) {
-    throw new Error(`Skipping: Value $${tradeUsdValue?.toFixed(2) || 0} is less than minimum $${MIN_TRADE_THRESHOLD_USD}`);
+  // Note: No minimum threshold - intent-based copy trading mirrors star trader regardless of value
+  // Only skip if value calculation completely failed (NaN)
+  if (isNaN(tradeUsdValue)) {
+    console.warn(`[WARN] USD value calculation returned NaN, proceeding with value=0`);
+    tradeUsdValue = 0;
   }
 
   // 7. UPDATE TRADE ROW WITH QUOTE DATA
