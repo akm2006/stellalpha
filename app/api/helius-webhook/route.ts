@@ -466,6 +466,32 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
 // Consumer: Sequential processing to avoid race conditions
 // MIN_TRADE_THRESHOLD_USD removed - intent-based copy trading mirrors star trader regardless of value
 
+// ============ SAFE BOOST: Whale Dust Prevention ============
+// When retail followers copy whales, tiny % trades become useless dust.
+// Safe Boost applies multipliers to boost small signals into meaningful trades.
+// Note: Only applies to BUY trades. SELLs use position-based ratio.
+const SAFE_BOOST_TIERS = [
+  { maxRatio: 0.0025, multiplier: 15, name: 'Micro Dust' },   // < 0.25% → 15x
+  { maxRatio: 0.0050, multiplier: 10, name: 'Deep Value' },   // 0.25% - 0.50% → 10x
+  { maxRatio: 0.0100, multiplier: 5,  name: 'Small Bet' },    // 0.50% - 1.00% → 5x
+  { maxRatio: 0.0300, multiplier: 2,  name: 'Standard' },     // 1.00% - 3.00% → 2x
+  { maxRatio: 1.0000, multiplier: 1,  name: 'High Conviction' } // > 3.00% → 1x (no boost)
+];
+
+function applySafeBoost(rawRatio: number): { boostedRatio: number; tier: string; multiplier: number } {
+  for (const tier of SAFE_BOOST_TIERS) {
+    if (rawRatio <= tier.maxRatio) {
+      return { 
+        boostedRatio: rawRatio * tier.multiplier, 
+        tier: tier.name, 
+        multiplier: tier.multiplier 
+      };
+    }
+  }
+  // Fallback for trades > 100% (edge case)
+  return { boostedRatio: rawRatio, tier: 'High Conviction', multiplier: 1 };
+}
+
 // ============ VERCEL OPTIMIZATION: Batch limit to prevent timeouts ============
 // Vercel Pro has 60s limit, but we aim for <10s per batch for reliability
 const MAX_TRADES_PER_BATCH = 5;
@@ -655,6 +681,20 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
   ratio = Math.min(Math.max(ratio, 0), 1);
   if (isNaN(ratio)) ratio = 0;
 
+  // ============ SAFE BOOST (BUY trades only) ============
+  // Boost tiny signals from whales into meaningful trades for retail followers
+  let finalRatio = ratio;
+  let boostTier = 'None';
+  let boostMultiplier = 1;
+
+  if (type === 'buy' && ratio > 0) {
+    const boost = applySafeBoost(ratio);
+    finalRatio = boost.boostedRatio;
+    boostTier = boost.tier;
+    boostMultiplier = boost.multiplier;
+    console.log(`[Safe Boost] Raw: ${(ratio*100).toFixed(3)}% → Boosted: ${(finalRatio*100).toFixed(2)}% (${boostTier}, ${boostMultiplier}x)`);
+  }
+
   // 4. Insert queued trade for each follower
   for (const traderState of followers) {
     const traderStateId = traderState.id;
@@ -678,7 +718,9 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         leader_out_amount: trade.tokenOutAmount,
         leader_usd_value: leaderUsdValue,
         leader_before_balance: leaderMetric,
-        copy_ratio: ratio,  // <--- V2 CRITICAL FIELD
+        copy_ratio: finalRatio,  // <--- Use boosted ratio for BUY, original for SELL
+        boost_tier: boostTier,
+        boost_multiplier: boostMultiplier,
         raw_data: trade
       }, { onConflict: 'trader_state_id,star_trade_signature', ignoreDuplicates: true });
 
@@ -687,7 +729,7 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         continue;
       }
 
-      console.log(`  TS ${traderStateId.slice(0,8)}: Trade queued (Ratio: ${(ratio*100).toFixed(2)}%)`);
+      console.log(`  TS ${traderStateId.slice(0,8)}: Trade queued (Ratio: ${(finalRatio*100).toFixed(2)}%${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
 
       // 5. Trigger queue processor (fire and forget)
       processTradeQueue(traderStateId).catch(err => {
