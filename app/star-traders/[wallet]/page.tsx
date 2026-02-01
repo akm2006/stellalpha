@@ -194,10 +194,21 @@ function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | nul
   );
 }
 
-function TraderAvatar({ address }: { address: string }) {
+function TraderAvatar({ address, image }: { address: string; image?: string }) {
   const hue = address.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
   const bgColor = `hsl(${hue}, 50%, 30%)`;
   
+  if (image) {
+    return (
+      <img 
+        src={image} 
+        alt={address}
+        className="w-10 h-10 rounded-full object-cover shrink-0"
+        style={{ border: '1px solid rgba(255,255,255,0.1)' }}
+      />
+    );
+  }
+
   return (
     <div 
       className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0 border-2 border-white/5"
@@ -337,6 +348,7 @@ export default function TraderDetailPage() {
   const [copied, setCopied] = useState(false);
   const [showDust, setShowDust] = useState(false);
   const [traderName, setTraderName] = useState('Star Trader');
+  const [traderImage, setTraderImage] = useState<string | undefined>(undefined);
   const [isFollowing, setIsFollowing] = useState(false);
   
   const fetchTokenMetadata = async (mints: string[]) => {
@@ -370,6 +382,7 @@ export default function TraderDetailPage() {
         const trader = data.traders.find((t: any) => t.wallet === wallet);
         if (trader) {
           if (trader.name) setTraderName(trader.name);
+          if (trader.image) setTraderImage(trader.image);
           setIsFollowing(!!trader.isFollowing);
         }
       }
@@ -484,16 +497,16 @@ export default function TraderDetailPage() {
           {/* Trader Identity */}
           <div className="flex items-center gap-4">
             <div className="transition-transform duration-300 hover:scale-105">
-              <TraderAvatar address={wallet} />
+              <TraderAvatar address={wallet} image={traderImage} />
             </div>
             <div>
               <div className="flex items-center gap-2 mb-0.5">
                 <h1 className="text-xl font-semibold" style={{ color: COLORS.text }}>{traderName}</h1>
               </div>
               <div className="flex items-center gap-2">
-                <code className="font-mono text-sm" style={{ color: COLORS.data }}>
+                <span className="font-mono text-sm opacity-60" style={{ color: COLORS.data }}>
                   {wallet.slice(0, 6)}...{wallet.slice(-6)}
-                </code>
+                </span>
                 <button 
                   onClick={copyAddress}
                   className="p-1.5 hover:bg-white/10 rounded transition-all duration-200 active:scale-90 group"

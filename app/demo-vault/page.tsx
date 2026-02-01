@@ -153,10 +153,21 @@ function Sparkline({ data, isPositive, id }: { data: { value: number }[]; isPosi
 }
 
 
-function TraderAvatar({ address }: { address: string }) {
+function TraderAvatar({ address, image }: { address: string; image?: string }) {
   const hue = address.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
   const bgColor = `hsl(${hue}, 50%, 30%)`;
   
+  if (image) {
+    return (
+      <img 
+        src={image} 
+        alt={address}
+        className="w-8 h-8 rounded-full object-cover shrink-0"
+        style={{ border: '1px solid rgba(255,255,255,0.1)' }}
+      />
+    );
+  }
+
   return (
     <div 
       className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
@@ -343,7 +354,7 @@ export default function DemoVaultPage() {
   const [vault, setVault] = useState<DemoVault | null>(null);
   const [traderStates, setTraderStates] = useState<TraderState[]>([]);
   const [tradeStats, setTradeStats] = useState<Record<string, TradeStats>>({});
-  const [starTraders, setStarTraders] = useState<{ address: string; name: string }[]>([]);
+  const [starTraders, setStarTraders] = useState<{ address: string; name: string; image?: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [following, setFollowing] = useState(false);
@@ -396,7 +407,7 @@ export default function DemoVaultPage() {
     try {
       const response = await fetch('/api/star-traders');
       const data = await response.json();
-      setStarTraders((data.traders || []).map((t: any) => ({ address: t.wallet, name: t.name })));
+      setStarTraders((data.traders || []).map((t: any) => ({ address: t.wallet, name: t.name, image: t.image, })));
     } catch {
       console.error('Failed to fetch star traders');
     }
@@ -899,10 +910,18 @@ export default function DemoVaultPage() {
                         
                         {/* Star Trader */}
                         <div className="flex items-center gap-3">
-                          <TraderAvatar address={ts.star_trader} />
-                          <span className="font-mono text-sm" style={{ color: COLORS.text }}>
-                            {ts.star_trader.slice(0, 8)}...
-                          </span>
+                          <TraderAvatar 
+                            address={ts.star_trader} 
+                            image={starTraders.find(t => t.address === ts.star_trader)?.image}
+                          />
+                          <div className="flex flex-col min-w-0">
+                            <span className="font-semibold text-sm truncate" style={{ color: COLORS.text }}>
+                              {starTraders.find(t => t.address === ts.star_trader)?.name || 'Unknown Trader'}
+                            </span>
+                            <span className="font-mono text-[10px] opacity-60 truncate" style={{ color: COLORS.data }}>
+                              {ts.star_trader.slice(0, 6)}...
+                            </span>
+                          </div>
                         </div>
                         
                         {/* PnL with Sparkline */}

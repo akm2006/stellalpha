@@ -138,6 +138,7 @@ export async function GET(request: NextRequest) {
       return {
         wallet: trader.address,
         name: trader.name,
+        image: trader.image_url,
         createdAt: trader.created_at,
         isFollowing: userFollowedTraders.has(trader.address),
         stats: {

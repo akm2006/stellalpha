@@ -188,10 +188,21 @@ function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | nul
   );
 }
 
-function TraderAvatar({ address }: { address: string }) {
+function TraderAvatar({ address, image }: { address: string; image?: string }) {
   const hue = address.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
   const bgColor = `hsl(${hue}, 50%, 30%)`;
   
+  if (image) {
+    return (
+      <img 
+        src={image} 
+        alt={address}
+        className="w-8 h-8 rounded-full object-cover shrink-0"
+        style={{ border: '1px solid rgba(255,255,255,0.1)' }}
+      />
+    );
+  }
+
   return (
     <div 
       className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
@@ -317,6 +328,7 @@ export default function TraderStateDetailPage() {
   // State
   const [portfolio, setPortfolio] = useState<PortfolioData | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [starTraders, setStarTraders] = useState<{ address: string; name: string; image?: string }[]>([]);
   const [tokenMeta, setTokenMeta] = useState<Record<string, TokenMeta>>({});
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -399,11 +411,22 @@ export default function TraderStateDetailPage() {
     }
   }, [walletAddress, traderStateId, tradesPage, fetchTokenMetadata]);
   
+  const fetchStarTraders = useCallback(async () => {
+    try {
+      const response = await fetch('/api/star-traders');
+      const data = await response.json();
+      setStarTraders((data.traders || []).map((t: any) => ({ address: t.wallet, name: t.name, image: t.image })));
+    } catch {
+      // Silent error
+    }
+  }, []);
+
   useEffect(() => {
     if (connected && walletAddress) {
       fetchData();
+      fetchStarTraders();
     }
-  }, [connected, walletAddress, fetchData]);
+  }, [connected, walletAddress, fetchData, fetchStarTraders]);
   
   // =============================================================================
   // ACTIONS
@@ -588,13 +611,20 @@ export default function TraderStateDetailPage() {
               className="flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-white/[0.03] border border-white/10 rounded hover:bg-white/5 transition-all duration-200 hover:scale-[1.02] group"
             >
               <div className="transition-transform duration-200 group-hover:scale-110">
-                <TraderAvatar address={starTrader} />
+                <TraderAvatar 
+                  address={starTrader} 
+                  image={starTraders.find(t => t.address === starTrader)?.image}
+                />
               </div>
-              <span className="font-mono text-xs sm:text-sm" style={{ color: COLORS.text }}>
-                {starTrader.slice(0, 4)}...{starTrader.slice(-4)}
-              </span>
-              <span className="hidden sm:inline text-xs group-hover:underline" style={{ color: COLORS.brand }}>Profile</span>
-              <ArrowUpRight size={12} style={{ color: COLORS.brand }} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform duration-200" />
+              <div className="flex flex-col min-w-0">
+                <span className="font-semibold text-xs sm:text-sm truncate" style={{ color: COLORS.text }}>
+                   {starTraders.find(t => t.address === starTrader)?.name || 'Unknown Trader'}
+                </span>
+                <span className="font-mono text-[10px] opacity-60 truncate" style={{ color: COLORS.data }}>
+                  {starTrader.slice(0, 4)}...{starTrader.slice(-4)}
+                </span>
+              </div>
+              <ArrowUpRight size={12} style={{ color: COLORS.brand }} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform duration-200 ml-1" />
             </Link>
           </div>
           

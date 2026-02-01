@@ -24,6 +24,7 @@ interface TraderStats {
 interface StarTrader {
   wallet: string;
   name: string;
+  image?: string;
   createdAt: string;
   isFollowing: boolean;
   stats: TraderStats;
@@ -117,10 +118,21 @@ function Sparkline({ data, isPositive, id }: { data: { value: number }[]; isPosi
 }
 
 // Trader Avatar with seeded HSL color
-function TraderAvatar({ address }: { address: string }) {
+function TraderAvatar({ address, image }: { address: string; image?: string }) {
   const hue = address.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
   const bgColor = `hsl(${hue}, 50%, 30%)`;
   
+  if (image) {
+    return (
+      <img 
+        src={image} 
+        alt={address}
+        className="w-8 h-8 rounded-full object-cover shrink-0"
+        style={{ border: '1px solid rgba(255,255,255,0.1)' }}
+      />
+    );
+  }
+
   return (
     <div 
       className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
@@ -454,11 +466,16 @@ export default function StarTradersListPage() {
                     
                     <div className="flex items-center gap-1.5 min-w-0">
                       <div className="transition-transform duration-300 group-hover:scale-105">
-                        <TraderAvatar address={trader.wallet} />
+                        <TraderAvatar address={trader.wallet} image={trader.image} />
                       </div>
-                      <span className="font-mono text-sm truncate group-hover:text-white transition-colors" style={{ color: COLORS.text }}>
-                        {trader.wallet.slice(0, 4)}...
-                      </span>
+                      <div className="flex flex-col min-w-0">
+                        <span className="font-semibold text-sm truncate group-hover:text-white transition-colors" style={{ color: COLORS.text }}>
+                          {trader.name}
+                        </span>
+                        <span className="font-mono text-[10px] truncate opacity-60" style={{ color: COLORS.data }}>
+                          {trader.wallet.slice(0, 4)}...{trader.wallet.slice(-4)}
+                        </span>
+                      </div>
                     </div>
                     
                     {/* PnL (7D) with Sparkline */}
