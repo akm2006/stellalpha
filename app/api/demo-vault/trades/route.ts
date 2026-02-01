@@ -74,6 +74,11 @@ export async function GET(request: NextRequest) {
     const completedTrades = (allTrades || []).filter(t => t.status === 'completed');
     const failedTrades = (allTrades || []).filter(t => t.status === 'failed');
     
+    // Win Rate Calculation: Only count SELLS that have realized PnL
+    // Profitable = PnL > 0
+    const profitableTrades = completedTrades.filter(t => (t.realized_pnl || 0) > 0);
+    const lossTrades = completedTrades.filter(t => (t.realized_pnl || 0) < 0);
+    
     const totalLatency = completedTrades.reduce((sum, t) => sum + (t.latency_diff_ms || 0), 0);
     const avgLatency = completedTrades.length > 0 ? totalLatency / completedTrades.length : 0;
     const totalRealizedPnl = completedTrades.reduce((sum, t) => sum + (t.realized_pnl || 0), 0);
@@ -106,7 +111,9 @@ export async function GET(request: NextRequest) {
         avgLatency: Math.round(avgLatency),
         totalRealizedPnl,
         completedCount: completedTrades.length,
-        failedCount: failedTrades.length
+        failedCount: failedTrades.length,
+        profitableCount: profitableTrades.length,
+        lossCount: lossTrades.length
       }
     });
     
