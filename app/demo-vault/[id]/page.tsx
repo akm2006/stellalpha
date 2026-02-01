@@ -325,7 +325,7 @@ export default function TraderStateDetailPage() {
   // Pagination state
   const [tradesPage, setTradesPage] = useState(1);
   const [pagination, setPagination] = useState({ page: 1, pageSize: 20, totalCount: 0, totalPages: 0 });
-  const [tradeStats, setTradeStats] = useState({ avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0 });
+  const [tradeStats, setTradeStats] = useState({ avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0, profitableCount: 0, lossCount: 0 });
   
 
   
@@ -379,7 +379,7 @@ export default function TraderStateDetailPage() {
       const tradesData = await tradesRes.json();
       setTrades(tradesData.trades || []);
       setPagination(tradesData.pagination || { page: 1, pageSize: 20, totalCount: 0, totalPages: 0 });
-      setTradeStats(tradesData.stats || { avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0 });
+      setTradeStats(tradesData.stats || { avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0, profitableCount: 0, lossCount: 0 });
       
       const mints = new Set<string>();
       portfolioData.positions?.forEach((p: Position) => mints.add(p.mint));
@@ -517,7 +517,10 @@ export default function TraderStateDetailPage() {
   
   const avgLatency = tradeStats.avgLatency;
   const totalTrades = tradeStats.completedCount + tradeStats.failedCount;
-  const winRate = totalTrades > 0 ? Math.round((tradeStats.completedCount / totalTrades) * 100) : 0;
+  
+  // Win Rate = Profitable / (Profitable + Loss)
+  const totalClosedTrades = (tradeStats.profitableCount || 0) + (tradeStats.lossCount || 0);
+  const winRate = totalClosedTrades > 0 ? Math.round(((tradeStats.profitableCount || 0) / totalClosedTrades) * 100) : 0;
   
   // =============================================================================
   // RENDER
