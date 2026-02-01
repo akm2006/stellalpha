@@ -49,6 +49,8 @@ interface TradeStats {
   completedCount: number;
   failedCount: number;
   totalRealizedPnl: number;
+  profitableCount?: number;
+  lossCount?: number;
 }
 
 interface DemoVault {
@@ -792,7 +794,7 @@ export default function DemoVaultPage() {
                     Win Rate
                     <InfoTooltip>
                        <strong>Win Rate</strong><br/><br/>
-                       Percentage of closed trades that resulted in a profit.
+                       Percentage of closed trades that were profitable (Realized PnL &gt; 0).
                     </InfoTooltip>
                   </div>
                   <div className="flex items-center gap-1">
@@ -873,9 +875,12 @@ export default function DemoVaultPage() {
                     const sparklineData = generateSparklineFromPnl(pnl, Number(ts.allocated_usd), ts.star_trader);
                     
                     // Get real trade stats
-                    const stats = tradeStats[ts.id] || { completedCount: 0, failedCount: 0, totalRealizedPnl: 0 };
+                    const stats = tradeStats[ts.id] || { completedCount: 0, failedCount: 0, totalRealizedPnl: 0, profitableCount: 0, lossCount: 0 };
+                    
+                    // Win Rate = Profitable / (Profitable + Loss)
                     const totalTrades = stats.completedCount + stats.failedCount;
-                    const winRate = totalTrades > 0 ? Math.round((stats.completedCount / totalTrades) * 100) : 0;
+                    const totalClosedTrades = (stats.profitableCount || 0) + (stats.lossCount || 0);
+                    const winRate = totalClosedTrades > 0 ? Math.round(((stats.profitableCount || 0) / totalClosedTrades) * 100) : 0;
                     const roi = ts.allocated_usd > 0 ? (pnl / Number(ts.allocated_usd)) * 100 : 0;
                     
                     return (
