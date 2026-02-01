@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { uniqueNamesGenerator, languages, starWars } from 'unique-names-generator';
+
+const formatName = (str: string) => str.split(' ').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
 
 // GET: Fetch all star traders with complete stats
 export async function GET(request: NextRequest) {
@@ -135,10 +138,19 @@ export async function GET(request: NextRequest) {
       // Cap at reasonable values
       pnl7dPercent = Math.max(-100, Math.min(500, pnl7dPercent));
       
+      const fallbackName = formatName(uniqueNamesGenerator({
+        dictionaries: [languages, starWars],
+        separator: ' ',
+        length: 2,
+        seed: trader.address
+      }));
+
+      const fallbackImage = `https://api.dicebear.com/7.x/avataaars/svg?seed=${trader.address}`;
+
       return {
         wallet: trader.address,
-        name: trader.name,
-        image: trader.image_url,
+        name: trader.name || fallbackName,
+        image: trader.image_url || fallbackImage,
         createdAt: trader.created_at,
         isFollowing: userFollowedTraders.has(trader.address),
         stats: {
