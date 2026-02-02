@@ -1,5 +1,8 @@
 'use client';
 
+import PageLoader from '@/components/PageLoader';
+
+
 import { createPortal } from 'react-dom';
 import { useState, useEffect, useRef, ReactNode, useCallback } from 'react';
 import Link from 'next/link';
@@ -17,7 +20,8 @@ import {
   Copy,
   Check,
   UserPlus,
-  UserCheck
+  UserCheck,
+  Loader2
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 
@@ -343,6 +347,7 @@ export default function TraderDetailPage() {
   const [totalPortfolioValue, setTotalPortfolioValue] = useState(0);
   const [tokenMeta, setTokenMeta] = useState<Record<string, TokenMeta>>({});
   const [loading, setLoading] = useState(true);
+  const [portfolioLoading, setPortfolioLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<TraderStats | null>(null);
   const [copied, setCopied] = useState(false);
@@ -391,48 +396,66 @@ export default function TraderDetailPage() {
     }
   };
   
-  const refreshData = async () => {
-    setLoading(true);
-    setError(null);
+  const fetchMainData = async () => {
     try {
-      // Fetch Trader Profile
-      fetchTraderProfile();
-
-      // Fetch Trades
-      const tradesRes = await fetch(`/api/trades?wallet=${wallet}&limit=100`);
-      const tradesData = await tradesRes.json();
-      
-      // Fetch Portfolio
-      const portfolioRes = await fetch(`/api/portfolio?wallet=${wallet}`);
-      const portfolioData = await portfolioRes.json();
-      
-      if (tradesData.error && portfolioData.error) {
-        throw new Error(tradesData.error || portfolioData.error);
-      }
-      
-      const tradesList = tradesData.trades || [];
-      setTrades(tradesList);
-      setStats(calculateStats(tradesList));
-      
-      setPortfolioTokens(portfolioData.tokens || []);
-      setSolBalance(portfolioData.solBalance || null);
-      setTotalPortfolioValue(portfolioData.totalPortfolioValue || 0);
-
-      // Metadata
-      const mints = new Set<string>();
-      tradesList.forEach((t: Trade) => {
+       await fetchTraderProfile();
+       
+       const tradesRes = await fetch(`/api/trades?wallet=${wallet}&limit=100`);
+       const tradesData = await tradesRes.json();
+       
+       if (tradesData.error) throw new Error(tradesData.error);
+       
+       const tradesList = tradesData.trades || [];
+       setTrades(tradesList);
+       setStats(calculateStats(tradesList));
+       
+       // Metadata for trades only
+       const mints = new Set<string>();
+       tradesList.forEach((t: Trade) => {
         if (t.tokenInMint) mints.add(t.tokenInMint);
         if (t.tokenOutMint) mints.add(t.tokenOutMint);
-      });
-      portfolioData.tokens?.forEach((t: PortfolioToken) => mints.add(t.mint));
-      
-      if (mints.size > 0) await fetchTokenMetadata(Array.from(mints));
-      
+       });
+       if (mints.size > 0) await fetchTokenMetadata(Array.from(mints));
+       
     } catch (e: any) {
-      setError(e.message || 'Failed to fetch data');
+      setError(e.message || 'Failed to fetch trades');
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchPortfolioData = async () => {
+    setPortfolioLoading(true);
+    try {
+      const portfolioRes = await fetch(`/api/portfolio?wallet=${wallet}`);
+      const portfolioData = await portfolioRes.json();
+      
+      if (portfolioData.error) {
+        // Don't block UI on portfolio error, just log it or maybe set a partial error state?
+        // for now we just don't set data
+        console.error('Portfolio fetch error:', portfolioData.error);
+      } else {
+        setPortfolioTokens(portfolioData.tokens || []);
+        setSolBalance(portfolioData.solBalance || null);
+        setTotalPortfolioValue(portfolioData.totalPortfolioValue || 0);
+        
+        // Metadata for portfolio
+        const mints = new Set<string>();
+        portfolioData.tokens?.forEach((t: PortfolioToken) => mints.add(t.mint));
+        if (mints.size > 0) await fetchTokenMetadata(Array.from(mints));
+      }
+    } catch (e) {
+      console.error('Failed to fetch portfolio:', e);
+    } finally {
+      setPortfolioLoading(false);
+    }
+  };
+
+  const refreshData = () => {
+    setLoading(true);
+    setError(null);
+    fetchMainData();
+    fetchPortfolioData();
   };
   
   useEffect(() => {
@@ -460,11 +483,7 @@ export default function TraderDetailPage() {
   };
   
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center font-sans tracking-tight" style={{ backgroundColor: COLORS.canvas }}>
-        <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
-      </div>
-    );
+    return <PageLoader />;
   }
 
   return (
@@ -651,7 +670,13 @@ export default function TraderDetailPage() {
                    </InfoTooltip>
                 </div>
                 <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>
-                  {formatUsd(totalPortfolioValue)}
+                  {portfolioLoading ? (
+                    <div className="flex items-center justify-center h-[28px]">
+                       <Loader2 size={16} className="animate-spin text-white/50" />
+                    </div>
+                  ) : (
+                    formatUsd(totalPortfolioValue)
+                  )}
                 </div>
               </div>
             </div>
@@ -680,7 +705,13 @@ export default function TraderDetailPage() {
                     borderColor: activeTab === 'portfolio' ? COLORS.brand : 'transparent'
                   }}
                 >
-                  Portfolio ({portfolioTokens.length})
+                  {portfolioLoading ? (
+                    <span className="flex items-center gap-2">
+                      Portfolio <Loader2 size={12} className="animate-spin" />
+                    </span>
+                  ) : (
+                    `Portfolio (${portfolioTokens.length})` 
+                  )}
                 </button>
               </div>
               
@@ -822,66 +853,75 @@ export default function TraderDetailPage() {
                 </div>
                 
                 <div className="max-h-[600px] overflow-y-auto">
-                   {/* SOL Balance */}
-                   {solBalance && (
-                     <div className="grid grid-cols-[1.5fr_1fr_1fr_1fr_1.5fr_80px] gap-4 items-center px-6 py-3 border-b border-white/5 hover:bg-white/[0.02] transition-colors bg-emerald-500/[0.02]">
-                        <div className="flex items-center gap-3">
-                           <img src="https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png" className="w-8 h-8 rounded-full" alt="SOL" />
-                           <div>
-                              <div className="font-bold text-sm text-white">Solana</div>
-                              <div className="text-xs font-mono" style={{ color: COLORS.data }}>SOL</div>
-                           </div>
-                        </div>
-                        <div className="text-right font-mono text-sm" style={{ color: COLORS.data }}>{formatUsd(solBalance.pricePerToken)}</div>
-                        <div className="text-right font-mono text-sm" style={{ color: COLORS.text }}>{formatAmount(solBalance.balance)}</div>
-                        <div className="text-right font-mono text-sm font-medium" style={{ color: COLORS.brand }}>{formatUsd(solBalance.totalValue)}</div>
-                        <div className="pl-4">
-                           <PortfolioBar percent={solBalance.holdingPercent || 0} />
-                        </div>
-                        <div className="text-center">
-                            <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-500">Native</span>
-                        </div>
+                   {portfolioLoading ? (
+                     <div className="flex flex-col items-center justify-center py-20 gap-3">
+                       <Loader2 size={32} className="animate-spin text-white/30" />
+                       <span className="text-sm font-medium text-white/50 animate-pulse">Scanning wallet assets...</span>
                      </div>
-                   )}
-                   
-                   {/* Tokens */}
-                   {displayTokens.map((token) => (
-                      <div key={token.mint} className="grid grid-cols-[1.5fr_1fr_1fr_1fr_1.5fr_80px] gap-4 items-center px-6 py-3 border-b border-white/5 hover:bg-white/[0.04] transition-colors duration-200 group" style={{ opacity: token.isDust ? 0.5 : 1 }}>
-                        <div className="flex items-center gap-3">
-                           <TokenIcon symbol={token.symbol} logoURI={token.logoURI} />
-                           <div>
-                              <div className="flex items-center gap-1.5">
-                                 <span className="font-bold text-sm text-white">{token.symbol}</span>
-                                 {token.isDust && <span className="text-[9px] bg-yellow-500/20 text-yellow-500 px-1 rounded uppercase">Dust</span>}
-                              </div>
-                              <div className="text-xs font-mono truncate max-w-[120px]" style={{ color: COLORS.data }}>{token.name}</div>
-                           </div>
-                        </div>
-                        <div className="text-right font-mono text-sm" style={{ color: COLORS.data }}>{formatUsd(token.pricePerToken)}</div>
-                        <div className="text-right font-mono text-sm" style={{ color: COLORS.text }}>{formatAmount(token.balance)}</div>
-                        <div className="text-right font-mono text-sm font-medium" style={{ color: COLORS.brand }}>{formatUsd(token.totalValue)}</div>
-                        <div className="pl-4">
-                           <PortfolioBar percent={token.holdingPercent || 0} />
-                        </div>
-                        <div className="text-center">
-                            <a 
-                              href={`https://solscan.io/token/${token.mint}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center justify-center p-1.5 rounded hover:bg-white/10 transition-all duration-200 hover:scale-110"
-                              style={{ color: COLORS.data }}
-                            >
-                              <ExternalLink size={14} />
-                            </a>
-                        </div>
-                      </div>
-                   ))}
-                   
-                   {/* Empty State */}
-                   {displayTokens.length === 0 && !solBalance && (
-                      <div className="text-center py-20 text-sm" style={{ color: COLORS.data }}>
-                         No tokens found in portfolio.
-                      </div>
+                   ) : (
+                     <>
+                       {/* SOL Balance */}
+                       {solBalance && (
+                         <div className="grid grid-cols-[1.5fr_1fr_1fr_1fr_1.5fr_80px] gap-4 items-center px-6 py-3 border-b border-white/5 hover:bg-white/[0.02] transition-colors bg-emerald-500/[0.02]">
+                            <div className="flex items-center gap-3">
+                               <img src="https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png" className="w-8 h-8 rounded-full" alt="SOL" />
+                               <div>
+                                  <div className="font-bold text-sm text-white">Solana</div>
+                                  <div className="text-xs font-mono" style={{ color: COLORS.data }}>SOL</div>
+                               </div>
+                            </div>
+                            <div className="text-right font-mono text-sm" style={{ color: COLORS.data }}>{formatUsd(solBalance.pricePerToken)}</div>
+                            <div className="text-right font-mono text-sm" style={{ color: COLORS.text }}>{formatAmount(solBalance.balance)}</div>
+                            <div className="text-right font-mono text-sm font-medium" style={{ color: COLORS.brand }}>{formatUsd(solBalance.totalValue)}</div>
+                            <div className="pl-4">
+                               <PortfolioBar percent={solBalance.holdingPercent || 0} />
+                            </div>
+                            <div className="text-center">
+                                <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-500">Native</span>
+                            </div>
+                         </div>
+                       )}
+                       
+                       {/* Tokens */}
+                       {displayTokens.map((token) => (
+                          <div key={token.mint} className="grid grid-cols-[1.5fr_1fr_1fr_1fr_1.5fr_80px] gap-4 items-center px-6 py-3 border-b border-white/5 hover:bg-white/[0.04] transition-colors duration-200 group" style={{ opacity: token.isDust ? 0.5 : 1 }}>
+                            <div className="flex items-center gap-3">
+                               <TokenIcon symbol={token.symbol} logoURI={token.logoURI} />
+                               <div>
+                                  <div className="flex items-center gap-1.5">
+                                     <span className="font-bold text-sm text-white">{token.symbol}</span>
+                                     {token.isDust && <span className="text-[9px] bg-yellow-500/20 text-yellow-500 px-1 rounded uppercase">Dust</span>}
+                                  </div>
+                                  <div className="text-xs font-mono truncate max-w-[120px]" style={{ color: COLORS.data }}>{token.name}</div>
+                               </div>
+                            </div>
+                            <div className="text-right font-mono text-sm" style={{ color: COLORS.data }}>{formatUsd(token.pricePerToken)}</div>
+                            <div className="text-right font-mono text-sm" style={{ color: COLORS.text }}>{formatAmount(token.balance)}</div>
+                            <div className="text-right font-mono text-sm font-medium" style={{ color: COLORS.brand }}>{formatUsd(token.totalValue)}</div>
+                            <div className="pl-4">
+                               <PortfolioBar percent={token.holdingPercent || 0} />
+                            </div>
+                            <div className="text-center">
+                                <a 
+                                  href={`https://solscan.io/token/${token.mint}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center justify-center p-1.5 rounded hover:bg-white/10 transition-all duration-200 hover:scale-110"
+                                  style={{ color: COLORS.data }}
+                                >
+                                  <ExternalLink size={14} />
+                                </a>
+                            </div>
+                          </div>
+                       ))}
+                       
+                       {/* Empty State */}
+                       {displayTokens.length === 0 && !solBalance && (
+                          <div className="text-center py-20 text-sm" style={{ color: COLORS.data }}>
+                             No tokens found in portfolio.
+                          </div>
+                       )}
+                     </>
                    )}
                 </div>
               </div>

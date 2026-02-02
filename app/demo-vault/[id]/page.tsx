@@ -1,5 +1,8 @@
 'use client';
 
+import PageLoader from '@/components/PageLoader';
+
+
 import { createPortal } from 'react-dom';
 
 import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
@@ -321,7 +324,7 @@ export default function TraderStateDetailPage() {
   const params = useParams();
   const router = useRouter();
   const { connected } = useWallet();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, isLoading: authLoading } = useAuth();
   const traderStateId = params.id as string;
   const walletAddress = user?.wallet || null;
   
@@ -331,13 +334,14 @@ export default function TraderStateDetailPage() {
   const [starTraders, setStarTraders] = useState<{ address: string; name: string; image?: string }[]>([]);
   const [tokenMeta, setTokenMeta] = useState<Record<string, TokenMeta>>({});
   const [loading, setLoading] = useState(true);
+  const [hasCheckedData, setHasCheckedData] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
   // Pagination state
   const [tradesPage, setTradesPage] = useState(1);
   const [pagination, setPagination] = useState({ page: 1, pageSize: 20, totalCount: 0, totalPages: 0 });
-  const [tradeStats, setTradeStats] = useState({ avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0, profitableCount: 0, lossCount: 0 });
+  const [tradeStats, setTradeStats] = useState({ avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0, profitableCount: 0, lossCount: 0, profitFactor: 0 });
   
 
   
@@ -348,9 +352,17 @@ export default function TraderStateDetailPage() {
   // DATA FETCHING
   // =============================================================================
   
+  // Ref for tokenMeta to avoid dependency loop in fetchTokenMetadata
+  const tokenMetaRef = useRef<Record<string, TokenMeta>>({});
+  
+  useEffect(() => {
+    tokenMetaRef.current = tokenMeta;
+  }, [tokenMeta]);
+  
   const fetchTokenMetadata = useCallback(async (mints: string[]) => {
     if (mints.length === 0) return;
-    const missing = mints.filter(m => !tokenMeta[m]);
+    // Use ref to check existence without adding dependency
+    const missing = mints.filter(m => !tokenMetaRef.current[m]);
     if (missing.length === 0) return;
     
     try {
@@ -364,7 +376,8 @@ export default function TraderStateDetailPage() {
     } catch (err) {
       console.error('Failed to fetch token metadata:', err);
     }
-  }, [tokenMeta]);
+  }, []); // Stable callback with no dependencies
+
   
   const fetchData = useCallback(async () => {
     if (!walletAddress || !traderStateId) return;
@@ -391,7 +404,7 @@ export default function TraderStateDetailPage() {
       const tradesData = await tradesRes.json();
       setTrades(tradesData.trades || []);
       setPagination(tradesData.pagination || { page: 1, pageSize: 20, totalCount: 0, totalPages: 0 });
-      setTradeStats(tradesData.stats || { avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0, profitableCount: 0, lossCount: 0 });
+      setTradeStats(tradesData.stats || { avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0, profitableCount: 0, lossCount: 0, profitFactor: 0 });
       
       const mints = new Set<string>();
       portfolioData.positions?.forEach((p: Position) => mints.add(p.mint));
@@ -408,6 +421,7 @@ export default function TraderStateDetailPage() {
       setError('Failed to fetch data');
     } finally {
       setLoading(false);
+      setHasCheckedData(true);
     }
   }, [walletAddress, traderStateId, tradesPage, fetchTokenMetadata]);
   
@@ -496,12 +510,8 @@ export default function TraderStateDetailPage() {
   // LOADING / ERROR STATES
   // =============================================================================
   
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: COLORS.canvas }}>
-        <div className="w-7 h-7 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
-      </div>
-    );
+  if (loading || authLoading || (connected && isAuthenticated && !hasCheckedData)) {
+    return <PageLoader />;
   }
   
   if (!connected || !walletAddress) {
@@ -544,6 +554,7 @@ export default function TraderStateDetailPage() {
   // Win Rate = Profitable / (Profitable + Loss)
   const totalClosedTrades = (tradeStats.profitableCount || 0) + (tradeStats.lossCount || 0);
   const winRate = totalClosedTrades > 0 ? Math.round(((tradeStats.profitableCount || 0) / totalClosedTrades) * 100) : 0;
+  const profitFactor = tradeStats.profitFactor || 0;
   
   // =============================================================================
   // RENDER
@@ -742,9 +753,31 @@ export default function TraderStateDetailPage() {
               </div>
             </div>
             <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">
-              <div className="text-xs uppercase tracking-wider mb-1.5" style={{ color: COLORS.data }}>Trades</div>
+              <div className="text-xs uppercase tracking-wider mb-1.5 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
+                Profit Factor
+                <InfoTooltip>
+                  <strong>Profit Factor</strong><br/><br/>
+                  Efficiency metric: Total Gross Profit / Total Gross Loss. &gt; 1.0 is profitable.
+                </InfoTooltip>
+              </div>
+              <div className={`text-lg font-mono font-semibold ${profitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {profitFactor.toFixed(2)}x
+              </div>
+            </div>
+            <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">
+              <div className="text-xs uppercase tracking-wider mb-1.5 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
+                Trades
+                <InfoTooltip>
+                  <strong>Win / Loss Count</strong><br/><br/>
+                  <span className="text-emerald-400">Green</span>: Profitable trades<br/>
+                  <span className="text-red-400">Red</span>: Loss trades
+                </InfoTooltip>
+              </div>
               <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>
-                {totalTrades} <span className="text-sm" style={{ color: COLORS.brand }}>(Win: {winRate}%)</span>
+                {/* Wins / Losses Breakdown */}
+                <span className="text-emerald-400">{tradeStats.profitableCount}</span>
+                <span className="text-white/30 mx-2">/</span>
+                <span className="text-red-400">{tradeStats.lossCount}</span>
               </div>
             </div>
             <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">

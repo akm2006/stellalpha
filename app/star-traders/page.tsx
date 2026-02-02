@@ -1,5 +1,8 @@
 'use client';
 
+import PageLoader from '@/components/PageLoader';
+
+
 import { useState, useEffect, useMemo, ReactNode, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
@@ -298,6 +301,10 @@ export default function StarTradersListPage() {
   const handleView = (traderWallet: string) => {
     router.push(`/star-traders/${traderWallet}`);
   };
+
+  if (loading) {
+    return <PageLoader />;
+  }
 
   return (
     <div className="min-h-screen animate-in fade-in duration-700" style={{ backgroundColor: COLORS.canvas, color: COLORS.text, fontFamily: 'Inter, system-ui, sans-serif' }}>
