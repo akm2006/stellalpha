@@ -45,11 +45,18 @@ export const Roadmap = () => {
         </div>
 
         <div className="relative">
-          {/* Timeline Track */}
-          <div className="absolute top-0 left-0 right-0 h-px bg-white/10" />
+          {/* Horizontal Timeline Track (Desktop) */}
+          <div className="absolute top-0 left-0 right-0 h-px bg-white/10 hidden md:block" />
           <div 
-            className="absolute top-0 left-0 h-px bg-gradient-to-r from-emerald-500 to-emerald-400"
+            className="absolute top-0 left-0 h-px bg-gradient-to-r from-emerald-500 to-emerald-400 hidden md:block"
             style={{ width: '15%' }} // Rough estimate for Phase 1 active
+          />
+
+          {/* Vertical Timeline Track (Mobile) */}
+          <div className="absolute top-0 bottom-0 left-[13px] w-px bg-white/10 block md:hidden" />
+          <div 
+            className="absolute top-0 left-[13px] w-px bg-gradient-to-b from-emerald-500 to-emerald-400 block md:hidden"
+            style={{ height: '15%' }} // Rough estimate for Phase 1 active
           />
 
           <div className="grid md:grid-cols-4 gap-8">
@@ -64,19 +71,18 @@ export const Roadmap = () => {
                   whileInView={{ opacity: 1, y: 0 }}
                   viewport={{ once: true }}
                   transition={{ delay: idx * 0.1 }}
-                  className="relative group pt-8"
+                  className="relative group pt-2 md:pt-8 pl-12 md:pl-0"
                 >
                    {/* Timeline Node */}
-                   <div className="absolute -top-[5px] left-0">
-                      <div className={`w-2.5 h-2.5 rounded-full border-2 transition-all duration-300 z-10 relative bg-[#050505]
-                        ${isDone ? 'bg-emerald-500 border-emerald-500' : 
-                          isActive ? 'bg-[#050505] border-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.5)] scale-125' : 
-                          'border-white/20'}`} 
-                      />
-                   </div>
+                   <div className={`absolute w-2.5 h-2.5 rounded-full border-2 transition-all duration-300 z-10 bg-[#050505]
+                      left-[9px] top-[32px] md:left-0 md:-top-[5px]
+                      ${isDone ? 'bg-emerald-500 border-emerald-500' : 
+                        isActive ? 'bg-[#050505] border-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.5)] scale-125' : 
+                        'border-white/20'}`} 
+                   />
 
                    {/* Content Card */}
-                   <div className={`h-full p-6 border transition-all duration-300 flex flex-col
+                   <div className={`h-full p-6 border transition-all duration-300 flex flex-col rounded-xl
                       ${isActive ? 'bg-white/[0.03] border-emerald-500/30' : 
                         isDone ? 'bg-white/[0.01] border-white/10 hover:border-white/20' : 
                         'bg-transparent border-transparent hover:bg-white/[0.02] border-l-white/10 border-l'}`}

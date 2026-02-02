@@ -5,6 +5,7 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { useAuth } from '@/contexts/auth-context';
 import { COLORS } from '@/lib/theme';
 import { Wallet, LogIn, Loader2, ShieldAlert } from 'lucide-react';
+import StellalphaLoader from './StellalphaLoader';
 
 interface AuthRequiredProps {
   children: ReactNode;
@@ -32,7 +33,7 @@ export function AuthRequired({
     return (
       <div className="min-h-[60vh] flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <Loader2 size={32} className="animate-spin" style={{ color: COLORS.brand }} />
+          <StellalphaLoader size={64} className="mb-4" />
           <span className="text-sm" style={{ color: COLORS.data }}>
             Checking authentication...
           </span>

@@ -50,7 +50,7 @@ export const Hero = () => {
             className="space-y-6"
           >
             <div className="space-y-4">
-              <h1 className="text-4xl sm:text-5xl md:text-6xl font-semibold tracking-tighter leading-[1.05] text-white">
+              <h1 className="text-3xl sm:text-5xl md:text-6xl font-semibold tracking-tighter leading-tight md:leading-[1.05] text-white">
                 Autonomous <br />
                 Copy Trading <br />
                 <span className="text-white relative inline-block">

@@ -1,5 +1,6 @@
 'use client';
 
+import PageLoader from '@/components/PageLoader';
 import { useState, useEffect, useCallback, useMemo, useRef, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
@@ -51,6 +52,7 @@ interface TradeStats {
   totalRealizedPnl: number;
   profitableCount?: number;
   lossCount?: number;
+  profitFactor?: number;
 }
 
 interface DemoVault {
@@ -356,6 +358,7 @@ export default function DemoVaultPage() {
   const [tradeStats, setTradeStats] = useState<Record<string, TradeStats>>({});
   const [starTraders, setStarTraders] = useState<{ address: string; name: string; image?: string }[]>([]);
   const [loading, setLoading] = useState(false);
+  const [hasCheckedVault, setHasCheckedVault] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [following, setFollowing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -400,6 +403,7 @@ export default function DemoVaultPage() {
       setError('Failed to fetch vault');
     } finally {
       setLoading(false);
+      setHasCheckedVault(true);
     }
   }, [walletAddress]);
   
@@ -581,7 +585,7 @@ export default function DemoVaultPage() {
         )}
         
         {/* No Vault */}
-        {connected && isAuthenticated && !vault && !loading && (
+        {connected && isAuthenticated && !vault && !loading && hasCheckedVault && (
           <div className="max-w-4xl mx-auto animate-fade-up">
             <div className="border border-white/10 overflow-hidden" style={{ backgroundColor: COLORS.surface }}>
               {/* Hero Section */}
@@ -656,10 +660,8 @@ export default function DemoVaultPage() {
         )}
         
         {/* Loading */}
-        {loading && (
-          <div className="flex items-center justify-center py-16">
-            <div className="w-7 h-7 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
-          </div>
+        {(loading || (connected && isAuthenticated && !hasCheckedVault)) && (
+          <PageLoader />
         )}
         
         {/* Error */}
@@ -802,10 +804,11 @@ export default function DemoVaultPage() {
                     </InfoTooltip>
                   </div>
                   <div className="flex items-center gap-1">
-                    Win Rate
+                    Profit Factor
                     <InfoTooltip>
-                       <strong>Win Rate</strong><br/><br/>
-                       Percentage of closed trades that were profitable (Realized PnL &gt; 0).
+                       <strong>Profit Factor</strong><br/><br/>
+                       Industry standard efficiency metric: (Gross Profit / Gross Loss).<br/><br/>
+                       &gt; 1.0 means profitable. Higher is better.
                     </InfoTooltip>
                   </div>
                   <div className="flex items-center gap-1">
@@ -888,10 +891,9 @@ export default function DemoVaultPage() {
                     // Get real trade stats
                     const stats = tradeStats[ts.id] || { completedCount: 0, failedCount: 0, totalRealizedPnl: 0, profitableCount: 0, lossCount: 0 };
                     
-                    // Win Rate = Profitable / (Profitable + Loss)
+                    // Profit Factor provided by API or default to 0
+                    const profitFactor = stats.profitFactor ?? 0;
                     const totalTrades = stats.completedCount + stats.failedCount;
-                    const totalClosedTrades = (stats.profitableCount || 0) + (stats.lossCount || 0);
-                    const winRate = totalClosedTrades > 0 ? Math.round(((stats.profitableCount || 0) / totalClosedTrades) * 100) : 0;
                     const roi = ts.allocated_usd > 0 ? (pnl / Number(ts.allocated_usd)) * 100 : 0;
                     
                     return (
@@ -937,9 +939,9 @@ export default function DemoVaultPage() {
                           {roi >= 0 ? '+' : ''}{roi.toFixed(1)}%
                         </div>
                         
-                        {/* Win Rate */}
-                        <div className="font-mono text-sm" style={{ color: COLORS.text }}>
-                          {winRate}%
+                        {/* Profit Factor */}
+                        <div className={`font-mono text-sm ${profitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {profitFactor.toFixed(2)}x
                         </div>
                         
                         {/* Total Trades */}

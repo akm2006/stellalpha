@@ -113,7 +113,17 @@ export async function GET(request: NextRequest) {
         completedCount: completedTrades.length,
         failedCount: failedTrades.length,
         profitableCount: profitableTrades.length,
-        lossCount: lossTrades.length
+        lossCount: lossTrades.length,
+        profitFactor: (() => {
+          let totalProfit = 0;
+          let totalLoss = 0;
+          completedTrades.forEach(t => {
+            const pnl = t.realized_pnl || 0;
+            if (pnl > 0) totalProfit += pnl;
+            else if (pnl < 0) totalLoss += Math.abs(pnl);
+          });
+          return totalLoss > 0 ? (totalProfit / totalLoss) : (totalProfit > 0 ? 999 : 0);
+        })()
       }
     });
     
