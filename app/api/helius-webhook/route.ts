@@ -6,6 +6,35 @@ import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 const HELIUS_WEBHOOK_SECRET = process.env.HELIUS_WEBHOOK_SECRET;
 const WSOL = "So11111111111111111111111111111111111111112";
 
+// ============ PERFORMANCE TIMER UTILITY ============
+class PerformanceTimer {
+  private startTime: number;
+  private checkpoints: Map<string, number> = new Map();
+  private lastCheckpoint: number;
+
+  constructor(label: string) {
+    this.startTime = Date.now();
+    this.lastCheckpoint = this.startTime;
+    console.log(`[PERF] ${label} - Started`);
+  }
+
+  checkpoint(label: string) {
+    const now = Date.now();
+    const stepTime = now - this.lastCheckpoint;
+    const totalTime = now - this.startTime;
+    this.checkpoints.set(label, stepTime);
+    console.log(`[PERF] ${label}: +${stepTime}ms (total: ${totalTime}ms)`);
+    this.lastCheckpoint = now;
+    return stepTime;
+  }
+
+  finish(label: string = 'Complete') {
+    const totalTime = Date.now() - this.startTime;
+    console.log(`[PERF] ${label}: TOTAL ${totalTime}ms`);
+    return totalTime;
+  }
+}
+
 // Dynamic SOL price cache (refreshed every 60 seconds)
 let solPriceCache: { price: number; timestamp: number } | null = null;
 const SOL_PRICE_CACHE_TTL = 60000; // 60 seconds
@@ -196,6 +225,8 @@ interface RawTrade {
 }
 
 async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
+  const timer = new PerformanceTimer(`detectTrade(${tx.signature?.slice(0, 8)}...)`);
+  
   const t = tx.tokenTransfers || [];
   const fp = wallet;
   
@@ -204,10 +235,14 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   const fee = tx.fee || 0;
   const solChangeNet = (solChange + fee) / 1e9;
   
+  timer.checkpoint('Parse wallet data');
+  
   const relevant = t.filter((x: any) => x.fromUserAccount === fp || x.toUserAccount === fp);
   // Don't filter out wSOL - we want to track SOL swaps too
   const tokensSent = relevant.filter((x: any) => x.fromUserAccount === fp);
   const tokensReceived = relevant.filter((x: any) => x.toUserAccount === fp);
+  
+  timer.checkpoint('Filter token transfers');
   
   let type: 'buy' | 'sell' = 'buy';
   let tokenMint = '';
@@ -383,12 +418,20 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
     tokenOutAmount = largest.tokenAmount;
   }
   else {
+    timer.checkpoint('No trade pattern detected');
     return null;
   }
   
-  if (tokenAmount < 0.000001) return null;
+  timer.checkpoint('Trade type detection complete');
   
-  return {
+  if (tokenAmount < 0.000001) {
+    timer.checkpoint('Trade amount too small');
+    return null;
+  }
+  
+  timer.checkpoint('Build RawTrade object');
+  
+  const result = {
     signature: tx.signature,
     wallet: fp,
     type,
@@ -406,6 +449,9 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
     source: tx.source || 'UNKNOWN',
     gas: fee / 1e9
   };
+  
+  timer.finish('detectTrade');
+  return result;
 }
 
 async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: number | null; avgCostBasis: number | null }> {
@@ -558,6 +604,8 @@ async function getTraderBuyingPower(walletAddress: string, connection: Connectio
 
 // ============ PRODUCER: Fast Queue Insert ============
 async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
+  const timer = new PerformanceTimer(`PRODUCER(${trade.signature?.slice(0, 8)}...)`);
+  
   const starTrader = trade.wallet;
   const sourceMint = trade.tokenInMint;
   const destMint = trade.tokenOutMint;
@@ -567,8 +615,11 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 
   if (!sourceMint || !destMint) {
     console.log(`[PRODUCER] Missing sourceMint or destMint, skipping`);
+    timer.finish('executeCopyTrades - ABORTED');
     return;
   }
+  
+  timer.checkpoint('Validate inputs');
 
   // 1. Find all trader states following this star trader
   const { data: followers, error: followersError } = await supabase
@@ -577,14 +628,18 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
     .eq('star_trader', starTrader)
     .eq('is_initialized', true)
     .eq('is_paused', false);
+  
+  timer.checkpoint('DB: Fetch followers');
 
   if (followersError) {
     console.log(`[PRODUCER] DB error fetching followers:`, followersError.message);
+    timer.finish('executeCopyTrades - DB ERROR');
     return;
   }
 
   if (!followers || followers.length === 0) {
     console.log(`[PRODUCER] No initialized followers found for ${starTrader.slice(0, 20)}...`);
+    timer.finish('executeCopyTrades - NO FOLLOWERS');
     return;
   }
 
@@ -605,8 +660,11 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
   } else {
     console.warn('[PRODUCER] Missing HELIUS_API_RPC_URL. V2 Equity Model disabled.');
   }
+  
+  timer.checkpoint('RPC connection setup');
 
   const solPrice = await getSolPrice(); // Use cached price
+  timer.checkpoint('Get SOL price');
   
   let ratio = 0;
   let leaderMetric = 0; // "Buying Power" (Buy) or "Inventory" (Sell)
@@ -633,8 +691,11 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         ratio = preTradeBuyingPower > 0 ? leaderUsdValue / preTradeBuyingPower : 0;
         
         console.log(`[V2-Buy] Spent $${leaderUsdValue.toFixed(2)} / Pre-Equity $${preTradeBuyingPower.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
+        
+        timer.checkpoint('V2-Buy: RPC fetch buying power');
       } else {
         console.log('[V2-Buy] Skipped Equity Model (No RPC Connection)');
+        timer.checkpoint('V2-Buy: Skipped (no RPC)');
       }
 
     } else {
@@ -668,8 +729,11 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         ratio = preTradeTokenBalance > 0 ? trade.tokenInAmount / preTradeTokenBalance : 0;
         
         console.log(`[V2-Sell] Sold ${trade.tokenInAmount.toFixed(2)} / Pre-Bag ${preTradeTokenBalance.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
+        
+        timer.checkpoint('V2-Sell: RPC fetch inventory');
       } else {
         console.log('[V2-Sell] Skipped Equity Model (No RPC Connection)');
+        timer.checkpoint('V2-Sell: Skipped (no RPC)');
       }
     }
   } catch (err: any) {
@@ -694,6 +758,8 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
     boostMultiplier = boost.multiplier;
     console.log(`[Safe Boost] Raw: ${(ratio*100).toFixed(3)}% → Boosted: ${(finalRatio*100).toFixed(2)}% (${boostTier}, ${boostMultiplier}x)`);
   }
+  
+  timer.checkpoint('Calculate copy ratio + boost');
 
   // 4. Insert queued trade for each follower
   for (const traderState of followers) {
@@ -740,6 +806,8 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
       console.error(`  TS ${traderStateId.slice(0,8)}: Queue insert error`, err);
     }
   }
+  
+  timer.finish('executeCopyTrades - All queued');
 }
 
 // ============ CONSUMER: Sequential Trade Processor with Atomic Locking ============
@@ -830,7 +898,9 @@ async function processTradeQueue(traderStateId: string) {
         try {
           if (attempt > 1) console.log(`[CONSUMER] Retrying trade ${tradeRow.id.slice(0,8)} (Attempt ${attempt}/${MAX_RETRIES})...`);
           
+          const execTimer = new PerformanceTimer(`executeQueuedTrade(${tradeRow.id.slice(0,8)})`);
           await executeQueuedTrade(traderStateId, tradeRow, trade);
+          execTimer.finish('Trade execution');
           success = true;
           break; // Success! Exit loop
           
@@ -882,6 +952,8 @@ async function processTradeQueue(traderStateId: string) {
 
 // ============ EXECUTE QUEUED TRADE (Master Fix Logic) ============
 async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: RawTrade) {
+  const timer = new PerformanceTimer(`EXEC(${tradeRow.id.slice(0,8)})`);
+  
   const SOL_MINT = 'So11111111111111111111111111111111111111112';
   const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
   
@@ -912,6 +984,8 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   if (tsError || !traderState) {
     throw new Error(`Trader state not found: ${tsError?.message}`);
   }
+  
+  timer.checkpoint('DB: Fetch trader state + positions');
 
   const positions = traderState.positions || [];
 
@@ -958,6 +1032,9 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
     getTokenDecimals(sourceMint),
     getTokenDecimals(destMint)
   ]);
+  
+  timer.checkpoint('Fetch token decimals');
+  
   const rawInputAmount = Math.floor(copyAmount * Math.pow(10, sourceDecimals));
 
   // Dynamic Slippage Scaling
@@ -985,6 +1062,8 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
       'Content-Type': 'application/json'
     }
   });
+  
+  timer.checkpoint('Jupiter: Quote request');
 
   if (!quoteResponse.ok) {
     throw new Error(`Jupiter quote failed with status ${quoteResponse.status}`);
@@ -995,6 +1074,8 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   if (!quote.outAmount) {
     throw new Error('No quote output amount from Jupiter');
   }
+  
+  timer.checkpoint('Jupiter: Parse quote');
 
   const quoteOutAmount = Number(quote.outAmount) / Math.pow(10, destDecimals);
   const priceImpact = Number(quote.priceImpactPct || 0);
@@ -1043,6 +1124,8 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
     copy_trade_timestamp: Math.floor(copyTradeTimestamp / 1000),
     latency_diff_ms: latencyDiff
   }).eq('id', tradeRow.id);
+  
+  timer.checkpoint('DB: Update trade with quote');
 
   // 8. POSITION & PNL UPDATES (Master Fix Logic)
   let realizedPnl: number | null = null;
@@ -1166,12 +1249,17 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
       realized_pnl: realizedPnl
     }).eq('id', tradeRow.id);
   }
+  
+  timer.checkpoint('DB: Update positions + PnL');
 
   console.log(`  Copied ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} → ${quoteOutAmount.toFixed(4)} ${getTokenSymbol(destMint)} | USD: $${tradeUsdValue.toFixed(2)} | PnL: ${realizedPnl !== null ? '$' + realizedPnl.toFixed(2) : 'N/A'} | Latency: ${latencyDiff}ms`);
+  
+  timer.finish('executeQueuedTrade - SUCCESS');
 }
 
 export async function POST(request: NextRequest) {
   const receivedAt = Date.now();
+  const webhookTimer = new PerformanceTimer('WEBHOOK HANDLER');
   
   // Verify auth header - REJECT if invalid
   const authHeader = request.headers.get('authorization');
@@ -1185,9 +1273,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   
+  webhookTimer.checkpoint('Auth verification');
+  
   try {
     const body = await request.json();
     const transactions = Array.isArray(body) ? body : [body];
+    
+    webhookTimer.checkpoint('Parse request body');
     
     console.log(`Received ${transactions.length} transaction(s) from webhook`);
     
@@ -1203,17 +1295,22 @@ export async function POST(request: NextRequest) {
       
       // 1. Extract all unique addresses involved in this transaction
       const involvedAddresses = extractInvolvedAddresses(tx);
+      const txTimer = new PerformanceTimer(`TX(${tx.signature?.slice(0,8)}...)`);
       
       if (involvedAddresses.size === 0) {
         console.log(`No involved addresses in tx: ${tx.signature.slice(0, 12)}...`);
         continue;
       }
       
+      txTimer.checkpoint('Extract addresses');
+      
       // 2. Query star_traders for ANY match (single efficient query)
       const { data: matchedStarTraders, error: starTraderError } = await supabase
         .from('star_traders')
         .select('address')
         .in('address', Array.from(involvedAddresses));
+      
+      txTimer.checkpoint('DB: Star trader query');
       
       if (starTraderError) {
         console.error(`Star trader query error:`, starTraderError.message);
@@ -1224,6 +1321,7 @@ export async function POST(request: NextRequest) {
         // Log which addresses we checked (first 3 for brevity)
         const sampleAddresses = Array.from(involvedAddresses).slice(0, 3).map(a => a.slice(0, 8));
         console.log(`No star traders in tx ${tx.signature.slice(0, 12)}... (checked ${involvedAddresses.size} addrs: ${sampleAddresses.join(', ')}...)`);
+        txTimer.finish('TX - No star traders');
         continue;
       }
       
@@ -1236,15 +1334,20 @@ export async function POST(request: NextRequest) {
         console.log(`Matched Star Trader: ${traderAddress.slice(0, 12)}... (${isFeePayer ? 'feePayer' : 'involved, not feePayer'})`);
         
         const trade = await detectTrade(tx, traderAddress);
-        if (!trade) continue;
+        if (!trade) {
+          txTimer.checkpoint(`Trade detection failed for ${traderAddress.slice(0,8)}`);
+          continue;
+        }
       
         processed++;
+        txTimer.checkpoint('Trade detected');
       
         // Calculate latency (time from on-chain to now)
         const latencyMs = receivedAt - (trade.timestamp * 1000);
       
         // Update position and get PnL
         const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
+        txTimer.checkpoint('Update leader position');
       
         // Insert trade (ignore if duplicate)
         const { error } = await supabase.from('trades').upsert({
@@ -1270,12 +1373,14 @@ export async function POST(request: NextRequest) {
       
         if (!error) {
           inserted++;
+          txTimer.checkpoint('DB: Insert leader trade');
           console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0,8)}... | Latency: ${latencyMs}ms`);
         
           // COPY TRADE ENGINE: Process copy trades
           // CRITICAL: We MUST await on Vercel serverless - CPU freezes when response returns!
           // With batch limit of 5 trades and parallel fetching, this completes in ~3-5 seconds.
           await executeCopyTrades(trade, receivedAt);
+          txTimer.checkpoint('Copy trades queued');
         
           // BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
           enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => {});
@@ -1285,8 +1390,12 @@ export async function POST(request: NextRequest) {
         } else {
           console.log(`Trade insert error for ${trade.signature}:`, error.message);
         }
+        
+        txTimer.finish('TX processing complete');
       } // End of for (starTrader of matchedStarTraders)
     }
+    
+    webhookTimer.finish('WEBHOOK COMPLETE');
     
     return NextResponse.json({ 
       ok: true, 
