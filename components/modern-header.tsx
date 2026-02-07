@@ -72,11 +72,15 @@ function UnifiedAuthButton() {
     <div className="relative">
       <button
         onClick={() => setShowDropdown(!showDropdown)}
-        className={cn(btnBase, "bg-[#0A0A0A] border-white/10 text-emerald-400 hover:text-emerald-300")}
+        className={cn(btnBase, "bg-[#0A0A0A] border-white/10 text-emerald-400 hover:text-emerald-300 min-w-[140px]")}
       >
-        <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+        {wallet?.adapter?.icon ? (
+            <img src={wallet.adapter.icon} alt={wallet.adapter.name} className="w-4 h-4 mr-1" />
+        ) : (
+            <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+        )}
         <span className="font-mono">{truncatedAddress}</span>
-        <ChevronDown size={12} className={cn("text-slate-500 transition-transform duration-300", showDropdown && "rotate-180")} />
+        <ChevronDown size={12} className={cn("text-slate-500 transition-transform duration-300 ml-auto", showDropdown && "rotate-180")} />
       </button>
 
       {showDropdown && (
@@ -123,6 +127,77 @@ function UnifiedAuthButton() {
   );
 }
 
+const LOGO_PATHS = [
+  "M187.43 331.101L368.93 196.101L443.93 175.601L301.93 282.101L162.43 384.101L187.43 331.101Z",
+  "M268.43 176.101L373.43 193.601L441.43 176.101L286.93 148.601L268.43 176.101Z",
+  "M221.93 0.601471L286.93 149.101L268.43 177.101L221.93 76.6015V0.601471Z",
+  "M155.43 148.601L222.93 1.60147L220.93 76.1015L175.43 176.601L155.43 148.601Z",
+  "M0.929932 174.601L154.93 148.601L174.93 176.101L74.4299 193.601L0.929932 174.601Z",
+  "M122.43 272.101L0.929932 176.101L73.4299 194.101L136.93 243.101L122.43 272.101Z",
+  "M367.93 432.101L309.43 312.101L284.43 330.601L320.43 405.101L367.93 432.101Z",
+  "M122.93 402.601L76.4299 431.601L222.43 133.101V201.101L122.93 402.601Z",
+  "M245.93 248.101L222.43 201.101V133.101L270.43 228.101L245.93 248.101Z"
+];
+
+function NavbarLogo() {
+  return (
+    <motion.svg
+      width="40"
+      height="40"
+      viewBox="0 0 445 436"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className="w-10 h-10 filter drop-shadow-[0_0_8px_rgba(1,181,92,0.3)]"
+    >
+      <defs>
+        <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#01B55C" />
+          <stop offset="100%" stopColor="#00FF85" />
+        </linearGradient>
+      </defs>
+      {LOGO_PATHS.map((d, i) => (
+        <motion.path
+          key={i}
+          d={d}
+          stroke="url(#logoGradient)"
+          strokeWidth="2" 
+          fill="url(#logoGradient)"
+          fillOpacity="1"
+          variants={{
+            hidden: { 
+                pathLength: 0, 
+                fillOpacity: 0,
+                opacity: 0
+            },
+            visible: { 
+                pathLength: 1, 
+                fillOpacity: 1,
+                opacity: 1,
+                transition: {
+                    duration: 1.5,
+                    ease: "easeInOut",
+                    delay: i * 0.05
+                }
+            },
+            hover: {
+                // "Disappear and Form"
+                pathLength: [1, 0, 0, 1], 
+                fillOpacity: [1, 0, 0, 1],
+                opacity: [1, 0, 0, 1],
+                transition: {
+                    duration: 0.8,
+                    ease: "easeInOut",
+                    times: [0, 0.3, 0.35, 1], // Quick vanish, slight pause, smooth draw
+                    delay: i * 0.03 // Ripple reconstruct
+                }
+            }
+          }}
+        />
+      ))}
+    </motion.svg>
+  );
+}
+
 export default function ModernHeader() {
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const pathname = usePathname();
@@ -135,18 +210,77 @@ export default function ModernHeader() {
 
         {/* Left: Branding & Logo */}
         <div className="flex items-center h-full">
-            <Link href="/" aria-label="Stellalpha home" className="flex items-center gap-3 group h-full pr-8 border-r border-white/5 md:border-transparent lg:border-white/5">
-                <div className="relative w-8 h-8 flex items-center justify-center bg-emerald-500/10 rounded-sm border border-emerald-500/20 group-hover:border-emerald-500/40 transition-colors">
-                    <Image src="/stellalpha.png" alt="Stellalpha" width={24} height={24} className="w-5 h-5 opacity-90 group-hover:opacity-100 transition-opacity" />
-                </div>
-                <div className="hidden lg:flex flex-col">
-                    <span className="text-sm font-bold tracking-tight text-white leading-none">STELLALPHA</span>
-                    <span className="text-[9px] font-mono text-emerald-500/60 uppercase tracking-widest leading-none mt-0.5 group-hover:text-emerald-400 transition-colors">Protocol</span>
-                </div>
+            <Link 
+                href="/" 
+                aria-label="Stellalpha home" 
+                className="flex items-center gap-3 group h-full pr-8 border-r border-white/5 md:border-transparent lg:border-white/5"
+            >
+                <motion.div 
+                    className="relative flex items-center justify-center transform-gpu"
+                    initial="hidden"
+                    animate="visible"
+                    whileHover="hover"
+                >
+                    <NavbarLogo />
+                    
+                    {/* Unified Text Animation Container */}
+                    <div className="hidden lg:flex flex-col justify-center h-full ml-3">
+                        <div className="flex items-baseline overflow-visible">
+                            <motion.span 
+                                className="text-xl font-bold tracking-tight text-white leading-none relative"
+                                style={{ fontFamily: 'var(--font-space-grotesk), sans-serif' }}
+                                variants={{
+                                    hidden: { opacity: 0, filter: "blur(10px)", x: -10 },
+                                    visible: { 
+                                        opacity: 1, 
+                                        filter: "blur(0px)", 
+                                        x: 0,
+                                        transition: { duration: 0.8, ease: "easeOut", delay: 0.2 }
+                                    },
+                                    hover: { 
+                                        opacity: [1, 0, 1], 
+                                        filter: ["blur(0px)", "blur(10px)", "blur(0px)"],
+                                        transition: { 
+                                            duration: 0.6,
+                                            times: [0, 0.4, 1],
+                                            delay: 0.1
+                                        }
+                                    }
+                                }}
+                            >
+                                STELLALPHA
+                            </motion.span>
+                            <motion.span 
+                                className="text-sm font-mono font-medium ml-0.5"
+                                variants={{
+                                    hidden: { opacity: 0, x: -10 },
+                                    visible: { 
+                                        opacity: 0.5, 
+                                        x: 0, 
+                                        color: "#10B981",
+                                        transition: { duration: 0.8, ease: "easeOut", delay: 0.4 }
+                                    },
+                                    hover: { 
+                                        opacity: [0.5, 0, 1], 
+                                        y: [0, -5, 0],
+                                        color: ["#10B981", "#34D399", "#34D399"],
+                                        transition: { 
+                                            duration: 0.6,
+                                            times: [0, 0.4, 1],
+                                            delay: 0.2
+                                        }
+                                    }
+                                }}
+                            >
+                                .xyz
+                            </motion.span>
+                        </div>
+                    </div>
+                </motion.div>
             </Link>
 
             {/* Desktop Navigation - The "Grid" */}
-            <nav className="hidden md:flex items-center h-full ml-8">
+            <nav className="hidden md:flex items-center h-full ml-6">
                 {navigationItems.map((item) => {
                     const active = pathname === item.href;
                     return (
@@ -180,14 +314,6 @@ export default function ModernHeader() {
         {/* Right: Actions */}
         <div className="flex items-center gap-6 h-full">
             
-            {/* System Status / Network Indicator (Desktop) */}
-            <div className="hidden lg:flex items-center gap-2 text-[10px] font-mono text-slate-500 uppercase tracking-wider px-4 border-l border-white/5 h-full">
-                <div className="flex items-center gap-1.5">
-                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                    <span>System Normal</span>
-                </div>
-            </div>
-
             {/* Auth Button */}
             <div className="hidden md:block">
                 <UnifiedAuthButton />
