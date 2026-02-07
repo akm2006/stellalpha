@@ -25,20 +25,7 @@ export const Hero = () => {
       <div className="max-w-7xl mx-auto w-full relative z-10">
         
         {/* Status Badge */}
-        <motion.div 
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          className="inline-flex items-center gap-2.5 px-3 py-1.5 border border-emerald-500/20 bg-emerald-500/5 mb-6"
-        >
-          <span className="flex h-1.5 w-1.5 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
-          </span>
-          <span className="text-[10px] font-mono font-medium tracking-widest text-emerald-400">
-            PROTOCOL BETA ACTIVE
-          </span>
-        </motion.div>
+
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-20 items-center">
           
