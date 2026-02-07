@@ -954,6 +954,19 @@ async function processTradeQueue(traderStateId: string) {
 async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: RawTrade) {
   const timer = new PerformanceTimer(`EXEC(${tradeRow.id.slice(0,8)})`);
   
+  // Calculate queue waiting time
+  const queuedAt = new Date(tradeRow.created_at).getTime();
+  const processingStarted = Date.now();
+  const queueWaitTime = processingStarted - queuedAt;
+  console.log(`[QUEUE] Trade ${tradeRow.id.slice(0,8)} waited ${queueWaitTime}ms in queue`);
+  
+  // Route Override: For router token trades, skip execution (avoid selling before MEV swap)
+  if (tradeRow.is_router_token_trade) {
+    console.log(`[CONSUMER] Skipping router token trade ${tradeRow.id} (safety override)`);
+    await supabase.from('demo_trades').update({ status: 'completed' }).eq('id', tradeRow.id);
+    return;
+  }
+  
   const SOL_MINT = 'So11111111111111111111111111111111111111112';
   const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
   
@@ -1109,6 +1122,9 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   // 7. UPDATE TRADE ROW WITH QUOTE DATA
   const copyTradeTimestamp = Date.now();
   const latencyDiff = copyTradeTimestamp - (trade.timestamp * 1000);
+  
+  // Log detailed latency breakdown
+  console.log(`[LATENCY] Trade ${tradeRow.id.slice(0,8)}: Total=${latencyDiff}ms | Queue=${queueWaitTime}ms | Execution=${latencyDiff - queueWaitTime}ms`);
 
   await supabase.from('demo_trades').update({
     token_in_mint: sourceMint,  // <--- V2 FIX: Save actual source (USDC)
@@ -1282,6 +1298,26 @@ export async function POST(request: NextRequest) {
     webhookTimer.checkpoint('Parse request body');
     
     console.log(`Received ${transactions.length} transaction(s) from webhook`);
+    
+    // Track Helius delay stats
+    let totalHeliusDelay = 0;
+    let heliusDelayCount = 0;
+    
+    // Log individual Helius delays
+    for (const tx of transactions) {
+      if (tx.timestamp && tx.signature) {
+        const heliusDelay = receivedAt - (tx.timestamp * 1000);
+        totalHeliusDelay += heliusDelay;
+        heliusDelayCount++;
+        console.log(`[HELIUS] TX(${tx.signature.slice(0,8)}...): ${heliusDelay}ms delay (on-chain: ${new Date(tx.timestamp * 1000).toISOString()})`);
+      }
+    }
+    
+    // Log aggregate Helius delay stats
+    if (heliusDelayCount > 0) {
+      const avgHeliusDelay = Math.round(totalHeliusDelay / heliusDelayCount);
+      console.log(`[HELIUS] Average delay: ${avgHeliusDelay}ms across ${heliusDelayCount} transaction(s)`);
+    }
     
     let processed = 0;
     let inserted = 0;
