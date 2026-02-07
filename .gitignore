@@ -1,5 +1,5 @@
 # ===========================================
-# StellAlpha - Next.js Deployment .gitignore
+# Stellalpha - Next.js Deployment .gitignore
 # ===========================================
 
 # Dependencies
@@ -86,3 +86,6 @@ test-ledger-fork/
 *.pem
 coverage/
 LICENSE
+whitepaper/
+
+
