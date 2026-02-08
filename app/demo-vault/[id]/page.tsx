@@ -8,7 +8,7 @@ import { createPortal } from 'react-dom';
 import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useAppKitAccount } from '@reown/appkit/react';
 import { useAuth } from '@/contexts/auth-context';
 import { COLORS } from '@/lib/theme';
 import { 
@@ -323,7 +323,7 @@ function InfoTooltip({ children }: { children: ReactNode }) {
 export default function TraderStateDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const { connected } = useWallet();
+  const { isConnected } = useAppKitAccount();
   const { isAuthenticated, user, isLoading: authLoading } = useAuth();
   const traderStateId = params.id as string;
   const walletAddress = user?.wallet || null;
@@ -436,11 +436,11 @@ export default function TraderStateDetailPage() {
   }, []);
 
   useEffect(() => {
-    if (connected && walletAddress) {
+    if (isConnected && walletAddress) {
       fetchData();
       fetchStarTraders();
     }
-  }, [connected, walletAddress, fetchData, fetchStarTraders]);
+  }, [isConnected, walletAddress, fetchData, fetchStarTraders]);
   
   // =============================================================================
   // ACTIONS
@@ -510,11 +510,11 @@ export default function TraderStateDetailPage() {
   // LOADING / ERROR STATES
   // =============================================================================
   
-  if (loading || authLoading || (connected && isAuthenticated && !hasCheckedData)) {
+  if (loading || authLoading || (isConnected && isAuthenticated && !hasCheckedData)) {
     return <PageLoader />;
   }
   
-  if (!connected || !walletAddress) {
+  if (!isConnected || !walletAddress) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: COLORS.canvas, color: COLORS.text }}>
         <div className="text-center">

@@ -4,7 +4,7 @@ import PageLoader from '@/components/PageLoader';
 import { useState, useEffect, useCallback, useMemo, useRef, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useAppKitAccount } from '@reown/appkit/react';
 import { useAuth } from '@/contexts/auth-context';
 import { COLORS } from '@/lib/theme';
 import { 
@@ -351,7 +351,7 @@ function StatusAlertBubble({
 }
 
 export default function DemoVaultPage() {
-  const { connected } = useWallet();
+  const { isConnected } = useAppKitAccount();
   const { isAuthenticated, isLoading: authLoading, user, signIn, openWalletModal } = useAuth();
   const [vault, setVault] = useState<DemoVault | null>(null);
   const [traderStates, setTraderStates] = useState<TraderState[]>([]);
@@ -438,11 +438,11 @@ export default function DemoVaultPage() {
   }, [starTraders, vault, traderStates]);
   
   useEffect(() => {
-    if (connected && walletAddress) {
+    if (isConnected && walletAddress) {
       fetchVault();
       fetchStarTraders();
     }
-  }, [connected, walletAddress, fetchVault, fetchStarTraders]);
+  }, [isConnected, walletAddress, fetchVault, fetchStarTraders]);
   
   const deployVault = async () => {
     if (!walletAddress) return;
@@ -538,7 +538,7 @@ export default function DemoVaultPage() {
       <main className="w-full px-5 py-4 pt-24">
         
         {/* Not Connected */}
-        {!connected && (
+        {!isConnected && (
           <div className="border border-white/10 p-10 text-center animate-fade-up" style={{ backgroundColor: COLORS.surface }}>
             <Wallet size={44} className="mx-auto mb-4" style={{ color: COLORS.brand }} />
             <h2 className="text-xl font-medium mb-3">Connect Your Wallet</h2>
@@ -555,7 +555,7 @@ export default function DemoVaultPage() {
         )}
         
         {/* Connected but Not Authenticated */}
-        {connected && !isAuthenticated && !authLoading && (
+        {isConnected && !isAuthenticated && !authLoading && (
           <div className="border border-white/10 p-10 text-center animate-fade-up" style={{ backgroundColor: COLORS.surface }}>
             <LogIn size={44} className="mx-auto mb-4" style={{ color: COLORS.brand }} />
             <h2 className="text-xl font-medium mb-3">Sign In Required</h2>
@@ -575,7 +575,7 @@ export default function DemoVaultPage() {
         )}
         
         {/* Auth Loading */}
-        {connected && authLoading && (
+        {isConnected && authLoading && (
           <div className="flex items-center justify-center py-16">
             <div className="flex flex-col items-center gap-3">
               <Loader2 size={28} className="animate-spin" style={{ color: COLORS.brand }} />
@@ -585,7 +585,7 @@ export default function DemoVaultPage() {
         )}
         
         {/* No Vault */}
-        {connected && isAuthenticated && !vault && !loading && hasCheckedVault && (
+        {isConnected && isAuthenticated && !vault && !loading && hasCheckedVault && (
           <div className="max-w-4xl mx-auto animate-fade-up">
             <div className="border border-white/10 overflow-hidden" style={{ backgroundColor: COLORS.surface }}>
               {/* Hero Section */}
@@ -660,7 +660,7 @@ export default function DemoVaultPage() {
         )}
         
         {/* Loading */}
-        {(loading || (connected && isAuthenticated && !hasCheckedVault)) && (
+        {(loading || (isConnected && isAuthenticated && !hasCheckedVault)) && (
           <PageLoader />
         )}
         
@@ -674,7 +674,7 @@ export default function DemoVaultPage() {
         )}
         
         {/* ===== VAULT DASHBOARD ===== */}
-        {connected && isAuthenticated && vault && (
+        {isConnected && isAuthenticated && vault && (
           <>
             {/* Stats HUD - Responsive */}
             <div className="border border-white/10 mb-3 grid grid-cols-2 sm:grid-cols-4 divide-x divide-white/10 animate-fade-up" style={{ backgroundColor: COLORS.surface }}>

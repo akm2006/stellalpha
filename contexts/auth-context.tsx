@@ -1,8 +1,8 @@
 'use client';
 
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
-import { useWallet } from '@solana/wallet-adapter-react';
-import { useWalletModal } from '@solana/wallet-adapter-react-ui';
+import { useAppKit, useAppKitAccount, useDisconnect, useAppKitProvider } from '@reown/appkit/react';
+import type { Provider } from '@reown/appkit-adapter-solana/react';
 import bs58 from 'bs58';
 
 interface AuthState {
@@ -40,30 +40,42 @@ function getAppDomain(): string {
 function buildSIWSMessage(wallet: string, nonce: string): string {
   const domain = getAppDomain();
   const issuedAt = new Date().toISOString();
-  
-  return `StellAlpha wants you to sign in with your Solana account:
-${wallet}
 
-Sign this message to prove you own this wallet and log in.
+  return `Welcome to Stellalpha!
 
-URI: ${domain}
-Version: 1
-Chain ID: mainnet
+Click to sign in and accept the Stellalpha Terms of Service.
+This request will not trigger a blockchain transaction or cost any gas fees.
+
+Your authentication status will be valid for 7 days.
+
+Wallet: ${wallet}
+Domain: ${domain}
 Nonce: ${nonce}
-Issued At: ${issuedAt}`;
+Timestamp: ${issuedAt}`;
 }
 
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const { publicKey, signMessage, connected, disconnect } = useWallet();
-  const { setVisible } = useWalletModal();
+  // AppKit hooks
+  const { open } = useAppKit();
+  const { address, isConnected, status } = useAppKitAccount();
+  const { disconnect } = useDisconnect();
+  const { walletProvider } = useAppKitProvider<Provider>('solana');
+
   const [state, setState] = useState<AuthState>({
     isAuthenticated: false,
     isLoading: true,
     user: null,
     error: null,
   });
-  
+
+  // Handle wallet disconnection
+  useEffect(() => {
+    if (status === 'disconnected' && state.isAuthenticated) {
+      signOut();
+    }
+  }, [status, state.isAuthenticated]);
+
   // Load persisted auth state on mount and validate
   useEffect(() => {
     async function checkSession() {
@@ -84,50 +96,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         console.error('Failed to check session:', err);
       }
-      
-      setState(prev => ({ 
-        ...prev, 
+
+      setState(prev => ({
+        ...prev,
         isAuthenticated: false,
         user: null,
-        isLoading: false 
+        isLoading: false
       }));
     }
-    
+
     checkSession();
-  }, [publicKey]); // Check session when wallet changes or on mount
-  
-  // Note: We don't automatically sign out when wallet disconnects anymore, 
-  // because the session is HTTP-only cookie based. However, for UX consistency,
-  // if the wallet *explicitly* disconnects, we might want to clear the session.
-  // But strictly speaking, session could persist without wallet if we wanted.
-  // For now, let's keep the behavior: disconnect wallet -> sign out.
-  useEffect(() => {
-    if (!connected && !state.isLoading && state.isAuthenticated) {
-       // Only if we were authenticated and now not connected
-       // We might choose to NOT auto-logout to allow "reconnect to continue session"
-       // But user request says "frequent logout" is bad. 
-       // Actually, keeping the session even if wallet disconnects is better for persistence.
-       // So we will NOT auto-logout here. The session is valid until it expires.
-       // BUT, the `UnifiedAuthButton` relies on `connected` state from wallet adapter.
-       // So if wallet disconnects, they can't sign transactions, but are they "Logged In"?
-       // Ideally: "Logged In" but "Wallet Not Connected".
-       // For simplicity in this app: If wallet disconnects, we just let them be "Logged In" 
-       // but they will be prompted to connect wallet if they try to do something.
-       // However, `isSessionValid` logic previously enforced wallet match.
-       // Let's relax that: Session is valid if cookie is valid.
-    }
-  }, [connected, state.isAuthenticated, state.isLoading]);
-  
+  }, [address]); // Check session when wallet changes or on mount
+
   const signIn = useCallback(async (): Promise<boolean> => {
-    if (!publicKey || !signMessage) {
+    if (!address || !walletProvider) {
       setState(prev => ({ ...prev, error: 'Wallet not connected or does not support signing' }));
       return false;
     }
-    
-    const wallet = publicKey.toBase58();
-    
+
+    const wallet = address;
+
     setState(prev => ({ ...prev, isLoading: true, error: null }));
-    
+
     try {
       // 1. Request nonce from server (stores in session)
       const nonceRes = await fetch(`/api/auth/nonce?wallet=${wallet}`);
@@ -135,29 +125,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error('Failed to get nonce');
       }
       const { nonce } = await nonceRes.json();
-      
+
       // 2. Build SIWS message
       const message = buildSIWSMessage(wallet, nonce);
-      
-      // 3. Sign message with wallet
+
+      // 3. Sign message with wallet (via AppKit provider)
       const messageBytes = new TextEncoder().encode(message);
-      const signatureBytes = await signMessage(messageBytes);
+      const signatureBytes = await walletProvider.signMessage(messageBytes);
       const signature = bs58.encode(signatureBytes);
-      
+
       // 4. Verify with server (creates session)
       const verifyRes = await fetch('/api/auth/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ wallet, signature, message }),
       });
-      
+
       if (!verifyRes.ok) {
         const errorData = await verifyRes.json();
         throw new Error(errorData.error || 'Verification failed');
       }
-      
+
       const { user } = await verifyRes.json();
-      
+
       // State is updated from response
       setState({
         isAuthenticated: true,
@@ -165,9 +155,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         error: null,
       });
-      
+
       return true;
-      
+
     } catch (error: any) {
       console.error('[Auth] Sign in error:', error);
       setState(prev => ({
@@ -177,15 +167,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }));
       return false;
     }
-  }, [publicKey, signMessage]);
-  
+  }, [address, walletProvider]);
+
   const signOut = useCallback(async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } catch (e) {
       console.error('Logout failed', e);
     }
-    
+
     setState({
       isAuthenticated: false,
       isLoading: false,
@@ -194,15 +184,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     disconnect();
   }, [disconnect]);
-  
+
   const openWalletModal = useCallback(() => {
-    setVisible(true);
-  }, [setVisible]);
-  
+    open();
+  }, [open]);
+
   const disconnectWallet = useCallback(() => {
     signOut();
   }, [signOut]);
-  
+
   return (
     <AuthContext.Provider value={{ ...state, signIn, signOut, openWalletModal, disconnectWallet }}>
       {children}
