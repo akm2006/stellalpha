@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { useAppKitAccount } from '@reown/appkit/react';
 import { useAuth } from '@/contexts/auth-context';
+import { useOnboarding } from '@/contexts/onboarding-context';
 import { COLORS } from '@/lib/theme';
 import { 
   Wallet, 
@@ -276,23 +277,23 @@ function StatusAlertBubble({
 
   const config = {
     uninitialized: {
-      color: '#F97316', // Orange-500
-      bg: '#FFF7ED',    // Orange-50
-      border: '#FDBA74', // Orange-300
+      color: '#FB923C', // Orange-400
+      bg: 'rgba(249, 115, 22, 0.1)', // Orange-500/10
+      border: 'rgba(249, 115, 22, 0.2)', // Orange-500/20
       title: 'Action Required',
       text: 'This trader state is created but not running. Click "View" then "Initialize" to start copying trades.'
     },
     paused: {
-      color: '#EAB308', // Yellow-500
-      bg: '#FEFCE8',    // Yellow-50
-      border: '#FDE047', // Yellow-300
+      color: '#FACC15', // Yellow-400
+      bg: 'rgba(234, 179, 8, 0.1)', // Yellow-500/10
+      border: 'rgba(234, 179, 8, 0.2)', // Yellow-500/20
       title: 'Copying Paused',
       text: 'New trades are not being copied. Existing positions remain open. Click "View" to resume.'
     },
     stopped: {
-      color: '#EF4444', // Red-500
-      bg: '#FEF2F2',    // Red-50
-      border: '#FCA5A5', // Red-300
+      color: '#F87171', // Red-400
+      bg: 'rgba(239, 68, 68, 0.1)', // Red-500/10
+      border: 'rgba(239, 68, 68, 0.2)', // Red-500/20
       title: 'State Stopped',
       text: 'This state is fully stopped. Please withdraw any remaining funds to your main vault.'
     }
@@ -366,6 +367,7 @@ export default function DemoVaultPage() {
   const [selectedTrader, setSelectedTrader] = useState<string | null>(null);
   const [allocationUsd, setAllocationUsd] = useState(500);
   
+  const { step: onboardingStep, setStep } = useOnboarding();
   const walletAddress = user?.wallet || null;
   
   const fetchVault = useCallback(async () => {
@@ -483,6 +485,9 @@ export default function DemoVaultPage() {
       } else {
         setShowFollowModal(false);
         setSelectedTrader(null);
+        if (onboardingStep === 'ALLOCATE') {
+             setStep('INITIALIZE');
+        }
         await fetchVault();
       }
     } catch {
@@ -902,11 +907,18 @@ export default function DemoVaultPage() {
                     const totalTrades = stats.completedCount + stats.failedCount;
                     const roi = ts.allocated_usd > 0 ? (pnl / Number(ts.allocated_usd)) * 100 : 0;
                     
+                    const isTargetForInit = onboardingStep === 'INITIALIZE' && !ts.is_initialized && !ts.is_settled;
+
                     return (
                       <div 
                         key={ts.id} 
-                        className={`grid grid-cols-[50px_1fr_1.4fr_0.7fr_0.7fr_0.6fr_0.7fr_0.6fr_100px] gap-3 px-4 sm:px-5 py-3 items-center hover:bg-white/[0.04] transition-colors min-w-[900px] ${index % 2 === 1 ? 'bg-white/[0.02]' : ''}`}
+                        className={`grid grid-cols-[50px_1fr_1.4fr_0.7fr_0.7fr_0.6fr_0.7fr_0.6fr_100px] gap-3 px-4 sm:px-5 py-3 items-center hover:bg-white/[0.04] transition-colors min-w-[900px] ${index % 2 === 1 ? 'bg-white/[0.02]' : ''} ${isTargetForInit ? 'ring-2 ring-emerald-500/50 bg-emerald-500/5 relative z-10' : ''}`}
                       >
+                        {isTargetForInit && (
+                            <div className="absolute -left-2 top-1/2 -translate-y-1/2 -translate-x-full pr-2 hidden xl:block animate-pulse">
+                                <span className="text-emerald-400 text-sm font-medium whitespace-nowrap">Click View →</span>
+                            </div>
+                        )}
                         {/* Rank */}
                         <div className="flex items-center gap-1 font-mono text-sm">
                           {rank === 1 ? (
@@ -1008,10 +1020,10 @@ export default function DemoVaultPage() {
                         <div>
                           <Link 
                             href={`/demo-vault/${ts.id}`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-white/20 rounded hover:bg-white/5 transition-colors"
-                            style={{ color: COLORS.text }}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-white/20 rounded hover:bg-white/5 transition-colors ${isTargetForInit ? 'bg-emerald-500 text-white border-emerald-400 hover:bg-emerald-600 animate-pulse' : ''}`}
+                            style={{ color: isTargetForInit ? '#fff' : COLORS.text }}
                           >
-                            View <ExternalLink size={12} />
+                            {isTargetForInit ? 'Initialize' : 'View'} <ExternalLink size={12} />
                           </Link>
                         </div>
                       </div>
@@ -1028,9 +1040,14 @@ export default function DemoVaultPage() {
         {showFollowModal && (
           <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
             <div className="w-full max-w-md p-6 border border-white/10" style={{ backgroundColor: COLORS.surface }}>
-              <h2 className="text-lg font-medium mb-2" style={{ color: COLORS.text }}>Create Trader State</h2>
+              <h2 className="text-lg font-medium mb-2" style={{ color: COLORS.text }}>
+                {onboardingStep === 'ALLOCATE' ? 'Complete Setup: Follow Trader' : 'Create Trader State'}
+              </h2>
               <p className="text-sm mb-5 leading-relaxed" style={{ color: COLORS.data }}>
-                Allocate USD to follow a star trader. Each state has isolated funds.
+                {onboardingStep === 'ALLOCATE' 
+                  ? "Great choice! Allocate a portion of your demo funds. Next: You'll need to Initialize this trader state."
+                  : "Allocate USD to follow a star trader. Each state has isolated funds."
+                }
               </p>
               
               <div className="mb-4">

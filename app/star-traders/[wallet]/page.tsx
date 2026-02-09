@@ -24,6 +24,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
+import { useOnboarding } from '@/contexts/onboarding-context';
 
 // =============================================================================
 // TYPES
@@ -339,6 +340,7 @@ export default function TraderDetailPage() {
   const router = useRouter();
   const wallet = params.wallet as string;
   const { user, isAuthenticated } = useAuth();
+  const { step: onboardingStep, setStep } = useOnboarding();
   
   const [activeTab, setActiveTab] = useState<'trades' | 'portfolio'>('trades');
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -479,6 +481,12 @@ export default function TraderDetailPage() {
       router.push('/demo-vault');
       return;
     }
+    
+    // If in onboarding TOUR step, advance to ALLOCATE
+    if (onboardingStep === 'TOUR') {
+      setStep('ALLOCATE');
+    }
+
     router.push(`/demo-vault?follow=${wallet}`);
   };
   

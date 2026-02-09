@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { COLORS } from '@/lib/theme';
 import { useAuth } from '@/contexts/auth-context';
+import { useOnboarding } from '@/contexts/onboarding-context';
 import { Users, RefreshCw, Crown, Eye, UserPlus, UserCheck, Info } from 'lucide-react';
 
 interface TraderStats {
@@ -242,6 +243,7 @@ export default function StarTradersListPage() {
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
   const { user, isAuthenticated } = useAuth();
+  const { step: onboardingStep, setStep } = useOnboarding();
   
   const walletAddress = user?.wallet || null;
   
@@ -295,6 +297,12 @@ export default function StarTradersListPage() {
       router.push('/demo-vault');
       return;
     }
+    
+    // If in onboarding TOUR step, advance to ALLOCATE to allow navigation
+    if (onboardingStep === 'TOUR') {
+      setStep('ALLOCATE');
+    }
+
     router.push(`/demo-vault?follow=${traderWallet}`);
   };
   
@@ -535,7 +543,9 @@ export default function StarTradersListPage() {
                       ) : (
                         <button 
                           onClick={(e) => { e.stopPropagation(); handleFollow(trader.wallet); }}
-                          className="px-3 py-1 rounded text-xs font-semibold uppercase flex items-center gap-1.5 transition-all duration-200 hover:opacity-90 hover:scale-[1.03] active:scale-[0.97] shadow-lg shadow-cyan-500/10"
+                          className={`px-3 py-1 rounded text-xs font-semibold uppercase flex items-center gap-1.5 transition-all duration-200 hover:opacity-90 hover:scale-[1.03] active:scale-[0.97] shadow-lg shadow-cyan-500/10 ${
+                            onboardingStep === 'TOUR' && index === 0 ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-black animate-pulse' : ''
+                          }`}
                           style={{ backgroundColor: '#22D3EE', color: '#000' }}
                         >
                           <UserPlus size={12} />

@@ -10,6 +10,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useAppKitAccount } from '@reown/appkit/react';
 import { useAuth } from '@/contexts/auth-context';
+import { useOnboarding } from '@/contexts/onboarding-context';
 import { COLORS } from '@/lib/theme';
 import { 
   ArrowLeft, 
@@ -325,6 +326,7 @@ export default function TraderStateDetailPage() {
   const router = useRouter();
   const { isConnected } = useAppKitAccount();
   const { isAuthenticated, user, isLoading: authLoading } = useAuth();
+  const { step: onboardingStep, setStep } = useOnboarding();
   const traderStateId = params.id as string;
   const walletAddress = user?.wallet || null;
   
@@ -483,6 +485,9 @@ export default function TraderStateDetailPage() {
     // Direct initialize action
     const initialized = await handleAction('initialize');
     if (initialized) {
+      if (onboardingStep === 'INITIALIZE') {
+          setStep('COMPLETE');
+      }
       // Success feedback handled by UI state update
     }
   };
@@ -646,8 +651,12 @@ export default function TraderStateDetailPage() {
                 <button 
                   onClick={handleInitClick} 
                   disabled={actionLoading} 
-                  className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 shadow-lg shadow-emerald-500/10" 
-                  style={{ 
+                  className={`px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 shadow-lg ${
+                    onboardingStep === 'INITIALIZE' 
+                      ? 'bg-emerald-500 text-white border-emerald-400 hover:bg-emerald-600 shadow-emerald-500/20 ring-2 ring-emerald-400 ring-offset-2 ring-offset-black animate-pulse' 
+                      : 'shadow-emerald-500/10'
+                  }`} 
+                  style={onboardingStep === 'INITIALIZE' ? {} : { 
                     backgroundColor: 'rgba(16, 185, 129, 0.1)',
                     borderColor: 'rgba(16, 185, 129, 0.5)',
                     color: '#10B981'
