@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getSession } from '@/lib/session';
 
 // GET: Fetch user's demo vault with trader states
 // (Implementation moved below to use price fetching)
@@ -7,10 +8,16 @@ import { supabase } from '@/lib/supabase';
 // POST: Deploy new demo vault with 1K USD
 export async function POST(request: NextRequest) {
   try {
-    const { wallet } = await request.json();
-    
-    if (!wallet) {
-      return NextResponse.json({ error: 'Wallet address required' }, { status: 400 });
+    const session = await getSession();
+    if (!session.isLoggedIn || !session.user?.wallet) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { wallet: requestedWallet } = await request.json();
+    const wallet = session.user.wallet;
+
+    if (requestedWallet && requestedWallet !== wallet) {
+      return NextResponse.json({ error: 'Forbidden: wallet does not match authenticated user' }, { status: 403 });
     }
     
     // Check if vault already exists
@@ -55,7 +62,7 @@ const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
 // Stablecoins always = $1
 const STABLECOIN_MINTS = new Set([
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenUb9', // USDT
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
   'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', // USD1
 ]);
 
@@ -100,11 +107,17 @@ async function fetchJupiterPrices(mints: string[]): Promise<Map<string, number>>
 
 // GET: Fetch user's demo vault with trader states
 export async function GET(request: NextRequest) {
+  const session = await getSession();
+  if (!session.isLoggedIn || !session.user?.wallet) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
-  const wallet = searchParams.get('wallet');
-  
-  if (!wallet) {
-    return NextResponse.json({ error: 'Wallet address required' }, { status: 400 });
+  const requestedWallet = searchParams.get('wallet');
+  const wallet = session.user.wallet;
+
+  if (requestedWallet && requestedWallet !== wallet) {
+    return NextResponse.json({ error: 'Forbidden: wallet does not match authenticated user' }, { status: 403 });
   }
   
   try {

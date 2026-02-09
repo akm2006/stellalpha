@@ -12,7 +12,7 @@ const SOL_LOGO = 'https://raw.githubusercontent.com/solana-labs/token-list/main/
 // Stablecoins always = $1
 const STABLECOIN_MINTS = new Set([
   USDC_MINT,
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenUb9', // USDT
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
   'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', // USD1
 ]);
 

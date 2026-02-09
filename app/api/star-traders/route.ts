@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { uniqueNamesGenerator, languages, starWars } from 'unique-names-generator';
+import { getSession } from '@/lib/session';
 
 const formatName = (str: string) => str.split(' ').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
 
@@ -209,6 +210,11 @@ export async function GET(request: NextRequest) {
 // POST: Add a new star trader
 export async function POST(request: Request) {
   try {
+    const session = await getSession();
+    if (!session.isLoggedIn || !session.user?.wallet) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { wallet, name } = await request.json();
     
     if (!wallet) {

@@ -17,9 +17,15 @@ import {
   loadBackendKeypair,
   fetchTraderState,
 } from "@/lib/stellalpha";
+import { getSession } from "@/lib/session";
 
 export async function POST(request: NextRequest) {
   try {
+    const session = await getSession();
+    if (!session.isLoggedIn || !session.user?.wallet) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = await request.json();
     const { traderStatePubkey } = body;
 
@@ -56,6 +62,13 @@ export async function POST(request: NextRequest) {
     // Fetch the raw account to get the actual owner pubkey
     const rawAccount = await program.account.traderState.fetch(traderState);
     const actualOwner = rawAccount.owner;
+
+    if (actualOwner.toBase58() !== session.user.wallet) {
+      return NextResponse.json(
+        { error: "Forbidden: trader state does not belong to authenticated wallet" },
+        { status: 403 }
+      );
+    }
     
     // Derive vault PDA from the STORED owner (not passed-in ownerPubkey)
     const [vaultPda] = deriveVaultPda(actualOwner);

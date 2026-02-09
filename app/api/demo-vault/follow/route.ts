@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getSession } from '@/lib/session';
 
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -7,10 +8,20 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 // POST: Create a new TraderState with USD allocation (no auto-sync)
 export async function POST(request: NextRequest) {
   try {
-    const { wallet, starTrader, allocationUsd } = await request.json();
+    const session = await getSession();
+    if (!session.isLoggedIn || !session.user?.wallet) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { wallet: requestedWallet, starTrader, allocationUsd } = await request.json();
+    const wallet = session.user.wallet;
+
+    if (requestedWallet && requestedWallet !== wallet) {
+      return NextResponse.json({ error: 'Forbidden: wallet does not match authenticated user' }, { status: 403 });
+    }
     
-    if (!wallet || !starTrader) {
-      return NextResponse.json({ error: 'Wallet and starTrader required' }, { status: 400 });
+    if (!starTrader) {
+      return NextResponse.json({ error: 'starTrader required' }, { status: 400 });
     }
     
     const usdAmount = Math.max(0, Number(allocationUsd) || 0);
@@ -101,9 +112,19 @@ export async function POST(request: NextRequest) {
 // PATCH: Handle actions - sync, initialize, pause, resume, settle
 export async function PATCH(request: NextRequest) {
   try {
-    const { wallet, traderStateId, action } = await request.json();
+    const session = await getSession();
+    if (!session.isLoggedIn || !session.user?.wallet) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { wallet: requestedWallet, traderStateId, action } = await request.json();
+    const wallet = session.user.wallet;
+
+    if (requestedWallet && requestedWallet !== wallet) {
+      return NextResponse.json({ error: 'Forbidden: wallet does not match authenticated user' }, { status: 403 });
+    }
     
-    if (!wallet || !traderStateId || !action) {
+    if (!traderStateId || !action) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
     
@@ -175,12 +196,22 @@ async function handleInitialize(ts: any) {
 
 // DELETE: Unfollow/withdraw trader state (return funds to vault)
 export async function DELETE(request: NextRequest) {
+  const session = await getSession();
+  if (!session.isLoggedIn || !session.user?.wallet) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
-  const wallet = searchParams.get('wallet');
+  const requestedWallet = searchParams.get('wallet');
+  const wallet = session.user.wallet;
   const traderStateId = searchParams.get('traderStateId');
+
+  if (requestedWallet && requestedWallet !== wallet) {
+    return NextResponse.json({ error: 'Forbidden: wallet does not match authenticated user' }, { status: 403 });
+  }
   
-  if (!wallet || !traderStateId) {
-    return NextResponse.json({ error: 'Wallet and traderStateId required' }, { status: 400 });
+  if (!traderStateId) {
+    return NextResponse.json({ error: 'traderStateId required' }, { status: 400 });
   }
   
   try {

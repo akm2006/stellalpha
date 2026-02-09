@@ -40,6 +40,7 @@ import {
   solToLamports,
   usdcToRaw,
 } from "@/lib/stellalpha";
+import { getSession } from "@/lib/session";
 
 // Jupiter v1 API endpoints (current, not deprecated v6)
 const JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1/quote";
@@ -57,6 +58,11 @@ export async function POST(request: NextRequest) {
   const startTime = Date.now();
   
   try {
+    const session = await getSession();
+    if (!session.isLoggedIn || !session.user?.wallet) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body: SwapRequest = await request.json();
     const { ownerPubkey, traderStatePubkey, direction, amount, slippageBps = 100 } = body;
 
@@ -68,7 +74,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const apiKey = "REDACTED";
+    if (session.user.wallet !== ownerPubkey) {
+      return NextResponse.json(
+        { error: "Forbidden: ownerPubkey does not match authenticated wallet" },
+        { status: 403 }
+      );
+    }
+
+    const apiKey = process.env.JUPITER_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
         { error: "JUPITER_API_KEY not configured" },
@@ -92,6 +105,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "TraderState not found" },
         { status: 404 }
+      );
+    }
+
+    // Enforce ownership: authenticated wallet must own this TraderState.
+    const rawTraderState = await program.account.traderState.fetch(traderState);
+    if (!rawTraderState.owner.equals(owner)) {
+      return NextResponse.json(
+        { error: "Forbidden: trader state does not belong to ownerPubkey" },
+        { status: 403 }
       );
     }
 
