@@ -3,7 +3,7 @@
 import React from 'react';
 import { useOnboarding } from '@/contexts/onboarding-context';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ArrowRight, ShieldCheck, Wallet } from 'lucide-react';
+import { X, ArrowRight, ShieldCheck, Wallet, Clock } from 'lucide-react';
 import { COLORS } from '@/lib/theme';
 
 export function WelcomeStep() {
@@ -47,9 +47,16 @@ export function WelcomeStep() {
               Welcome to Stellalpha
             </h2>
             
-            <p className="text-sm text-slate-400 leading-relaxed mb-8">
+            <p className="text-sm text-slate-400 leading-relaxed mb-6">
               Try our Demo Vault feature to experience copy trading in a simulated environment with <span className="text-emerald-400 font-medium">$1,000 virtual capital</span>.
             </p>
+
+            <div className="flex items-center justify-center gap-2 mb-8 text-[11px] uppercase tracking-wider font-semibold text-emerald-500/80">
+              <Clock size={12} />
+              <span>Takes less than a minute</span>
+              <span className="w-1 h-1 rounded-full bg-[#262626]" />
+              <span>No fees</span>
+            </div>
 
             <div className="space-y-3">
               <button
