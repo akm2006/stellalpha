@@ -4,6 +4,11 @@ import { getSession } from '@/lib/session';
 
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STABLECOIN_MINTS = new Set([
+  USDC_MINT,
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+  'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', // USD1
+]);
 
 // POST: Create a new TraderState with USD allocation (no auto-sync)
 export async function POST(request: NextRequest) {
@@ -249,50 +254,63 @@ export async function DELETE(request: NextRequest) {
     let totalReturnValue = 0;
     
     if (positions && positions.length > 0) {
-      const mints = positions.map(p => p.token_mint);
-      let prices: Record<string, number> = {};
+      const mints = Array.from(new Set(positions.map(p => p.token_mint)));
+      const prices: Record<string, number> = {};
+
+      // Stablecoins are always valued at $1
+      for (const mint of mints) {
+        if (STABLECOIN_MINTS.has(mint)) {
+          prices[mint] = 1;
+        }
+      }
       
       try {
-        const pricesResponse = await fetch(
-          `https://api.jup.ag/price/v3?ids=${mints.join(',')}`,
-          { headers: JUPITER_API_KEY ? { 'x-api-key': JUPITER_API_KEY } : {} }
-        );
-        const pricesData = await pricesResponse.json();
-        
-        // Jupiter v3 returns prices directly on root object
-        for (const [mint, info] of Object.entries(pricesData)) {
-          if (info && typeof info === 'object' && 'usdPrice' in info) {
-            prices[mint] = Number((info as { usdPrice: number }).usdPrice || 0);
+        const nonStableMints = mints.filter((mint) => !STABLECOIN_MINTS.has(mint));
+
+        if (nonStableMints.length > 0) {
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+
+          const pricesResponse = await fetch(
+            `https://api.jup.ag/price/v3?ids=${nonStableMints.join(',')}`,
+            { headers }
+          );
+
+          if (pricesResponse.ok) {
+            const pricesData = await pricesResponse.json();
+            // Jupiter v3 returns prices directly on root object
+            for (const [mint, info] of Object.entries(pricesData)) {
+              if (info && typeof info === 'object' && 'usdPrice' in info) {
+                prices[mint] = Number((info as { usdPrice: number }).usdPrice || 0);
+              }
+            }
           }
         }
       } catch {
-        // Use cached prices
+        // Ignore and use cached prices fallback below
+      }
+
+      // Fill missing non-stable token prices from cached table
+      const missingMints = mints.filter((mint) => !STABLECOIN_MINTS.has(mint) && !(prices[mint] > 0));
+      if (missingMints.length > 0) {
         const { data: cachedPrices } = await supabase
           .from('token_prices')
-          .select('*')
-          .in('mint', mints);
-        
+          .select('mint, price')
+          .in('mint', missingMints);
+
         if (cachedPrices) {
           for (const p of cachedPrices) {
-            prices[p.mint] = p.price;
+            prices[p.mint] = Number(p.price) || 0;
           }
         }
       }
-      
+
+      // Return current portfolio value using available market prices only.
+      // If a token still has no price, treat it as 0 to avoid over-crediting.
       for (const pos of positions) {
-        const price = prices[pos.token_mint] || 0;
-        if (price > 0) {
-          totalReturnValue += Number(pos.size) * price;
-        } else {
-          // No price, use cost basis
-          totalReturnValue += Number(pos.cost_usd);
-        }
+        const price = Number(prices[pos.token_mint] || 0);
+        totalReturnValue += Number(pos.size) * Math.max(price, 0);
       }
-    }
-    
-    // If no value calculated, use allocated amount
-    if (totalReturnValue === 0) {
-      totalReturnValue = Number(traderState.allocated_usd);
     }
     
     // Return funds to vault

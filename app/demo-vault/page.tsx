@@ -495,7 +495,13 @@ export default function DemoVaultPage() {
   const deleteVault = async () => {
     if (!walletAddress || !confirm('Delete entire demo vault?')) return;
     try {
-      await fetch(`/api/demo-vault?wallet=${walletAddress}`, { method: 'DELETE' });
+      setError(null);
+      const response = await fetch(`/api/demo-vault?wallet=${walletAddress}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok || data.error) {
+        setError(data.error || 'Failed to delete vault');
+        return;
+      }
       setVault(null);
       setTraderStates([]);
       setTradeStats({});
