@@ -1,0 +1,35 @@
+{
+      "description": "WalletABC bought 100000 tokens of MEMECOIN with SOL",
+      "type": "SWAP",
+      "source": "JUPITER",
+      "fee": 5000,
+      "feePayer": "WalletABC111111111111111111111111111111111",
+      "signature": "case-c-sol-to-memecoin-sig-001",
+      "slot": 399500000,
+      "timestamp": 1770780000,
+      "tokenTransfers": [
+            {
+                  "fromTokenAccount": "PoolAccount1111111111111111111111111111111111",
+                  "toTokenAccount": "WalletTokenAcct1111111111111111111111111111",
+                  "fromUserAccount": "PoolAuthority11111111111111111111111111111",
+                  "toUserAccount": "WalletABC111111111111111111111111111111111",
+                  "tokenAmount": 100000,
+                  "mint": "MEMEcoin111111111111111111111111111111111111",
+                  "tokenStandard": "Fungible"
+            }
+      ],
+      "nativeTransfers": [
+            {
+                  "fromUserAccount": "WalletABC111111111111111111111111111111111",
+                  "toUserAccount": "PoolAuthority11111111111111111111111111111",
+                  "amount": 500000000
+            }
+      ],
+      "accountData": [
+            {
+                  "account": "WalletABC111111111111111111111111111111111",
+                  "nativeBalanceChange": -500005000,
+                  "tokenBalanceChanges": []
+            }
+      ]
+}

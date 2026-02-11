@@ -1,0 +1,62 @@
+{
+      "description": "WalletXYZ swapped Token A through USD1 hop to Token B",
+      "type": "SWAP",
+      "source": "JUPITER",
+      "fee": 5000,
+      "feePayer": "WalletXYZ111111111111111111111111111111111",
+      "signature": "case-d-routed-token-swap-sig-001",
+      "slot": 399600000,
+      "timestamp": 1770790000,
+      "tokenTransfers": [
+            {
+                  "fromTokenAccount": "WalletTokenA11111111111111111111111111111111",
+                  "toTokenAccount": "PoolTokenA111111111111111111111111111111111",
+                  "fromUserAccount": "WalletXYZ111111111111111111111111111111111",
+                  "toUserAccount": "PoolAuthA1111111111111111111111111111111111",
+                  "tokenAmount": 5000,
+                  "mint": "TokenAMint11111111111111111111111111111111",
+                  "tokenStandard": "Fungible"
+            },
+            {
+                  "fromTokenAccount": "WalletUSD1Acct1111111111111111111111111111",
+                  "toTokenAccount": "PoolUSD1Acct11111111111111111111111111111111",
+                  "fromUserAccount": "WalletXYZ111111111111111111111111111111111",
+                  "toUserAccount": "PoolAuthB1111111111111111111111111111111111",
+                  "tokenAmount": 100,
+                  "mint": "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+                  "tokenStandard": "Fungible"
+            },
+            {
+                  "fromTokenAccount": "PoolUSD1Out111111111111111111111111111111111",
+                  "toTokenAccount": "WalletUSD1RecvAcct11111111111111111111111111",
+                  "fromUserAccount": "PoolAuthB1111111111111111111111111111111111",
+                  "toUserAccount": "WalletXYZ111111111111111111111111111111111",
+                  "tokenAmount": 100,
+                  "mint": "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+                  "tokenStandard": "Fungible"
+            },
+            {
+                  "fromTokenAccount": "PoolTokenB11111111111111111111111111111111",
+                  "toTokenAccount": "WalletTokenB11111111111111111111111111111111",
+                  "fromUserAccount": "PoolAuthB1111111111111111111111111111111111",
+                  "toUserAccount": "WalletXYZ111111111111111111111111111111111",
+                  "tokenAmount": 250,
+                  "mint": "TokenBMint11111111111111111111111111111111",
+                  "tokenStandard": "Fungible"
+            }
+      ],
+      "nativeTransfers": [
+            {
+                  "fromUserAccount": "WalletXYZ111111111111111111111111111111111",
+                  "toUserAccount": "JitoTipAddr1111111111111111111111111111111",
+                  "amount": 5000000
+            }
+      ],
+      "accountData": [
+            {
+                  "account": "WalletXYZ111111111111111111111111111111111",
+                  "nativeBalanceChange": -5005000,
+                  "tokenBalanceChanges": []
+            }
+      ]
+}

@@ -1,0 +1,59 @@
+{
+      "description": "5TcyQLh8ojBf81DKeRC4vocTbNKJpJCsR9Kei16kLqDM swapped 223.147257 USD1 for 2.65147734 SOL",
+      "type": "SWAP",
+      "source": "RAYDIUM",
+      "fee": 5000,
+      "feePayer": "5TcyQLh8ojBf81DKeRC4vocTbNKJpJCsR9Kei16kLqDM",
+      "signature": "33igZEmrWdVi3xX5D5ZuF3tdwDyeYwY6CfeNDQ6gxQBP2PzSoToqfMS2CjKtpzJajiiRXiwgQPpqu4zUFdE7e88s",
+      "slot": 399447540,
+      "timestamp": 1770775587,
+      "tokenTransfers": [
+            {
+                  "fromTokenAccount": "B8HRwNNAyPWMNrvfR4L3tQAJrENfi8FKHz5Tb4CoYr2e",
+                  "toTokenAccount": "DHY2efKhMcZyAgmPw82C2Gez1e98Ab7oWcXfxz9frUCr",
+                  "fromUserAccount": "5TcyQLh8ojBf81DKeRC4vocTbNKJpJCsR9Kei16kLqDM",
+                  "toUserAccount": "AQAGYQsdU853WAKhXM79CgNdoyhrRwXvYHX6qrDyC1FS",
+                  "tokenAmount": 223.147257,
+                  "mint": "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+                  "tokenStandard": "Fungible"
+            },
+            {
+                  "fromTokenAccount": "5QpMZ6MuyKjg8Qa1X8gM5G3YMsd43rpHb2iQ6hdcRM7m",
+                  "toTokenAccount": "3WJHx8x5sXfn1kMe6GfDYgibccREaEqDSnMcjgZHiXTu",
+                  "fromUserAccount": "AQAGYQsdU853WAKhXM79CgNdoyhrRwXvYHX6qrDyC1FS",
+                  "toUserAccount": "5TcyQLh8ojBf81DKeRC4vocTbNKJpJCsR9Kei16kLqDM",
+                  "tokenAmount": 2.65147734,
+                  "mint": "So11111111111111111111111111111111111111112",
+                  "tokenStandard": "Fungible"
+            }
+      ],
+      "nativeTransfers": [
+            {
+                  "fromUserAccount": "5TcyQLh8ojBf81DKeRC4vocTbNKJpJCsR9Kei16kLqDM",
+                  "toUserAccount": "astra4uejePWneqNaJKuFFA8oonqCE1sqF6b45kDMZm",
+                  "amount": 100000
+            },
+            {
+                  "fromUserAccount": "5TcyQLh8ojBf81DKeRC4vocTbNKJpJCsR9Kei16kLqDM",
+                  "toUserAccount": "3WJHx8x5sXfn1kMe6GfDYgibccREaEqDSnMcjgZHiXTu",
+                  "amount": 2039280
+            },
+            {
+                  "fromUserAccount": "3WJHx8x5sXfn1kMe6GfDYgibccREaEqDSnMcjgZHiXTu",
+                  "toUserAccount": "5TcyQLh8ojBf81DKeRC4vocTbNKJpJCsR9Kei16kLqDM",
+                  "amount": 2653516620
+            }
+      ],
+      "accountData": [
+            {
+                  "account": "5TcyQLh8ojBf81DKeRC4vocTbNKJpJCsR9Kei16kLqDM",
+                  "nativeBalanceChange": 2651372340,
+                  "tokenBalanceChanges": []
+            },
+            {
+                  "account": "astra4uejePWneqNaJKuFFA8oonqCE1sqF6b45kDMZm",
+                  "nativeBalanceChange": 100000,
+                  "tokenBalanceChanges": []
+            }
+      ]
+}

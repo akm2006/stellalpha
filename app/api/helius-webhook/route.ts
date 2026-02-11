@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { Connection, PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { detectTrade as detectTradeParser, RawTrade, getTokenSymbol as getTokenSymbolParser } from '@/lib/trade-parser';
 
 const HELIUS_WEBHOOK_SECRET = process.env.HELIUS_WEBHOOK_SECRET;
 const WSOL = "So11111111111111111111111111111111111111112";
@@ -44,11 +45,11 @@ async function getSolPrice(): Promise<number> {
   if (solPriceCache && Date.now() - solPriceCache.timestamp < SOL_PRICE_CACHE_TTL) {
     return solPriceCache.price;
   }
-  
+
   try {
     const headers: Record<string, string> = {};
     if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-    
+
     const response = await fetch(`https://api.jup.ag/price/v3?ids=${WSOL}`, { headers });
     if (response.ok) {
       const data = await response.json();
@@ -62,7 +63,7 @@ async function getSolPrice(): Promise<number> {
   } catch (error) {
     console.warn('[SOL Price] Fetch failed:', error);
   }
-  
+
   // Fallback to cached price or default
   return solPriceCache?.price || 150; // $150 fallback (safer than $200)
 }
@@ -102,7 +103,7 @@ async function getTokenDecimals(mint: string): Promise<number> {
   if (decimalsCache.has(mint)) {
     return decimalsCache.get(mint)!;
   }
-  
+
   try {
     const meta = await getTokenMetadata(mint);
     if (typeof meta.decimals === 'number') {
@@ -112,7 +113,7 @@ async function getTokenDecimals(mint: string): Promise<number> {
   } catch (error) {
     console.warn(`Failed to fetch decimals for ${mint}:`, error);
   }
-  
+
   // Default fallback (should rarely be reached as getTokenMetadata has its own fallback)
   const defaultDecimals = STABLECOIN_MINTS.has(mint) ? 6 : 9;
   decimalsCache.set(mint, defaultDecimals);
@@ -139,9 +140,9 @@ async function enrichTradeSymbols(signature: string, tokenInMint: string, tokenO
     const mintsToFetch: string[] = [];
     if (!KNOWN_TOKENS[tokenInMint] && tokenInMint !== 'SOL') mintsToFetch.push(tokenInMint);
     if (!KNOWN_TOKENS[tokenOutMint] && tokenOutMint !== 'SOL') mintsToFetch.push(tokenOutMint);
-    
+
     if (mintsToFetch.length === 0) return; // All known, nothing to do
-    
+
     // Fetch metadata from Jupiter
     const symbolMap: Record<string, string> = {};
     for (const mint of mintsToFetch) {
@@ -150,14 +151,14 @@ async function enrichTradeSymbols(signature: string, tokenInMint: string, tokenO
         symbolMap[mint] = meta.symbol;
       }
     }
-    
+
     if (Object.keys(symbolMap).length === 0) return; // No symbols found
-    
+
     // Update trades table with real symbols
     const updates: Record<string, string> = {};
     if (symbolMap[tokenInMint]) updates.token_in_symbol = symbolMap[tokenInMint];
     if (symbolMap[tokenOutMint]) updates.token_out_symbol = symbolMap[tokenOutMint];
-    
+
     if (Object.keys(updates).length > 0) {
       await supabase.from('trades').update(updates).eq('signature', signature);
     }
@@ -171,292 +172,77 @@ async function enrichTradeSymbols(signature: string, tokenInMint: string, tokenO
 // Performance: Uses Set for O(1) deduplication, then single DB query with .in()
 function extractInvolvedAddresses(tx: any): Set<string> {
   const addresses = new Set<string>();
-  
+
   // 1. Always include feePayer (may be the trader or a relayer)
   if (tx.feePayer) {
     addresses.add(tx.feePayer);
   }
-  
+
   // 2. Extract from tokenTransfers (PRIMARY - most reliable for swaps)
   // This is where the actual trader appears even when using bots
   for (const transfer of tx.tokenTransfers || []) {
     if (transfer.fromUserAccount) addresses.add(transfer.fromUserAccount);
     if (transfer.toUserAccount) addresses.add(transfer.toUserAccount);
   }
-  
+
   // 3. Extract from nativeTransfers (SOL movements)
   for (const transfer of tx.nativeTransfers || []) {
     if (transfer.fromUserAccount) addresses.add(transfer.fromUserAccount);
     if (transfer.toUserAccount) addresses.add(transfer.toUserAccount);
   }
-  
+
   // 4. Extract from accountData (all touched accounts)
   // Note: This can include many program accounts, but our star_traders
   // table will filter to only real wallets
   for (const acc of tx.accountData || []) {
     if (acc.account) addresses.add(acc.account);
   }
-  
+
   // 5. Remove known system program addresses to reduce false positives
   addresses.delete('11111111111111111111111111111111'); // System Program
   addresses.delete('ComputeBudget111111111111111111111111111111'); // Compute Budget
   addresses.delete('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'); // Token Program
   addresses.delete('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'); // Associated Token
   addresses.delete('SysvarRent111111111111111111111111111111111'); // Rent Sysvar
-  
+
   return addresses;
 }
 
-interface RawTrade {
-  signature: string;
-  wallet: string;
-  type: 'buy' | 'sell';
-  tokenMint: string;
-  tokenAmount: number;
-  baseAmount: number;
-  tokenInMint: string;
-  tokenInAmount: number;
-  tokenInPreBalance: number;  // NEW: Leader's pre-trade balance for ratio calculation
-  tokenOutMint: string;
-  tokenOutAmount: number;
-  timestamp: number;
-  source: string;
-  gas: number;
-}
+// RawTrade interface and detectTrade function are now imported from @/lib/trade-parser
+// This ensures consistency between the tested parser and the live webhook handler.
+// The old inline detectTrade had a bug where SOL override fired before token analysis,
+// causing MEV tip payments to hijack trade classification (e.g., BLACKROCK→USD1 became SOL→USD1).
 
+// detectTrade is now delegated to the extracted, tested trade-parser module.
+// Wrapper to maintain async interface and add performance logging.
 async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   const timer = new PerformanceTimer(`detectTrade(${tx.signature?.slice(0, 8)}...)`);
-  
-  const t = tx.tokenTransfers || [];
-  const fp = wallet;
-  
-  const walletAccountData = tx.accountData?.find((a: any) => a.account === fp);
-  const solChange = walletAccountData?.nativeBalanceChange || 0;
-  const fee = tx.fee || 0;
-  const solChangeNet = (solChange + fee) / 1e9;
-  
-  timer.checkpoint('Parse wallet data');
-  
-  const relevant = t.filter((x: any) => x.fromUserAccount === fp || x.toUserAccount === fp);
-  // Don't filter out wSOL - we want to track SOL swaps too
-  const tokensSent = relevant.filter((x: any) => x.fromUserAccount === fp);
-  const tokensReceived = relevant.filter((x: any) => x.toUserAccount === fp);
-  
-  timer.checkpoint('Filter token transfers');
-  
-  let type: 'buy' | 'sell' = 'buy';
-  let tokenMint = '';
-  let tokenAmount = 0;
-  let baseAmount = 0;
-  let tokenInMint = '';
-  let tokenInAmount = 0;
-  let tokenOutMint = '';
-  let tokenOutAmount = 0;
-  
-  // Token → Token swap
-  if (tokensSent.length > 0 && tokensReceived.length > 0) {
-    // 1. NATIVE SOL OVERRIDE Check
-    // If we see token transfers (like USD1), but SOL was ALSO spent (> 0.01 to filter gas),
-    // it's likely a SOL -> USD1 -> Token route. Trust the SOL spend as the true source.
-    if (solChangeNet < -0.01) {
-      const largestOut = tokensReceived.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
-       
-      return {
-        signature: tx.signature,
-        wallet: fp,
-        type: 'buy',
-        tokenMint: largestOut.mint,
-        tokenAmount: largestOut.tokenAmount,
-        baseAmount: (await getSolPrice()) * Math.abs(solChangeNet),
-        tokenInMint: 'SOL',           // <--- Correctly identified as SOL
-        tokenInAmount: Math.abs(solChangeNet),
-        tokenInPreBalance: 0,         
-        tokenOutMint: largestOut.mint,
-        tokenOutAmount: largestOut.tokenAmount,
-        timestamp: tx.timestamp,
-        source: tx.source || 'UNKNOWN',
-        gas: fee / 1e9
-      };
-    }
 
-    // 2. NATIVE SOL SELL OVERRIDE Check
-    // Intercepts Token -> [Router] -> SOL
-    // If we gained significant SOL (> 0.01), treat this as a Sell to SOL,
-    // (ignoring wSOL/USD1), UNLESS we also received a hard Priority Asset (USDC/USDT).
-    if (solChangeNet > 0.01) {
-      // FIX For Rent Refund False Positives:
-      // If we received USDC/USDT, that is likely the real output, 
-      // and the SOL gain is just rent refund (e.g. closing multiple accounts).
-      const PRIORITY_SAFE_OUTPUTS = new Set([
-        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-        'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-      ]);
-      const hasSafeOutput = tokensReceived.some((t: any) => PRIORITY_SAFE_OUTPUTS.has(t.mint));
+  const solPrice = await getSolPrice();
+  timer.checkpoint('Get SOL price for parser');
 
-      if (!hasSafeOutput) {
-        // Only override if we didn't get a safe stablecoin output
-        const largestIn = tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
-        
-        console.log(`[Trade] Detected SOL gain masked by routing asset. Forcing Native SOL Sell.`);
+  const result = detectTradeParser(tx, wallet, solPrice);
 
-        return {
-          signature: tx.signature,
-          wallet: fp,
-          type: 'sell',
-          tokenMint: largestIn.mint,
-          tokenAmount: largestIn.tokenAmount,
-          baseAmount: (await getSolPrice()) * Math.abs(solChangeNet),
-          tokenInMint: largestIn.mint,
-          tokenInAmount: largestIn.tokenAmount,
-          tokenInPreBalance: 0, 
-          tokenOutMint: 'SOL',            // <--- Correctly identified as SOL
-          tokenOutAmount: solChangeNet,   // <--- Correct SOL amount
-          timestamp: tx.timestamp,
-          source: tx.source || 'UNKNOWN',
-          gas: fee / 1e9
-        };
-      }
-    }
-
-
-    // 3. ROUTER TOKEN EXCLUSION (Intersection Logic)
-    // Identify tokens that act as intermediate hops (appear in BOTH Sent and Received)
-    // e.g. Swap Token A -> USD1 -> Token B usually shows:
-    // Sent: [Token A, USD1]
-    // Received: [USD1, Token B]
-    // We must exclude USD1 to find the real source (Token A) and dest (Token B).
-    const sentMints = new Set(tokensSent.map((t: any) => t.mint));
-    const receivedMints = new Set(tokensReceived.map((t: any) => t.mint));
-    const routingMints = new Set([...sentMints].filter(x => receivedMints.has(x)));
-    
-    // Filter candidates (unless they are the ONLY candidate)
-    const validSent = tokensSent.filter((t: any) => !routingMints.has(t.mint));
-    const validReceived = tokensReceived.filter((t: any) => !routingMints.has(t.mint));
-    
-    const candidatesSent = validSent.length > 0 ? validSent : tokensSent;
-    const candidatesReceived = validReceived.length > 0 ? validReceived : tokensReceived;
-
-    // 4. Base Asset Priority Logic (Input & Output)
-    // Prioritize Known Bases (USDC, USDT, wSOL) over random tokens (USD1)
-    const PRIORITY_MINTS = new Set([
-      'So11111111111111111111111111111111111111112', // wSOL
-      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-    ]);
-
-    // INPUT SELECTION
-    let inToken = candidatesSent.find((t: any) => PRIORITY_MINTS.has(t.mint));
-    if (!inToken) {
-      inToken = candidatesSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
-    }
-    
-    // OUTPUT SELECTION (New Fix)
-    // Prioritize receiving a known base asset over a random router token
-    // OUTPUT SELECTION
-    // Prioritize receiving a known base asset over a random router token
-    let outToken = candidatesReceived.find((t: any) => PRIORITY_MINTS.has(t.mint));
-    if (!outToken) {
-      outToken = candidatesReceived.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
-    }
-    if (inToken.mint === outToken.mint) return null;
-    
-    tokenInMint = inToken.mint;
-    tokenInAmount = inToken.tokenAmount;
-    tokenOutMint = outToken.mint;
-    tokenOutAmount = outToken.tokenAmount;
-    
-    const inIsBase = BASE_MINTS.has(inToken.mint);
-    const outIsBase = BASE_MINTS.has(outToken.mint);
-    
-    // Base-to-base swaps (USDC→SOL, SOL→USDC, etc): treat as buy/sell for the output token
-    // This allows copying without PnL (both are base assets at $1 or SOL price)
-    if (inIsBase && outIsBase) {
-      type = 'buy';  // Use 'buy' for DB compatibility, PnL handled separately
-      tokenMint = outToken.mint;
-      tokenAmount = outToken.tokenAmount;
-      baseAmount = await getUsdValue(inToken.mint, inToken.tokenAmount);
-    } else if (inIsBase && !outIsBase) {
-      type = 'buy';
-      tokenMint = outToken.mint;
-      tokenAmount = outToken.tokenAmount;
-      baseAmount = await getUsdValue(inToken.mint, inToken.tokenAmount);
-    } else if (!inIsBase && outIsBase) {
-      type = 'sell';
-      tokenMint = inToken.mint;
-      tokenAmount = inToken.tokenAmount;
-      baseAmount = await getUsdValue(outToken.mint, outToken.tokenAmount);
-    } else {
-      // Both non-base: treat as sell of inToken (can't determine USD value)
-      type = 'sell';
-      tokenMint = inToken.mint;
-      tokenAmount = inToken.tokenAmount;
-      baseAmount = 0;
-    }
-  }
-  // Token → SOL (sell)
-  else if (tokensSent.length > 0 && solChangeNet > 0.001) {
-    const largest = tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
-    type = 'sell';
-    tokenMint = largest.mint;
-    tokenAmount = largest.tokenAmount;
-    baseAmount = (await getSolPrice()) * solChangeNet;
-    tokenInMint = largest.mint;
-    tokenInAmount = largest.tokenAmount;
-    tokenOutMint = 'SOL';
-    tokenOutAmount = solChangeNet;
-  }
-  // SOL → Token (buy)
-  else if (tokensReceived.length > 0 && solChangeNet < -0.001) {
-    const largest = tokensReceived.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b);
-    type = 'buy';
-    tokenMint = largest.mint;
-    tokenAmount = largest.tokenAmount;
-    baseAmount = (await getSolPrice()) * Math.abs(solChangeNet);
-    tokenInMint = 'SOL';
-    tokenInAmount = Math.abs(solChangeNet);
-    tokenOutMint = largest.mint;
-    tokenOutAmount = largest.tokenAmount;
-  }
-  else {
+  if (!result) {
     timer.checkpoint('No trade pattern detected');
     return null;
   }
-  
-  timer.checkpoint('Trade type detection complete');
-  
-  if (tokenAmount < 0.000001) {
-    timer.checkpoint('Trade amount too small');
-    return null;
-  }
-  
-  timer.checkpoint('Build RawTrade object');
-  
-  const result = {
-    signature: tx.signature,
-    wallet: fp,
-    type,
-    tokenMint,
-    tokenAmount,
-    baseAmount,
-    tokenInMint,
-    tokenInAmount,
-    tokenInPreBalance: tokensSent.length > 0 
-      ? Number(tokensSent.reduce((a: any, b: any) => a.tokenAmount > b.tokenAmount ? a : b).preTokenBalance || 0)
-      : 0,
-    tokenOutMint,
-    tokenOutAmount,
-    timestamp: tx.timestamp,
-    source: tx.source || 'UNKNOWN',
-    gas: fee / 1e9
-  };
-  
+
+  timer.checkpoint(`Trade detected: ${result.type} ${result.tokenMint?.slice(0, 8)}... (confidence: ${result.confidence})`);
   timer.finish('detectTrade');
   return result;
 }
 
 async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: number | null; avgCostBasis: number | null }> {
   const { wallet, tokenMint, type, tokenAmount, baseAmount } = trade;
-  
+
+  // CONFIDENCE GUARD: If confidence is 'low', skip PnL to avoid phantom profit/loss.
+  // The trade is still persisted for record-keeping, but realized_pnl stays null.
+  if (trade.confidence === 'low') {
+    console.log(`[PnL] Skipping PnL for low-confidence trade: ${trade.signature?.slice(0, 12)}...`);
+    return { realizedPnl: null, avgCostBasis: null };
+  }
+
   // Get current position
   const { data: position } = await supabase
     .from('positions')
@@ -464,18 +250,18 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
     .eq('wallet', wallet)
     .eq('token_mint', tokenMint)
     .single();
-  
+
   let currentSize = position?.size || 0;
   let currentCost = position?.cost_usd || 0;
   let avgCost = position?.avg_cost || 0;
   let realizedPnl: number | null = null;
-  
+
   if (type === 'buy') {
     // Add to position
     const newSize = currentSize + tokenAmount;
     const newCost = currentCost + baseAmount;
     avgCost = newSize > 0 ? newCost / newSize : 0;
-    
+
     await supabase.from('positions').upsert({
       wallet,
       token_mint: tokenMint,
@@ -489,10 +275,10 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
     if (currentSize > 0 && avgCost > 0) {
       const soldCost = avgCost * tokenAmount;
       realizedPnl = baseAmount - soldCost;
-      
+
       const remainingSize = Math.max(0, currentSize - tokenAmount);
       const remainingCost = remainingSize > 0 ? avgCost * remainingSize : 0;
-      
+
       await supabase.from('positions').upsert({
         wallet,
         token_mint: tokenMint,
@@ -503,7 +289,7 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
       }, { onConflict: 'wallet,token_mint' });
     }
   }
-  
+
   return { realizedPnl, avgCostBasis: avgCost };
 }
 
@@ -519,18 +305,18 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
 const SAFE_BOOST_TIERS = [
   { maxRatio: 0.0025, multiplier: 15, name: 'Micro Dust' },   // < 0.25% → 15x
   { maxRatio: 0.0050, multiplier: 10, name: 'Deep Value' },   // 0.25% - 0.50% → 10x
-  { maxRatio: 0.0100, multiplier: 5,  name: 'Small Bet' },    // 0.50% - 1.00% → 5x
-  { maxRatio: 0.0300, multiplier: 2,  name: 'Standard' },     // 1.00% - 3.00% → 2x
-  { maxRatio: 1.0000, multiplier: 1,  name: 'High Conviction' } // > 3.00% → 1x (no boost)
+  { maxRatio: 0.0100, multiplier: 5, name: 'Small Bet' },    // 0.50% - 1.00% → 5x
+  { maxRatio: 0.0300, multiplier: 2, name: 'Standard' },     // 1.00% - 3.00% → 2x
+  { maxRatio: 1.0000, multiplier: 1, name: 'High Conviction' } // > 3.00% → 1x (no boost)
 ];
 
 function applySafeBoost(rawRatio: number): { boostedRatio: number; tier: string; multiplier: number } {
   for (const tier of SAFE_BOOST_TIERS) {
     if (rawRatio <= tier.maxRatio) {
-      return { 
-        boostedRatio: rawRatio * tier.multiplier, 
-        tier: tier.name, 
-        multiplier: tier.multiplier 
+      return {
+        boostedRatio: rawRatio * tier.multiplier,
+        tier: tier.name,
+        multiplier: tier.multiplier
       };
     }
   }
@@ -551,7 +337,7 @@ const activeQueueProcessors = new Set<string>();
 async function getTraderBuyingPower(walletAddress: string, connection: Connection, solPrice: number): Promise<number> {
   try {
     const wallet = new PublicKey(walletAddress);
-    
+
     // 1. Derive ATAs locally (Instant - 0ms)
     const usdcAta = getAssociatedTokenAddressSync(new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'), wallet);
     const usdtAta = getAssociatedTokenAddressSync(new PublicKey('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'), wallet);
@@ -605,20 +391,20 @@ async function getTraderBuyingPower(walletAddress: string, connection: Connectio
 // ============ PRODUCER: Fast Queue Insert ============
 async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
   const timer = new PerformanceTimer(`PRODUCER(${trade.signature?.slice(0, 8)}...)`);
-  
+
   const starTrader = trade.wallet;
   const sourceMint = trade.tokenInMint;
   const destMint = trade.tokenOutMint;
   const type = trade.type;
 
-  console.log(`[PRODUCER] Star trader: ${starTrader.slice(0, 20)}... | Source: ${sourceMint?.slice(0,6)} → Dest: ${destMint?.slice(0,6)}`);
+  console.log(`[PRODUCER] Star trader: ${starTrader.slice(0, 20)}... | Source: ${sourceMint?.slice(0, 6)} → Dest: ${destMint?.slice(0, 6)}`);
 
   if (!sourceMint || !destMint) {
     console.log(`[PRODUCER] Missing sourceMint or destMint, skipping`);
     timer.finish('executeCopyTrades - ABORTED');
     return;
   }
-  
+
   timer.checkpoint('Validate inputs');
 
   // 1. Find all trader states following this star trader
@@ -628,7 +414,7 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
     .eq('star_trader', starTrader)
     .eq('is_initialized', true)
     .eq('is_paused', false);
-  
+
   timer.checkpoint('DB: Fetch followers');
 
   if (followersError) {
@@ -660,12 +446,12 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
   } else {
     console.warn('[PRODUCER] Missing HELIUS_API_RPC_URL. V2 Equity Model disabled.');
   }
-  
+
   timer.checkpoint('RPC connection setup');
 
   const solPrice = await getSolPrice(); // Use cached price
   timer.checkpoint('Get SOL price');
-  
+
   let ratio = 0;
   let leaderMetric = 0; // "Buying Power" (Buy) or "Inventory" (Sell)
   let leaderUsdValue = 0;
@@ -674,24 +460,24 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
     if (type === 'buy') {
       // ================= SCENARIO A: BUY (Entry) =================
       // Logic: "How big was this bet relative to their available capital?"
-      
+
       if (connection) {
         // 1. Get CURRENT (Post-Trade) Buying Power
         const postTradeBuyingPower = await getTraderBuyingPower(starTrader, connection, solPrice);
-        
+
         // 2. Get Value of the Trade (The amount they spent)
         leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
-        
+
         // 3. RECONSTRUCT PRE-TRADE BUYING POWER
         // "Wallet Before" = "Wallet Now" + "Money Spent"
         const preTradeBuyingPower = postTradeBuyingPower + leaderUsdValue;
-        
+
         // 4. Calculate Ratio
         leaderMetric = preTradeBuyingPower;
         ratio = preTradeBuyingPower > 0 ? leaderUsdValue / preTradeBuyingPower : 0;
-        
-        console.log(`[V2-Buy] Spent $${leaderUsdValue.toFixed(2)} / Pre-Equity $${preTradeBuyingPower.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
-        
+
+        console.log(`[V2-Buy] Spent $${leaderUsdValue.toFixed(2)} / Pre-Equity $${preTradeBuyingPower.toFixed(2)} = ${(ratio * 100).toFixed(2)}%`);
+
         timer.checkpoint('V2-Buy: RPC fetch buying power');
       } else {
         console.log('[V2-Buy] Skipped Equity Model (No RPC Connection)');
@@ -702,10 +488,10 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
       // ================= SCENARIO B: SELL (Exit) =================
       // Logic: "What % of their specific position did they close?"
       // STRICT RPC FETCH (No Helius DAS) for minimal latency
-      
+
       const mintPubkey = new PublicKey(sourceMint);
       const ata = getAssociatedTokenAddressSync(mintPubkey, new PublicKey(starTrader));
-      
+
       // Calculate approximate USD value for logging
       leaderUsdValue = await getUsdValue(destMint, trade.tokenOutAmount);
 
@@ -713,23 +499,23 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
         // 1. Get CURRENT (Post-Trade) Token Balance
         const accountInfo = await connection.getAccountInfo(ata);
         let postTradeTokenBalance = 0;
-        
+
         if (accountInfo && accountInfo.data.length >= 72) {
           const rawAmount = Number(accountInfo.data.readBigUInt64LE(64));
-          const decimals = await getTokenDecimals(sourceMint); 
+          const decimals = await getTokenDecimals(sourceMint);
           postTradeTokenBalance = rawAmount / Math.pow(10, decimals);
         }
-        
+
         // 2. RECONSTRUCT PRE-TRADE INVENTORY
         // "Bag Before" = "Bag Now" + "Sold Amount"
         const preTradeTokenBalance = postTradeTokenBalance + trade.tokenInAmount;
-        
+
         // 3. Calculate Ratio
         leaderMetric = preTradeTokenBalance;
         ratio = preTradeTokenBalance > 0 ? trade.tokenInAmount / preTradeTokenBalance : 0;
-        
-        console.log(`[V2-Sell] Sold ${trade.tokenInAmount.toFixed(2)} / Pre-Bag ${preTradeTokenBalance.toFixed(2)} = ${(ratio*100).toFixed(2)}%`);
-        
+
+        console.log(`[V2-Sell] Sold ${trade.tokenInAmount.toFixed(2)} / Pre-Bag ${preTradeTokenBalance.toFixed(2)} = ${(ratio * 100).toFixed(2)}%`);
+
         timer.checkpoint('V2-Sell: RPC fetch inventory');
       } else {
         console.log('[V2-Sell] Skipped Equity Model (No RPC Connection)');
@@ -756,9 +542,9 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
     finalRatio = boost.boostedRatio;
     boostTier = boost.tier;
     boostMultiplier = boost.multiplier;
-    console.log(`[Safe Boost] Raw: ${(ratio*100).toFixed(3)}% → Boosted: ${(finalRatio*100).toFixed(2)}% (${boostTier}, ${boostMultiplier}x)`);
+    console.log(`[Safe Boost] Raw: ${(ratio * 100).toFixed(3)}% → Boosted: ${(finalRatio * 100).toFixed(2)}% (${boostTier}, ${boostMultiplier}x)`);
   }
-  
+
   timer.checkpoint('Calculate copy ratio + boost');
 
   // 4. Insert queued trade for each follower
@@ -791,22 +577,22 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
       }, { onConflict: 'trader_state_id,star_trade_signature', ignoreDuplicates: true });
 
       if (insertError) {
-        console.log(`  TS ${traderStateId.slice(0,8)}: Trade already queued or error: ${insertError.message}`);
+        console.log(`  TS ${traderStateId.slice(0, 8)}: Trade already queued or error: ${insertError.message}`);
         continue;
       }
 
-      console.log(`  TS ${traderStateId.slice(0,8)}: Trade queued (Ratio: ${(finalRatio*100).toFixed(2)}%${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
+      console.log(`  TS ${traderStateId.slice(0, 8)}: Trade queued (Ratio: ${(finalRatio * 100).toFixed(2)}%${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
 
       // 5. Trigger queue processor (fire and forget)
       processTradeQueue(traderStateId).catch(err => {
-        console.error(`[PRODUCER] Queue processor error for ${traderStateId.slice(0,8)}:`, err);
+        console.error(`[PRODUCER] Queue processor error for ${traderStateId.slice(0, 8)}:`, err);
       });
 
     } catch (err) {
-      console.error(`  TS ${traderStateId.slice(0,8)}: Queue insert error`, err);
+      console.error(`  TS ${traderStateId.slice(0, 8)}: Queue insert error`, err);
     }
   }
-  
+
   timer.finish('executeCopyTrades - All queued');
 }
 
@@ -816,12 +602,12 @@ async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 async function processTradeQueue(traderStateId: string) {
   // Instance-level guard (same-process safety)
   if (activeQueueProcessors.has(traderStateId)) {
-    console.log(`[CONSUMER] Queue processor already running for ${traderStateId.slice(0,8)}`);
+    console.log(`[CONSUMER] Queue processor already running for ${traderStateId.slice(0, 8)}`);
     return;
   }
 
   activeQueueProcessors.add(traderStateId);
-  console.log(`[CONSUMER] Starting queue processor for ${traderStateId.slice(0,8)}`);
+  console.log(`[CONSUMER] Starting queue processor for ${traderStateId.slice(0, 8)}`);
 
   let tradesProcessed = 0;
   const processorId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -845,7 +631,7 @@ async function processTradeQueue(traderStateId: string) {
       }
 
       if (!candidates || candidates.length === 0) {
-        console.log(`[CONSUMER] No more queued trades for ${traderStateId.slice(0,8)}`);
+        console.log(`[CONSUMER] No more queued trades for ${traderStateId.slice(0, 8)}`);
         break;
       }
 
@@ -855,7 +641,7 @@ async function processTradeQueue(traderStateId: string) {
       // If another instance claimed it between Step 1 and now, this returns 0 rows updated
       const { data: claimResult, error: claimError } = await supabase
         .from('demo_trades')
-        .update({ 
+        .update({
           status: 'processing',
           processor_id: processorId  // Track which processor claimed it
         })
@@ -870,7 +656,7 @@ async function processTradeQueue(traderStateId: string) {
 
       // If claim returned no rows, another processor got it - skip and try next
       if (!claimResult || claimResult.length === 0) {
-        console.log(`[CONSUMER] Trade ${tradeId.slice(0,8)} already claimed by another processor`);
+        console.log(`[CONSUMER] Trade ${tradeId.slice(0, 8)} already claimed by another processor`);
         continue; // Try to find another trade
       }
 
@@ -888,7 +674,7 @@ async function processTradeQueue(traderStateId: string) {
         continue;
       }
 
-      console.log(`[CONSUMER] Processing trade ${tradeRow.id.slice(0,8)} (sig: ${trade.signature?.slice(0,12)})`);
+      console.log(`[CONSUMER] Processing trade ${tradeRow.id.slice(0, 8)} (sig: ${trade.signature?.slice(0, 12)})`);
 
       let success = false;
       let lastError: any = null;
@@ -896,23 +682,23 @@ async function processTradeQueue(traderStateId: string) {
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-          if (attempt > 1) console.log(`[CONSUMER] Retrying trade ${tradeRow.id.slice(0,8)} (Attempt ${attempt}/${MAX_RETRIES})...`);
-          
-          const execTimer = new PerformanceTimer(`executeQueuedTrade(${tradeRow.id.slice(0,8)})`);
+          if (attempt > 1) console.log(`[CONSUMER] Retrying trade ${tradeRow.id.slice(0, 8)} (Attempt ${attempt}/${MAX_RETRIES})...`);
+
+          const execTimer = new PerformanceTimer(`executeQueuedTrade(${tradeRow.id.slice(0, 8)})`);
           await executeQueuedTrade(traderStateId, tradeRow, trade);
           execTimer.finish('Trade execution');
           success = true;
           break; // Success! Exit loop
-          
+
         } catch (err: any) {
           lastError = err;
           console.warn(`[CONSUMER] Attempt ${attempt} failed:`, err.message);
-          
+
           // Don't retry on fatal logic errors (e.g. "No Balance"), only on potentially transient ones?
           // For simplicity/robustness in V2, we retry EVERYTHING except explicit skips.
           // Exponential Backoff: 1s, 2s, 3s
           if (attempt < MAX_RETRIES) {
-             await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+            await new Promise(resolve => setTimeout(resolve, attempt * 1000));
           }
         }
       }
@@ -923,7 +709,7 @@ async function processTradeQueue(traderStateId: string) {
           status: 'completed'
         }).eq('id', tradeRow.id);
 
-        console.log(`[CONSUMER] Trade ${tradeRow.id.slice(0,8)} completed successfully`);
+        console.log(`[CONSUMER] Trade ${tradeRow.id.slice(0, 8)} completed successfully`);
       } else {
         // Mark as failed with final error message
         await supabase.from('demo_trades').update({
@@ -931,7 +717,7 @@ async function processTradeQueue(traderStateId: string) {
           error_message: lastError?.message || 'Unknown processing error after retries'
         }).eq('id', tradeRow.id);
 
-        console.error(`[CONSUMER] Trade ${tradeRow.id.slice(0,8)} PERMANENTLY FAILED after ${MAX_RETRIES} attempts:`, lastError?.message);
+        console.error(`[CONSUMER] Trade ${tradeRow.id.slice(0, 8)} PERMANENTLY FAILED after ${MAX_RETRIES} attempts:`, lastError?.message);
       }
 
       tradesProcessed++;
@@ -946,34 +732,34 @@ async function processTradeQueue(traderStateId: string) {
     }
   } finally {
     activeQueueProcessors.delete(traderStateId);
-    console.log(`[CONSUMER] Queue processor finished for ${traderStateId.slice(0,8)} (processed ${tradesProcessed} trades)`);
+    console.log(`[CONSUMER] Queue processor finished for ${traderStateId.slice(0, 8)} (processed ${tradesProcessed} trades)`);
   }
 }
 
 // ============ EXECUTE QUEUED TRADE (Master Fix Logic) ============
 async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: RawTrade) {
-  const timer = new PerformanceTimer(`EXEC(${tradeRow.id.slice(0,8)})`);
-  
+  const timer = new PerformanceTimer(`EXEC(${tradeRow.id.slice(0, 8)})`);
+
   // Calculate queue waiting time
   const queuedAt = new Date(tradeRow.created_at).getTime();
   const processingStarted = Date.now();
   const queueWaitTime = processingStarted - queuedAt;
-  console.log(`[QUEUE] Trade ${tradeRow.id.slice(0,8)} waited ${queueWaitTime}ms in queue`);
-  
+  console.log(`[QUEUE] Trade ${tradeRow.id.slice(0, 8)} waited ${queueWaitTime}ms in queue`);
+
   // Route Override: For router token trades, skip execution (avoid selling before MEV swap)
   if (tradeRow.is_router_token_trade) {
     console.log(`[CONSUMER] Skipping router token trade ${tradeRow.id} (safety override)`);
     await supabase.from('demo_trades').update({ status: 'completed' }).eq('id', tradeRow.id);
     return;
   }
-  
+
   const SOL_MINT = 'So11111111111111111111111111111111111111112';
   const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-  
+
   // V2 LOGIC: Override Source/Dest based on Trade Type (USDC-Centric)
   // If Leader BUY (Input=SOL/USDC -> Output=Token): Follower uses Source=USDC -> Dest=Token
   // If Leader SELL (Input=Token -> Output=SOL/USDC): Follower uses Source=Token -> Dest=USDC
-  
+
   let sourceMint = '';
   let destMint = '';
 
@@ -997,7 +783,7 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   if (tsError || !traderState) {
     throw new Error(`Trader state not found: ${tsError?.message}`);
   }
-  
+
   timer.checkpoint('DB: Fetch trader state + positions');
 
   const positions = traderState.positions || [];
@@ -1015,18 +801,18 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
 
   // V2: Use pre-calculated Equity Model ratio from Producer (High Precision)
   if (tradeRow.copy_ratio !== undefined && tradeRow.copy_ratio !== null) {
-      tradeRatio = Number(tradeRow.copy_ratio);
-      console.log(`  [V2] Using Pre-calculated Ratio: ${(tradeRatio*100).toFixed(2)}%`);
-  } 
+    tradeRatio = Number(tradeRow.copy_ratio);
+    console.log(`  [V2] Using Pre-calculated Ratio: ${(tradeRatio * 100).toFixed(2)}%`);
+  }
   // V1 Fallback (Legacy)
   else {
-      const leaderTradeAmount = trade.tokenInAmount;
-      const leaderBeforeBalance = Number(tradeRow.leader_before_balance) > 0
-          ? Number(tradeRow.leader_before_balance)
-          : leaderTradeAmount; 
-      
-      tradeRatio = leaderBeforeBalance > 0 ? leaderTradeAmount / leaderBeforeBalance : 1;
-      console.log(`  [V1-Legacy] Dynamic Ratio: ${(tradeRatio*100).toFixed(1)}% (Leader: ${leaderTradeAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)})`);
+    const leaderTradeAmount = trade.tokenInAmount;
+    const leaderBeforeBalance = Number(tradeRow.leader_before_balance) > 0
+      ? Number(tradeRow.leader_before_balance)
+      : leaderTradeAmount;
+
+    tradeRatio = leaderBeforeBalance > 0 ? leaderTradeAmount / leaderBeforeBalance : 1;
+    console.log(`  [V1-Legacy] Dynamic Ratio: ${(tradeRatio * 100).toFixed(1)}% (Leader: ${leaderTradeAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)})`);
   }
 
   tradeRatio = Math.min(Math.max(tradeRatio, 0), 1);
@@ -1045,15 +831,15 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
     getTokenDecimals(sourceMint),
     getTokenDecimals(destMint)
   ]);
-  
+
   timer.checkpoint('Fetch token decimals');
-  
+
   const rawInputAmount = Math.floor(copyAmount * Math.pow(10, sourceDecimals));
 
   // Dynamic Slippage Scaling
   let slippageBps = '100'; // Default 1%
   const STABLE_OR_BLUE_CHIP = new Set([...STABLECOIN_MINTS, SOL_MINT, WSOL]);
-  
+
   if (STABLE_OR_BLUE_CHIP.has(sourceMint) && STABLE_OR_BLUE_CHIP.has(destMint)) {
     slippageBps = '50'; // 0.5% for Stable/Major pairs
   } else {
@@ -1075,7 +861,7 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
       'Content-Type': 'application/json'
     }
   });
-  
+
   timer.checkpoint('Jupiter: Quote request');
 
   if (!quoteResponse.ok) {
@@ -1087,7 +873,7 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   if (!quote.outAmount) {
     throw new Error('No quote output amount from Jupiter');
   }
-  
+
   timer.checkpoint('Jupiter: Parse quote');
 
   const quoteOutAmount = Number(quote.outAmount) / Math.pow(10, destDecimals);
@@ -1122,9 +908,9 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
   // 7. UPDATE TRADE ROW WITH QUOTE DATA
   const copyTradeTimestamp = Date.now();
   const latencyDiff = copyTradeTimestamp - (trade.timestamp * 1000);
-  
+
   // Log detailed latency breakdown
-  console.log(`[LATENCY] Trade ${tradeRow.id.slice(0,8)}: Total=${latencyDiff}ms | Queue=${queueWaitTime}ms | Execution=${latencyDiff - queueWaitTime}ms`);
+  console.log(`[LATENCY] Trade ${tradeRow.id.slice(0, 8)}: Total=${latencyDiff}ms | Queue=${queueWaitTime}ms | Execution=${latencyDiff - queueWaitTime}ms`);
 
   await supabase.from('demo_trades').update({
     token_in_mint: sourceMint,  // <--- V2 FIX: Save actual source (USDC)
@@ -1140,7 +926,7 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
     copy_trade_timestamp: Math.floor(copyTradeTimestamp / 1000),
     latency_diff_ms: latencyDiff
   }).eq('id', tradeRow.id);
-  
+
   timer.checkpoint('DB: Update trade with quote');
 
   // 8. POSITION & PNL UPDATES (Master Fix Logic)
@@ -1265,94 +1051,94 @@ async function executeQueuedTrade(traderStateId: string, tradeRow: any, trade: R
       realized_pnl: realizedPnl
     }).eq('id', tradeRow.id);
   }
-  
+
   timer.checkpoint('DB: Update positions + PnL');
 
   console.log(`  Copied ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} → ${quoteOutAmount.toFixed(4)} ${getTokenSymbol(destMint)} | USD: $${tradeUsdValue.toFixed(2)} | PnL: ${realizedPnl !== null ? '$' + realizedPnl.toFixed(2) : 'N/A'} | Latency: ${latencyDiff}ms`);
-  
+
   timer.finish('executeQueuedTrade - SUCCESS');
 }
 
 export async function POST(request: NextRequest) {
   const receivedAt = Date.now();
   const webhookTimer = new PerformanceTimer('WEBHOOK HANDLER');
-  
+
   // Verify auth header - REJECT if invalid
   const authHeader = request.headers.get('authorization');
   if (!HELIUS_WEBHOOK_SECRET) {
     console.error('HELIUS_WEBHOOK_SECRET not configured!');
     return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
   }
-  
+
   if (authHeader !== HELIUS_WEBHOOK_SECRET) {
     console.warn('Webhook auth failed - rejecting request. Header:', authHeader?.slice(0, 10) + '...');
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  
+
   webhookTimer.checkpoint('Auth verification');
-  
+
   try {
     const body = await request.json();
     const transactions = Array.isArray(body) ? body : [body];
-    
+
     webhookTimer.checkpoint('Parse request body');
-    
+
     console.log(`Received ${transactions.length} transaction(s) from webhook`);
-    
+
     // Track Helius delay stats
     let totalHeliusDelay = 0;
     let heliusDelayCount = 0;
-    
+
     // Log individual Helius delays
     for (const tx of transactions) {
       if (tx.timestamp && tx.signature) {
         const heliusDelay = receivedAt - (tx.timestamp * 1000);
         totalHeliusDelay += heliusDelay;
         heliusDelayCount++;
-        console.log(`[HELIUS] TX(${tx.signature.slice(0,8)}...): ${heliusDelay}ms delay (on-chain: ${new Date(tx.timestamp * 1000).toISOString()})`);
+        console.log(`[HELIUS] TX(${tx.signature.slice(0, 8)}...): ${heliusDelay}ms delay (on-chain: ${new Date(tx.timestamp * 1000).toISOString()})`);
       }
     }
-    
+
     // Log aggregate Helius delay stats
     if (heliusDelayCount > 0) {
       const avgHeliusDelay = Math.round(totalHeliusDelay / heliusDelayCount);
       console.log(`[HELIUS] Average delay: ${avgHeliusDelay}ms across ${heliusDelayCount} transaction(s)`);
     }
-    
+
     let processed = 0;
     let inserted = 0;
-    
+
     for (const tx of transactions) {
       if (!tx.signature) continue;
-      
+
       // ============ FIX: Detect Star Traders from ANY involved address ============
       // Handles cases where Star Trader uses a bot/relayer as feePayer
       // Performance: Single DB query with .in() instead of per-address queries
-      
+
       // 1. Extract all unique addresses involved in this transaction
       const involvedAddresses = extractInvolvedAddresses(tx);
-      const txTimer = new PerformanceTimer(`TX(${tx.signature?.slice(0,8)}...)`);
-      
+      const txTimer = new PerformanceTimer(`TX(${tx.signature?.slice(0, 8)}...)`);
+
       if (involvedAddresses.size === 0) {
         console.log(`No involved addresses in tx: ${tx.signature.slice(0, 12)}...`);
         continue;
       }
-      
+
       txTimer.checkpoint('Extract addresses');
-      
+
       // 2. Query star_traders for ANY match (single efficient query)
       const { data: matchedStarTraders, error: starTraderError } = await supabase
         .from('star_traders')
         .select('address')
         .in('address', Array.from(involvedAddresses));
-      
+
       txTimer.checkpoint('DB: Star trader query');
-      
+
       if (starTraderError) {
         console.error(`Star trader query error:`, starTraderError.message);
         continue;
       }
-      
+
       if (!matchedStarTraders || matchedStarTraders.length === 0) {
         // Log which addresses we checked (first 3 for brevity)
         const sampleAddresses = Array.from(involvedAddresses).slice(0, 3).map(a => a.slice(0, 8));
@@ -1360,31 +1146,31 @@ export async function POST(request: NextRequest) {
         txTimer.finish('TX - No star traders');
         continue;
       }
-      
+
       // 3. Process trade for EACH matched star trader
       // (Important: A single tx could involve multiple tracked wallets)
       for (const starTrader of matchedStarTraders) {
         const traderAddress = starTrader.address;
         const isFeePayer = traderAddress === tx.feePayer;
-        
+
         console.log(`Matched Star Trader: ${traderAddress.slice(0, 12)}... (${isFeePayer ? 'feePayer' : 'involved, not feePayer'})`);
-        
+
         const trade = await detectTrade(tx, traderAddress);
         if (!trade) {
-          txTimer.checkpoint(`Trade detection failed for ${traderAddress.slice(0,8)}`);
+          txTimer.checkpoint(`Trade detection failed for ${traderAddress.slice(0, 8)}`);
           continue;
         }
-      
+
         processed++;
         txTimer.checkpoint('Trade detected');
-      
+
         // Calculate latency (time from on-chain to now)
         const latencyMs = receivedAt - (trade.timestamp * 1000);
-      
+
         // Update position and get PnL
         const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
         txTimer.checkpoint('Update leader position');
-      
+
         // Insert trade (ignore if duplicate)
         const { error } = await supabase.from('trades').upsert({
           signature: trade.signature,
@@ -1406,36 +1192,36 @@ export async function POST(request: NextRequest) {
           gas: trade.gas,
           latency_ms: latencyMs
         }, { onConflict: 'signature', ignoreDuplicates: true });
-      
+
         if (!error) {
           inserted++;
           txTimer.checkpoint('DB: Insert leader trade');
-          console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0,8)}... | Latency: ${latencyMs}ms`);
-        
+          console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0, 8)}... | Latency: ${latencyMs}ms`);
+
           // COPY TRADE ENGINE: Process copy trades
           // CRITICAL: We MUST await on Vercel serverless - CPU freezes when response returns!
           // With batch limit of 5 trades and parallel fetching, this completes in ~3-5 seconds.
           await executeCopyTrades(trade, receivedAt);
           txTimer.checkpoint('Copy trades queued');
-        
+
           // BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
-          enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => {});
-        
+          enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => { });
+
           // NOTE: Star traders are no longer auto-added here.
           // They must be added manually via database to prevent unauthorized wallet tracking.
         } else {
           console.log(`Trade insert error for ${trade.signature}:`, error.message);
         }
-        
+
         txTimer.finish('TX processing complete');
       } // End of for (starTrader of matchedStarTraders)
     }
-    
+
     webhookTimer.finish('WEBHOOK COMPLETE');
-    
-    return NextResponse.json({ 
-      ok: true, 
-      processed, 
+
+    return NextResponse.json({
+      ok: true,
+      processed,
       inserted,
       receivedAt: new Date(receivedAt).toISOString()
     });
