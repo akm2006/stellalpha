@@ -22,6 +22,7 @@ interface OnboardingContextType {
   setStep: (step: OnboardingStep) => void;
   open: () => void;
   close: () => void;
+  dismiss: () => void;
   deployVault: () => Promise<void>;
   isDeploying: boolean;
   deployError: string | null;
@@ -45,8 +46,10 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const savedStep = localStorage.getItem('stellalpha_onboarding_step');
     const isCompleted = localStorage.getItem('stellalpha_onboarding_completed');
+    const isDismissed = localStorage.getItem('stellalpha_onboarding_dismissed');
     
-    if (!isCompleted) {
+    // Only open if not completed AND not dismissed
+    if (!isCompleted && !isDismissed) {
        // If not completed, open wizard
        // But only if we are on the home page or demo-vault page to avoid annoying users on other pages?
        // Requirement: "when a user lands in any page of the app with 0 trader state"
@@ -57,16 +60,31 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Check for vault existence to auto-skip steps
+  // Check for vault existence AND trader states to auto-skip
   useEffect(() => {
-    const checkVault = async () => {
+    const checkVaultAndTraders = async () => {
+      // Don't run this check if already completed or dismissed to save resources
+      if (localStorage.getItem('stellalpha_onboarding_completed') || localStorage.getItem('stellalpha_onboarding_dismissed')) {
+          return;
+      }
+
       if (isAuthenticated && user?.wallet) {
         try {
           const res = await fetch(`/api/demo-vault?wallet=${user.wallet}`);
           const data = await res.json();
+          
           if (data.exists) {
             setHasVault(true);
-            // If vault exists, skip to TOUR or ALLOCATE
+            
+            // Check if user already has trader states (active user)
+            if (data.traderStates && data.traderStates.length > 0) {
+                // User is already using the product -> Mark as complete and close
+                localStorage.setItem('stellalpha_onboarding_completed', 'true');
+                setIsOpen(false);
+                return;
+            }
+
+            // If vault exists but no traders, skip to TOUR or ALLOCATE
             if (step === 'WELCOME' || step === 'AUTH' || step === 'DEPLOY') {
                setStep('TOUR');
             }
@@ -77,7 +95,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       }
     };
     
-    checkVault();
+    checkVaultAndTraders();
   }, [isAuthenticated, user, step]); // Re-check when auth changes
 
   // Auto-advance from AUTH to DEPLOY when authenticated
@@ -145,12 +163,19 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const open = () => setIsOpen(true);
+  const open = () => {
+      // Clear dismissal if user manually opens it (optional, but good UX)
+      localStorage.removeItem('stellalpha_onboarding_dismissed');
+      setIsOpen(true);
+  };
   
   const close = () => {
       setIsOpen(false);
-      // optionally mark as viewed? or only on complete?
-      // For now, let's keep it openable again if not complete
+  };
+
+  const dismiss = () => {
+      setIsOpen(false);
+      localStorage.setItem('stellalpha_onboarding_dismissed', 'true');
   };
 
   return (
@@ -162,6 +187,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       setStep: setStepWithPersistence, 
       open, 
       close,
+      dismiss,
       deployVault,
       isDeploying,
       deployError

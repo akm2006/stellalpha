@@ -28,6 +28,14 @@ const UTILITIES = [
 ];
 
 export const TokenUtility = () => {
+  const [copied, setCopied] = React.useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText("AoT7mf7SJDdMa5enrbn7Ctfx3tvKviT8JV8bNzncyai");
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
     <section className="py-16 px-6 bg-[#0A0A0A] border-b border-white/5 overflow-hidden">
       <div className="max-w-6xl mx-auto">
@@ -94,25 +102,44 @@ export const TokenUtility = () => {
                              />
                          </div>
 
-                         {/* Ticker & Status */}
+                         {/* Ticker & CA */}
                          <div className="mb-8">
-                             <div className="flex items-center justify-center gap-3 mb-2">
+                             <div className="flex items-center justify-center gap-3 mb-4">
                                 <h3 className="text-5xl font-bold text-white tracking-tighter">$STLA</h3>
-                          
                              </div>
-                             <p className="text-emerald-500/60 font-mono text-xs tracking-widest uppercase">Coming Soon</p>
+                             
+                             {/* Contract Address Box */}
+                             <div className="flex items-center justify-center gap-2 bg-white/[0.03] border border-white/10 rounded-full px-4 py-2 hover:border-emerald-500/30 transition-colors group/ca cursor-pointer"
+                                  onClick={handleCopy}
+                             >
+                                 <span className={`font-mono text-[10px] sm:text-xs transition-colors truncate max-w-[150px] sm:max-w-none ${copied ? 'text-emerald-400' : 'text-slate-400 group-hover/ca:text-emerald-400'}`}>
+                                     {copied ? "Copied to clipboard!" : "CA: AoT7mf7SJDdMa5enrbn7Ctfx3tvKviT8JV8bNzncyai"}
+                                 </span>
+                                 <div className={`p-1.5 rounded-md transition-colors ${copied ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/5 group-hover/ca:bg-emerald-500/20 text-slate-400 group-hover/ca:text-emerald-400'}`}>
+                                     {copied ? (
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <polyline points="20 6 9 17 4 12"></polyline>
+                                        </svg>
+                                     ) : (
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                        </svg>
+                                     )}
+                                 </div>
+                             </div>
                          </div>
 
                          {/* Trust Pill: Cyrene AI - Interactive */}
                          <a 
-                            href="https://cyreneai.com/preview-page/stellalpha" 
+                            href="https://cyreneai.com/trade/stellalpha" 
                             target="_blank" 
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-4 bg-[#0B1221] border border-blue-900/40 rounded-md px-6 py-3 backdrop-blur-sm hover:border-blue-500/50 transition-all shadow-lg hover:shadow-blue-900/20 group/cyrene cursor-pointer"
+                            className="inline-flex items-center gap-4 bg-[#0B1221] border border-blue-900/40 rounded-md px-5 py-2.5 backdrop-blur-sm hover:border-blue-500/50 transition-all shadow-lg hover:shadow-blue-900/20 group/cyrene cursor-pointer"
                          >
-                              <div className="flex flex-col items-end h-[15px] overflow-hidden relative min-w-[90px]">
-                                  <span className="text-[10px] text-blue-200/60 font-medium tracking-wider uppercase group-hover/cyrene:-translate-y-full transition-transform duration-300 absolute right-0">Launching on</span>
-                                  <span className="text-[10px] text-blue-400 font-medium tracking-wider uppercase absolute top-full right-0 group-hover/cyrene:-translate-y-full transition-transform duration-300 w-full text-right">Support us on</span>
+                              <div className="flex flex-col items-end h-[16px] overflow-hidden relative min-w-[95px]">
+                                  <span className="text-[11px] text-blue-200/60 font-medium tracking-wider uppercase group-hover/cyrene:-translate-y-full transition-transform duration-300 absolute right-0">Live on</span>
+                                  <span className="text-[11px] text-blue-400 font-medium tracking-wider uppercase absolute top-full right-0 group-hover/cyrene:-translate-y-full transition-transform duration-300 w-full text-right">Trade on</span>
                               </div>
                               <div className="h-5 w-px bg-blue-500/20 group-hover/cyrene:bg-blue-400/50 transition-colors" />
                               <img src="/cyrene_ai.png" alt="Cyrene AI" className="h-6 w-auto object-contain opacity-100" />

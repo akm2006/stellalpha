@@ -7,7 +7,7 @@ import { X, ArrowRight, ShieldCheck, Wallet, Clock } from 'lucide-react';
 import { COLORS } from '@/lib/theme';
 
 export function WelcomeStep() {
-  const { nextStep, close } = useOnboarding();
+  const { nextStep, dismiss } = useOnboarding();
 
   return (
     <AnimatePresence>
@@ -67,10 +67,10 @@ export function WelcomeStep() {
               </button>
               
               <button
-                onClick={close}
+                onClick={dismiss}
                 className="w-full py-3 px-6 text-slate-500 hover:text-slate-300 text-sm font-medium transition-colors"
               >
-                Skip for now
+                Don't show again
               </button>
             </div>
           </div>

@@ -105,7 +105,7 @@ function generateSparklineFromPnl(pnl: number, allocatedUsd: number, seed: strin
 }
 
 // Sparkline with area glow effect
-function Sparkline({ data, isPositive, id }: { data: { value: number }[]; isPositive: boolean; id: string }) {
+function Sparkline({ data, isPositive, id, className = "w-20" }: { data: { value: number }[]; isPositive: boolean; id: string; className?: string }) {
   const color = isPositive ? '#10B981' : '#EF4444';
   const gradientId = `gradient-${id}`;
   
@@ -121,8 +121,9 @@ function Sparkline({ data, isPositive, id }: { data: { value: number }[]; isPosi
   }));
   
   // Create SVG path
-  const width = 80;
-  const height = 28;
+  const width = 100;
+  const height = 30;
+  
   const points = scaledData.map((d, i) => ({
     x: (i / (scaledData.length - 1)) * width,
     y: height - (d.value / 100) * height
@@ -132,8 +133,8 @@ function Sparkline({ data, isPositive, id }: { data: { value: number }[]; isPosi
   const areaPath = `${linePath} L ${width} ${height} L 0 ${height} Z`;
   
   return (
-    <div className="w-20 h-7">
-      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+    <div className={`h-full ${className} shrink-0`}>
+      <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
         <defs>
           <linearGradient id={gradientId} x1="0%" y1="0%" x2="0%" y2="100%">
             <stop offset="0%" stopColor={color} stopOpacity="0.4" />
@@ -738,50 +739,55 @@ export default function DemoVaultPage() {
               <p className="text-xs sm:text-sm leading-relaxed hidden sm:block" style={{ color: COLORS.data }}>
                 <span className="font-medium" style={{ color: COLORS.text }}>Demo Vault</span> · Autonomous copy-trading in a risk-free environment.
               </p>
-              <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">
-                <div className="flex items-center gap-1">
+              
+              {/* Mobile: Grid, Desktop: Flex */}
+              <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto">
+                <div className="flex items-center gap-1 col-span-2 sm:col-span-1">
                   <button
                     onClick={() => { setShowFollowModal(true); setAllocationUsd(Math.min(500, unallocated)); }}
                     disabled={unallocated < 10}
-                    className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 transition-all duration-200 hover:opacity-90 hover:scale-105 active:scale-95 disabled:opacity-50 rounded shadow-lg shadow-emerald-500/20"
+                    className="w-full sm:w-auto px-3 sm:px-4 py-2.5 sm:py-2 text-xs sm:text-sm font-medium flex items-center justify-center sm:justify-start gap-2 transition-all duration-200 hover:opacity-90 hover:scale-105 active:scale-95 disabled:opacity-50 rounded shadow-lg shadow-emerald-500/20"
                     style={{ backgroundColor: COLORS.brand, color: '#000' }}
                   >
-                    <span className="hidden sm:inline">Create</span> Trader State
+                    <span>Create Trader State</span>
                   </button>
-                  <InfoTooltip>
-                    <strong>Create Trader State</strong> allocates a portion of your demo vault funds to follow a star trader.<br/><br/>
-                    • Each trader state has <strong>isolated funds</strong> - losses in one don't affect others<br/>
-                    • Set your allocation amount (min $10)<br/>
-                    • Once created, trades are automatically copied from the star trader
-                  </InfoTooltip>
+                  <div className="hidden sm:block">
+                    <InfoTooltip>
+                      <strong>Create Trader State</strong> allocates a portion of your demo vault funds to follow a star trader.<br/><br/>
+                      • Each trader state has <strong>isolated funds</strong> - losses in one don't affect others<br/>
+                      • Set your allocation amount (min $10)<br/>
+                      • Once created, trades are automatically copied from the star trader
+                    </InfoTooltip>
+                  </div>
                 </div>
+                
                 <button
                   onClick={fetchVault}
-                  className="group px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 border border-white/20 hover:bg-white/5 rounded transition-all duration-200 active:scale-[0.98]"
+                  className="group px-3 sm:px-4 py-2.5 sm:py-2 text-xs sm:text-sm font-medium flex items-center justify-center gap-2 border border-white/20 hover:bg-white/5 rounded transition-all duration-200 active:scale-[0.98]"
                   style={{ color: COLORS.text }}
                 >
-                  <RefreshCw size={14} className="group-hover:rotate-180 transition-transform duration-500" /> <span className="hidden sm:inline">Refresh</span>
+                  <RefreshCw size={14} className="group-hover:rotate-180 transition-transform duration-500" /> 
+                  <span>Refresh</span>
                 </button>
+                
                 <div className="flex items-center gap-1">
                   <button
                     onClick={deleteVault}
-                    className="px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium flex items-center gap-2 border border-red-500/50 text-red-400 hover:bg-red-500/10 rounded transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
+                    className="w-full sm:w-auto px-3 sm:px-4 py-2.5 sm:py-2 text-xs sm:text-sm font-medium flex items-center justify-center gap-2 border border-red-500/50 text-red-400 hover:bg-red-500/10 rounded transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
                   >
-                    <span className="hidden sm:inline">Delete</span> Vault
+                    <span>Delete Vault</span>
                   </button>
-                  <InfoTooltip>
-                    <strong>Delete Vault</strong> permanently removes your entire demo vault.<br/><br/>
-                    ⚠️ <strong>Warning:</strong> This action cannot be undone!<br/>
-                    • All trader states will be deleted<br/>
-                    • All allocation history will be lost<br/>
-                    • You can create a new vault anytime
-                  </InfoTooltip>
+                  <div className="hidden sm:block">
+                    <InfoTooltip>
+                       <strong>Delete Vault</strong> permanently removes your entire demo vault.
+                    </InfoTooltip>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Trader States Table - Responsive with horizontal scroll */}
-            <div className="border border-white/10 overflow-hidden animate-fade-up delay-200" style={{ backgroundColor: COLORS.surface }}>
+            {/* Trader States Table (Desktop) */}
+            <div className="hidden md:block border border-white/10 overflow-hidden animate-fade-up delay-200" style={{ backgroundColor: COLORS.surface }}>
               <div className="px-4 sm:px-5 py-3 border-b border-white/10 bg-white/[0.02]">
                 <h2 className="text-sm font-medium" style={{ color: COLORS.text }}>Trader States</h2>
               </div>
@@ -1032,6 +1038,141 @@ export default function DemoVaultPage() {
                 )}
               </div>
               </div>{/* End horizontal scroll */}
+            </div>
+
+            {/* Mobile Card View (md:hidden) */}
+            <div className="md:hidden space-y-4 animate-fade-up delay-200">
+                <div className="px-1 py-1 flex items-center justify-between">
+                   <h2 className="text-base font-semibold" style={{ color: COLORS.text }}>Trader States ({rankedTraderStates.length})</h2>
+                </div>
+
+                {rankedTraderStates.map((ts, index) => {
+                    const traderInfo = starTraders.find(t => t.address === ts.star_trader);
+                    const stats = tradeStats[ts.id] || { completedCount: 0, failedCount: 0, totalRealizedPnl: 0 };
+                    
+                    const totalPnl = (ts.totalValue - ts.allocated_usd);
+                    const roi = (totalPnl / (ts.allocated_usd || 1)) * 100;
+                    const isPositive = totalPnl >= 0;
+                    
+                    const winRate = (stats.completedCount + stats.failedCount) > 0 
+                      ? (stats.completedCount / (stats.completedCount + stats.failedCount)) * 100 
+                      : 0;
+
+                    const sparklineData = generateSparklineFromPnl(totalPnl, ts.allocated_usd, ts.star_trader);
+                    
+                    let statusColor = 'text-emerald-400';
+                    let statusText = 'Active';
+                    let statusBg = 'bg-emerald-500/10 border-emerald-500/20';
+                    
+                    if (!ts.is_initialized) { 
+                        statusColor = 'text-orange-400'; 
+                        statusText = 'Uninitialized';
+                        statusBg = 'bg-orange-500/10 border-orange-500/20';
+                    } else if (ts.is_paused) { 
+                        statusColor = 'text-yellow-400'; 
+                        statusText = 'Paused'; 
+                        statusBg = 'bg-yellow-500/10 border-yellow-500/20';
+                    } else if (ts.is_settled) { 
+                        statusColor = 'text-red-400'; 
+                        statusText = 'Stopped'; 
+                        statusBg = 'bg-red-500/10 border-red-500/20';
+                    }
+
+                    return (
+                        <div 
+                          key={ts.id}
+                          className="rounded-xl border border-white/10 bg-[#0A0A0A] p-5 relative overflow-hidden transition-all active:scale-[0.99] shadow-lg"
+                        >
+                             {/* Background subtle glow */}
+                             <div className={`absolute top-0 right-0 w-32 h-32 blur-[80px] rounded-full pointer-events-none opacity-20 ${isPositive ? 'bg-emerald-500' : 'bg-red-500'}`} />
+
+                             {/* Top Row: Rank/User & Total Value */}
+                             <div className="flex items-start justify-between mb-5 relative z-10">
+                                <div className="flex items-center gap-3.5">
+                                   <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shadow-inner ${index < 3 ? 'bg-gradient-to-br from-yellow-400/20 to-orange-500/20 text-yellow-500 border border-yellow-500/30' : 'bg-white/5 text-slate-500 border border-white/5'}`}>
+                                      {index < 3 ? <Crown size={14} /> : (index + 1)}
+                                   </div>
+                                   
+                                   <div className="relative">
+                                      <TraderAvatar address={ts.star_trader} image={traderInfo?.image} />
+                                      {/* Status Dot */}
+                                      <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#0A0A0A] ${ts.is_paused ? 'bg-yellow-500' : ts.is_initialized ? 'bg-emerald-500' : 'bg-orange-500'}`} />
+                                   </div>
+                                   
+                                   <div className="flex flex-col">
+                                      <h3 className="font-bold text-base text-white tracking-tight">{traderInfo?.name || 'Unknown'}</h3>
+                                      <div className={`text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded border inline-flex w-fit mt-0.5 ${statusBg} ${statusColor}`}>
+                                          {statusText}
+                                      </div>
+                                   </div>
+                                </div>
+                                
+                                <div className="text-right">
+                                   <div className="text-[10px] uppercase font-mono text-slate-500 mb-0.5">Value</div>
+                                   <div className="text-lg font-mono font-bold tracking-tight text-white">
+                                      {formatUsd(ts.totalValue)}
+                                   </div>
+                                </div>
+                             </div>
+
+                             {/* Middle Row: Sparkline & Key Stats */}
+                             <div className="grid grid-cols-[1fr_auto] gap-4 mb-5 relative z-10 items-center">
+                                 {/* Sparkline */}
+                                 <div className="h-10 w-full opacity-60">
+                                     <Sparkline data={sparklineData} isPositive={isPositive} id={`mobile-${ts.id}`} className="w-full" />
+                                 </div>
+                                 
+                                 <div className="h-8 w-px bg-white/10 hidden sm:block" />
+
+                                 <div className="flex items-center gap-4 text-right">
+                                     <div>
+                                         <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider mb-0.5">ROI</div>
+                                         <div className={`text-sm font-mono font-medium ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
+                                             {isPositive ? '+' : ''}{roi.toFixed(1)}%
+                                         </div>
+                                     </div>
+                                     <div>
+                                         <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider mb-0.5">PnL</div>
+                                         <div className={`text-sm font-mono font-medium ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
+                                             {isPositive ? '+' : ''}{formatUsd(totalPnl)}
+                                         </div>
+                                     </div>
+                                 </div>
+                             </div>
+
+                             {/* Info Grid */}
+                             <div className="grid grid-cols-3 gap-2 mb-5 p-3 rounded-lg bg-white/[0.03] border border-white/5 relative z-10">
+                                <div className="text-center">
+                                    <div className="text-[10px] uppercase text-slate-500 font-mono mb-1">Allocated</div>
+                                    <div className="text-xs font-medium font-mono text-slate-300">{formatUsd(ts.allocated_usd)}</div>
+                                </div>
+                                <div className="text-center border-l border-white/5">
+                                    <div className="text-[10px] uppercase text-slate-500 font-mono mb-1">Win Rate</div>
+                                    <div className="text-xs font-medium font-mono text-slate-300">{winRate.toFixed(0)}%</div>
+                                </div>
+                                <div className="text-center border-l border-white/5">
+                                    <div className="text-[10px] uppercase text-slate-500 font-mono mb-1">Trades</div>
+                                    <div className="text-xs font-medium font-mono text-slate-300">{stats.completedCount + stats.failedCount}</div>
+                                </div>
+                             </div>
+
+                             {/* Actions */}
+                             <div className="relative z-10">
+                                <Link href={`/demo-vault/${ts.id}`} passHref>
+                                    <button className="w-full flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-sm bg-white/[0.05] border border-white/10 hover:bg-white/10 text-white transition-all active:scale-[0.98]">
+                                        View Details <ExternalLink size={14} />
+                                    </button>
+                                </Link>
+                             </div>
+                        </div>
+                    );
+                })}
+                
+                {rankedTraderStates.length === 0 && (
+                    <div className="py-8 text-center text-slate-500 border border-white/10 rounded-xl border-dashed">
+                        <p className="text-sm">No active trader states.</p>
+                    </div>
+                )}
             </div>
           </>
         )}

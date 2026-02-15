@@ -3,11 +3,11 @@
 import React from 'react';
 import { useOnboarding, OnboardingStep } from '@/contexts/onboarding-context';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle2, Circle, ArrowRight } from 'lucide-react';
+import { CheckCircle2, Circle, ArrowRight, X } from 'lucide-react';
 import { COLORS } from '@/lib/theme';
 
 export function OnboardingTopBar() {
-  const { step, isOpen } = useOnboarding();
+  const { step, isOpen, dismiss } = useOnboarding();
 
   // Define steps and their progress value (out of 100)
   const steps: { id: OnboardingStep; label: string; progress: number }[] = [
@@ -85,11 +85,15 @@ export function OnboardingTopBar() {
                </p>
             </div>
 
-            {/* Help/Dismiss (Optional) */}
-            {/* <button onClick={() => {}} className="p-2 text-slate-500 hover:text-white transition-colors">
-               <span className="sr-only">Dismiss</span>
-               <X size={16} />
-            </button> */}
+            {/* Help/Dismiss */}
+            <button 
+              onClick={dismiss} 
+              className="p-1.5 rounded-full hover:bg-white/10 text-slate-500 hover:text-white transition-colors"
+              title="Hide onboarding"
+            >
+               <span className="sr-only">Hide</span>
+               <X size={14} />
+            </button>
           </div>
         </motion.div>
       )}
