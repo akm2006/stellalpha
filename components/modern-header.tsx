@@ -265,7 +265,7 @@ export default function ModernHeader() {
             {/* Desktop Navigation - The "Grid" */}
             <nav className="hidden md:flex items-center h-full ml-6">
               {navigationItems.map((item) => {
-                const active = pathname === item.href;
+                const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
                 return (
                   <Link
                     key={item.href}

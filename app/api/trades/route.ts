@@ -11,13 +11,25 @@ export async function GET(request: NextRequest) {
   }
   
   try {
-    // Fetch trades from Supabase
-    const { data: trades, error } = await supabase
+    const cursor = searchParams.get('cursor'); // Format: "timestamp,signature"
+
+    let query = supabase
       .from('trades')
       .select('*')
       .eq('wallet', wallet)
       .order('block_timestamp', { ascending: false })
+      .order('signature', { ascending: false }) // Tie-breaker
       .limit(limit);
+
+    if (cursor) {
+      const [cursorTime, cursorSig] = cursor.split(',');
+      if (cursorTime && cursorSig) {
+        // block_timestamp < cursorTime OR (block_timestamp = cursorTime AND signature < cursorSig)
+        query = query.or(`block_timestamp.lt.${cursorTime},and(block_timestamp.eq.${cursorTime},signature.lt.${cursorSig})`);
+      }
+    }
+    
+    const { data: trades, error } = await query;
     
     if (error) {
       console.error('Supabase error:', error);
@@ -44,11 +56,18 @@ export async function GET(request: NextRequest) {
       avgCostBasis: trade.avg_cost_basis !== null ? parseFloat(trade.avg_cost_basis) : null,
       latencyMs: trade.latency_ms
     }));
+
+    // Calculate next cursor
+    let nextCursor = null;
+    if (formattedTrades.length === limit) {
+      const lastTrade = formattedTrades[formattedTrades.length - 1];
+      nextCursor = `${lastTrade.timestamp},${lastTrade.signature}`;
+    }
     
     return NextResponse.json({
       wallet,
-      trades: formattedTrades,
-      totalTrades: formattedTrades.length,
+      data: formattedTrades, // Changed to data to match hook expectation (or just map it in frontend) - actually hook expects { data, nextCursor } from fetcher
+      nextCursor,
       source: 'database'
     });
   } catch (error) {

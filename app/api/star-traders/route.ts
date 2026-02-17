@@ -49,7 +49,9 @@ export async function GET(request: NextRequest) {
       const { data: allTrades } = await supabase
         .from('trades')
         .select('realized_pnl, block_timestamp, usd_value')
-        .eq('wallet', trader.address);
+        .eq('wallet', trader.address)
+        .order('block_timestamp', { ascending: false })
+        .limit(1000);
       
       // Calculate total stats
       let totalPnl = 0;
@@ -60,6 +62,7 @@ export async function GET(request: NextRequest) {
       let volume7d = 0;
       let totalGrossProfit = 0; // Sum of all winning trades
       let totalGrossLoss = 0; // Sum of all losing trades (absolute value)
+      let lastTradeTime = 0;
       
       for (const trade of allTrades || []) {
         const tradeValue = Number(trade.usd_value) || 0;
@@ -78,6 +81,8 @@ export async function GET(request: NextRequest) {
           
           // 7D stats (block_timestamp is in seconds)
           const tradeTimestamp = Number(trade.block_timestamp) * 1000;
+          if (tradeTimestamp > lastTradeTime) lastTradeTime = tradeTimestamp;
+          
           if (tradeTimestamp >= sevenDaysAgo) {
             pnl7d += pnl;
             volume7d += tradeValue;
@@ -165,7 +170,8 @@ export async function GET(request: NextRequest) {
           followerCount,
           totalAllocated,
           totalVolume,
-          profitFactor
+          profitFactor,
+          lastTradeTime
         }
       };
     }));

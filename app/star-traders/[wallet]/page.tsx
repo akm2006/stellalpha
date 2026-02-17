@@ -32,12 +32,21 @@ import { useOnboarding } from '@/contexts/onboarding-context';
 
 interface TraderStats {
   totalPnl: number;
+  pnl7d?: number;
+  pnl7dPercent?: number;
   winRate: number;
   wins: number;
   losses: number;
   tradesCount: number;
   profitFactor: number;
+  followerCount?: number;
+  totalAllocated?: number;
+  totalVolume?: number;
 }
+import { useInfiniteScroll } from '@/hooks/use-infinite-scroll';
+import { SkeletonRow } from '@/components/SkeletonRow';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
+import { motion } from 'framer-motion';
 
 interface Trade {
   signature: string;
@@ -141,35 +150,7 @@ function timeAgo(timestamp: number): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-function calculateStats(trades: Trade[]): TraderStats {
-  let totalPnl = 0;
-  let wins = 0;
-  let losses = 0;
-  
-  for (const trade of trades) {
-    if (trade.realizedPnl !== null) {
-      totalPnl += trade.realizedPnl;
-      if (trade.realizedPnl > 0) wins++;
-      else if (trade.realizedPnl < 0) losses++;
-    }
-  }
-  
-  const totalWithPnl = wins + losses;
-  const winRate = totalWithPnl > 0 ? Math.round((wins / totalWithPnl) * 100) : 0;
-  
-  // Calculate Profit Factor
-  let totalProfit = 0;
-  let totalLoss = 0;
-  for (const trade of trades) {
-    if (trade.realizedPnl !== null) {
-      if (trade.realizedPnl > 0) totalProfit += trade.realizedPnl;
-      else totalLoss += Math.abs(trade.realizedPnl);
-    }
-  }
-  const profitFactor = totalLoss > 0 ? (totalProfit / totalLoss) : (totalProfit > 0 ? 999 : 0);
-  
-  return { totalPnl, winRate, wins, losses, tradesCount: trades.length, profitFactor };
-}
+// function calculateStats(trades: Trade[]): TraderStats { ... } // Removed to rely on server side stats
 
 // =============================================================================
 // COMPONENTS
@@ -343,7 +324,7 @@ export default function TraderDetailPage() {
   const { step: onboardingStep, setStep } = useOnboarding();
   
   const [activeTab, setActiveTab] = useState<'trades' | 'portfolio'>('trades');
-  const [trades, setTrades] = useState<Trade[]>([]);
+  // const [trades, setTrades] = useState<Trade[]>([]); // Replaced by useInfiniteScroll
   const [portfolioTokens, setPortfolioTokens] = useState<PortfolioToken[]>([]);
   const [solBalance, setSolBalance] = useState<SolBalance | null>(null);
   const [totalPortfolioValue, setTotalPortfolioValue] = useState(0);
@@ -391,6 +372,7 @@ export default function TraderDetailPage() {
           if (trader.name) setTraderName(trader.name);
           if (trader.image) setTraderImage(trader.image);
           setIsFollowing(!!trader.isFollowing);
+          if (trader.stats) setStats(trader.stats);
         }
       }
     } catch (err) {
@@ -398,29 +380,52 @@ export default function TraderDetailPage() {
     }
   };
   
+  const fetchTrades = useCallback(async (cursor?: string): Promise<{ data: Trade[], nextCursor: string | null }> => {
+    try {
+      const url = new URL('/api/trades', window.location.origin);
+      url.searchParams.set('wallet', wallet);
+      url.searchParams.set('limit', '50');
+      if (cursor) url.searchParams.set('cursor', cursor);
+      
+      const res = await fetch(url.toString());
+      const data = await res.json();
+      
+      if (data.error) throw new Error(data.error);
+
+      // Fetch metadata for new trades
+      const mints = new Set<string>();
+      data.data.forEach((t: Trade) => {
+        if (t.tokenInMint) mints.add(t.tokenInMint);
+        if (t.tokenOutMint) mints.add(t.tokenOutMint);
+      });
+      if (mints.size > 0) await fetchTokenMetadata(Array.from(mints));
+
+      return {
+        data: data.data || [],
+        nextCursor: data.nextCursor
+      };
+    } catch (e) {
+      console.error(e);
+      return { data: [], nextCursor: null };
+    }
+  }, [wallet]);
+
+  const { 
+    data: trades, 
+    loading: infiniteLoading, 
+    hasMore, 
+    lastElementRef 
+  } = useInfiniteScroll<Trade>({
+    fetchData: fetchTrades,
+    limit: 50
+  });
+
   const fetchMainData = async () => {
     try {
        await fetchTraderProfile();
-       
-       const tradesRes = await fetch(`/api/trades?wallet=${wallet}&limit=100`);
-       const tradesData = await tradesRes.json();
-       
-       if (tradesData.error) throw new Error(tradesData.error);
-       
-       const tradesList = tradesData.trades || [];
-       setTrades(tradesList);
-       setStats(calculateStats(tradesList));
-       
-       // Metadata for trades only
-       const mints = new Set<string>();
-       tradesList.forEach((t: Trade) => {
-        if (t.tokenInMint) mints.add(t.tokenInMint);
-        if (t.tokenOutMint) mints.add(t.tokenOutMint);
-       });
-       if (mints.size > 0) await fetchTokenMetadata(Array.from(mints));
-       
+       // Trades are now handled by infinite scroll
     } catch (e: any) {
-      setError(e.message || 'Failed to fetch trades');
+      setError(e.message || 'Failed to fetch data');
     } finally {
       setLoading(false);
     }
@@ -625,8 +630,11 @@ export default function TraderDetailPage() {
                       Calculated from realized trades within the last 7 days. Does not include unrealized positions.
                    </InfoTooltip>
                 </div>
-                <div className={`text-lg font-mono font-semibold ${stats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {stats.totalPnl >= 0 ? '+' : ''}{formatAmount(stats.totalPnl)}
+                <div className={`text-lg font-mono font-semibold ${stats.pnl7d !== undefined ? (stats.pnl7d >= 0 ? 'text-emerald-400' : 'text-red-400') : (stats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}`}>
+                  {stats.pnl7d !== undefined 
+                    ? (stats.pnl7d >= 0 ? '+' : '') + formatAmount(stats.pnl7d)
+                    : (stats.totalPnl >= 0 ? '+' : '') + formatAmount(stats.totalPnl)
+                  }
                 </div>
               </div>
               
@@ -636,7 +644,7 @@ export default function TraderDetailPage() {
                    <InfoTooltip>
                       <strong>Win Rate</strong><br/><br/>
                       Percentage of profitable trades out of total closed trades in the fetched history.<br/>
-                      Based on last 100 trades.
+                      Based on last 1000 trades.
                    </InfoTooltip>
                 </div>
                 <div className="text-lg font-mono font-semibold" style={{ color: COLORS.brand }}>
@@ -650,7 +658,7 @@ export default function TraderDetailPage() {
                    <InfoTooltip>
                       <strong>Profit Factor</strong><br/><br/>
                       Measures trading efficiency: (Total Gains / Total Losses).<br/>
-                      &gt; 1.0 means profitable. &gt; 2.0 is excellent.
+                      &gt; 1.0 means profitable. &gt; 2.0 is excellent. Based on last 1000 trades.
                    </InfoTooltip>
                 </div>
                 <div className={`text-lg font-mono font-semibold ${stats.profitFactor >= 1.5 ? 'text-emerald-400' : stats.profitFactor >= 1 ? 'text-emerald-200' : 'text-gray-400'}`}>
@@ -703,7 +711,7 @@ export default function TraderDetailPage() {
                     borderColor: activeTab === 'trades' ? COLORS.brand : 'transparent'
                   }}
                 >
-                  Recent Trades <span className="text-xs opacity-60 font-normal ml-1">(Last {trades.length})</span>
+                  Recent Trades
                 </button>
                 <button 
                   onClick={() => setActiveTab('portfolio')}
@@ -777,19 +785,26 @@ export default function TraderDetailPage() {
                 </div>
                 
                 <div className="max-h-[600px] overflow-y-auto">
-                  {trades.length === 0 ? (
+                  {trades.length === 0 && !infiniteLoading ? (
                     <div className="text-center py-20 text-sm" style={{ color: COLORS.data }}>
                        No recent trades found for this wallet.
                     </div>
                   ) : (
-                    trades.map((trade) => {
+                    trades.map((trade, index) => {
                       const isBuy = trade.type === 'buy';
                       const pnl = formatPnl(trade.realizedPnl);
                       const inMeta = tokenMeta[trade.tokenInMint] || { symbol: trade.tokenInSymbol, logoURI: null };
                       const outMeta = tokenMeta[trade.tokenOutMint] || { symbol: trade.tokenOutSymbol, logoURI: null };
                       
                       return (
-                        <div key={trade.signature} className="grid grid-cols-[80px_1fr_120px_120px_100px_100px_80px] gap-4 items-center px-6 py-3 border-b border-white/5 hover:bg-white/[0.04] transition-colors duration-200 group">
+                        <motion.div 
+                          key={trade.signature}
+                          initial={{ opacity: 0, y: 10 }}
+                          whileInView={{ opacity: 1, y: 0 }}
+                          viewport={{ once: true, margin: "-50px" }}
+                          transition={{ duration: 0.3, ease: "easeOut" }}
+                          className={`grid grid-cols-[80px_1fr_120px_120px_100px_100px_80px] gap-4 items-center px-6 py-3 border-b border-white/5 hover:bg-white/[0.04] transition-colors duration-200 group ${index % 2 === 1 ? 'bg-white/[0.02]' : ''}`}
+                        >
                           <div>
                             <span className={`inline-flex items-center justify-center px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider w-14 ${isBuy ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'}`}>
                               {isBuy ? 'BUY' : 'SELL'}
@@ -838,10 +853,47 @@ export default function TraderDetailPage() {
                               TX <ArrowUpRight size={10} className="ml-0.5" />
                             </a>
                           </div>
-                        </div>
+                        </motion.div>
                       );
                     })
                   )}
+
+                  {/* Infinite Scroll Sentinel */}
+                  <InfiniteScrollSentinel
+                    inputRef={lastElementRef}
+                    loading={infiniteLoading}
+                    hasMore={hasMore}
+                    skeleton={
+                      <div className="flex flex-col">
+                         {[...Array(3)].map((_, i) => (
+                            <SkeletonRow 
+                              key={`skeleton-${i}`} 
+                              className="grid grid-cols-[80px_1fr_120px_120px_100px_100px_80px]"
+                            />
+                         ))}
+                      </div>
+                    }
+                    endMessage={
+                      <div className="flex flex-col items-center justify-center py-12 gap-3 animate-in fade-in duration-700">
+                        <span className="text-[10px] uppercase tracking-[0.2em] opacity-30 font-semibold" style={{ color: COLORS.data }}>End of Recent History</span>
+                        
+                        <a 
+                          href={`https://gmgn.ai/sol/address/${wallet}`}
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="group flex items-center gap-3 px-6 py-3 rounded-xl border border-white/5 bg-white/[0.02] hover:bg-emerald-500/[0.05] hover:border-emerald-500/30 transition-all duration-300 hover:shadow-[0_0_30px_-5px_rgba(16,185,129,0.15)] active:scale-[0.98]"
+                        >
+                          <span className="text-xs font-bold tracking-widest text-white/70 group-hover:text-emerald-400 transition-colors uppercase">View Full History on</span>
+                          <img 
+                            src="https://gmgn.ai/static/GMGNLogoDark.svg" 
+                            alt="GMGN" 
+                            className="h-5 w-auto opacity-90 group-hover:opacity-100 transition-all duration-300 group-hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.3)]" 
+                          />
+                          <ArrowUpRight size={12} className="text-white/40 group-hover:text-emerald-500 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all -ml-1" />
+                        </a>
+                      </div>
+                    }
+                  />
                 </div>
               </div>
             </div>

@@ -10,7 +10,8 @@ export async function GET(request: NextRequest) {
   
   // Pagination params
   const page = parseInt(searchParams.get('page') || '1', 10);
-  const pageSize = parseInt(searchParams.get('pageSize') || '20', 10);
+  const pageSize = parseInt(searchParams.get('pageSize') || '50', 10);
+  const cursor = searchParams.get('cursor'); // Format: "timestamp,id"
   const offset = (page - 1) * pageSize;
   
   if (!wallet) {
@@ -65,17 +66,34 @@ export async function GET(request: NextRequest) {
       .select('*', { count: 'exact', head: true })
       .eq('trader_state_id', tsId);
     
-    // Get aggregate stats from ALL completed trades
-    const { data: allTrades } = await supabase
+    // Get exact counts for status
+    const { count: completedCount } = await supabase
       .from('demo_trades')
-      .select('status, latency_diff_ms, realized_pnl')
-      .eq('trader_state_id', tsId);
+      .select('*', { count: 'exact', head: true })
+      .eq('trader_state_id', tsId)
+      .eq('status', 'completed');
+
+    const { count: failedCount } = await supabase
+      .from('demo_trades')
+      .select('*', { count: 'exact', head: true })
+      .eq('trader_state_id', tsId)
+      .eq('status', 'failed');
+      
+    // For PnL/WinRate, we still need satisfied rows but we can limit to recent 1000 for "Recent Stats"
+    // or we accept that deep history stats might be truncated on the free tier without a specialized DB function.
+    // For now, let's keep the detailed stats logic but ensure counts are correct.
     
-    const completedTrades = (allTrades || []).filter(t => t.status === 'completed');
-    const failedTrades = (allTrades || []).filter(t => t.status === 'failed');
+    // Fetch recent 1000 for detailed stats (Win Rate / Profit Factor)
+    const { data: recentTrades } = await supabase
+        .from('demo_trades')
+        .select('status, latency_diff_ms, realized_pnl')
+        .eq('trader_state_id', tsId)
+        .order('created_at', { ascending: false })
+        .limit(1000);
+
+    const completedTrades = (recentTrades || []).filter(t => t.status === 'completed');
     
-    // Win Rate Calculation: Only count SELLS that have realized PnL
-    // Profitable = PnL > 0
+    // ... stats calculation based on recentTrades ...
     const profitableTrades = completedTrades.filter(t => (t.realized_pnl || 0) > 0);
     const lossTrades = completedTrades.filter(t => (t.realized_pnl || 0) < 0);
     
@@ -84,16 +102,42 @@ export async function GET(request: NextRequest) {
     const totalRealizedPnl = completedTrades.reduce((sum, t) => sum + (t.realized_pnl || 0), 0);
     
     // Get paginated trades for display
-    const { data: trades, error } = await supabase
+    let query = supabase
       .from('demo_trades')
       .select('*')
       .eq('trader_state_id', tsId)
       .order('created_at', { ascending: false })
-      .range(offset, offset + pageSize - 1);
+      .order('id', { ascending: false }) // Secondary sort for stable pagination
+      .limit(pageSize);
+
+    if (cursor) {
+      const [cursorTime, cursorId] = cursor.split(',');
+      if (cursorTime && cursorId) {
+        // Filter: created_at < cursorTime OR (created_at = cursorTime AND id < cursorId)
+        // usage of 'or' syntax in supabase:
+        // .or(`created_at.lt.${cursorTime},and(created_at.eq.${cursorTime},id.lt.${cursorId})`)
+        query = query.or(`created_at.lt.${cursorTime},and(created_at.eq.${cursorTime},id.lt.${cursorId})`);
+      }
+    } else {
+        // Fallback to offset if NO cursor is provided (legacy/page support)
+        // If cursor IS provided, we ignore offset to ensure correctness
+        if (offset > 0) {
+             query = query.range(offset, offset + pageSize - 1);
+        }
+    }
+
+    const { data: trades, error } = await query;
     
     if (error) {
       console.error('Trades fetch error:', error);
       return NextResponse.json({ error: 'Failed to fetch trades' }, { status: 500 });
+    }
+    
+    // Calculate next cursor
+    let nextCursor = null;
+    if (trades && trades.length === pageSize) {
+      const lastTrade = trades[trades.length - 1];
+      nextCursor = `${lastTrade.created_at},${lastTrade.id}`;
     }
     
     const total = totalCount || 0;
@@ -105,15 +149,16 @@ export async function GET(request: NextRequest) {
         page,
         pageSize,
         totalCount: total,
-        totalPages
+        totalPages,
+        nextCursor
       },
       stats: {
         avgLatency: Math.round(avgLatency),
         totalRealizedPnl,
-        completedCount: completedTrades.length,
-        failedCount: failedTrades.length,
-        profitableCount: profitableTrades.length,
-        lossCount: lossTrades.length,
+        completedCount: completedCount || 0,
+        failedCount: failedCount || 0,
+        profitableCount: profitableTrades.length, // Based on recent
+        lossCount: lossTrades.length, // Based on recent
         profitFactor: (() => {
           let totalProfit = 0;
           let totalLoss = 0;

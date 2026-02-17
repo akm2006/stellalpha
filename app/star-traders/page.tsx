@@ -23,6 +23,7 @@ interface TraderStats {
   totalAllocated: number;
   totalVolume: number;
   profitFactor: number;
+  lastTradeTime: number;
 }
 
 interface StarTrader {
@@ -46,6 +47,20 @@ function formatUsd(amount: number): string {
 
 function formatPercent(value: number): string {
   return (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
+}
+
+// Format relative time (e.g. "5m ago")
+function formatRelativeTime(timestamp: number): string {
+  if (!timestamp) return '—';
+  
+  const now = Date.now();
+  const diffInSeconds = Math.floor((now - timestamp) / 1000);
+  
+  if (diffInSeconds < 60) return 'Just now';
+  if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+  if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+  if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)}d ago`;
+  return `${Math.floor(diffInSeconds / 604800)}w ago`;
 }
 
 // Generate volatile sparkline based on PnL direction with seeded randomness
@@ -415,7 +430,7 @@ export default function StarTradersListPage() {
                   Top Profit Factor
                   <InfoTooltip>
                     <strong>Profit Factor</strong> is the industry-standard metric for trading efficiency. It measures: <strong>For every $1 lost, how many $ were gained?</strong><br/><br/>
-                    A Profit Factor above 1.0 means the trader makes more money than they lose. Higher is better. This shows the best performer.
+                    A Profit Factor above 1.0 means the trader makes more money than they lose. Higher is better. Based on the last 1000 trades.
                   </InfoTooltip>
                 </div>
                 <div className={`text-base sm:text-lg font-mono font-semibold ${aggregateStats.topProfitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -427,7 +442,7 @@ export default function StarTradersListPage() {
                   Avg Win Rate
                   <InfoTooltip>
                     <strong>Average Win Rate</strong> is the percentage of profitable trades across active star traders (minimum 5 trades required).<br/><br/>
-                    Traders with fewer than 5 trades are excluded to ensure statistical accuracy. A higher win rate means traders are more consistent.
+                    Traders with fewer than 5 trades are excluded. Calculated from the last 1000 trades per trader.
                   </InfoTooltip>
                 </div>
                 <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>
@@ -454,11 +469,17 @@ export default function StarTradersListPage() {
                 Profit Factor
                 <InfoTooltip>
                   <strong>Profit Factor</strong> is the industry-standard metric for trading efficiency. It measures: <strong>For every $1 lost, how many $ were gained?</strong><br/><br/>
-                  A Profit Factor above 1.0 means the trader makes more money than they lose. Higher is better. This metric catches traders who might have a high win rate but lose big on bad trades.
+                  A Profit Factor above 1.0 means the trader makes more money than they lose. Higher is better. Based on last 1000 trades.
                 </InfoTooltip>
               </div>
               <div>Win Rate</div>
-              <div>Trades</div>
+              <div className="flex items-center justify-start gap-1.5">
+                Last Trade
+                <InfoTooltip>
+                  <strong>Last Trade</strong> shows how long ago the trader made their most recent transaction.<br/><br/>
+                  Active traders are more likely to generate copy-trading opportunities.
+                </InfoTooltip>
+              </div>
               <div>Follows</div>
               <div></div>
             </div>
@@ -549,9 +570,9 @@ export default function StarTradersListPage() {
                       {winRate}%
                     </div>
                     
-                    {/* Trades */}
+                    {/* Last Trade */}
                     <div className="font-mono text-sm" style={{ color: COLORS.text }}>
-                      {tradesCount}
+                      {formatRelativeTime(trader.stats?.lastTradeTime)}
                     </div>
                     
                     {/* Followers */}
@@ -691,6 +712,12 @@ export default function StarTradersListPage() {
                                 <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider mb-0.5">P. Factor</div>
                                 <div className={`text-sm font-mono font-medium ${profitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
                                     {profitFactor.toFixed(2)}x
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider mb-0.5">Last Active</div>
+                                <div className="text-sm font-mono font-medium text-white">
+                                    {formatRelativeTime(trader.stats?.lastTradeTime)}
                                 </div>
                             </div>
                         </div>

@@ -6,6 +6,7 @@ import PageLoader from '@/components/PageLoader';
 import { createPortal } from 'react-dom';
 
 import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
+import { useInfiniteScroll } from '@/hooks/use-infinite-scroll';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useAppKitAccount } from '@reown/appkit/react';
@@ -27,7 +28,12 @@ import {
   X,
   Loader2,
   Info,
+  TrendingUp,
+  TrendingDown,
+  CheckCircle2
 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { SkeletonRow } from '@/components/SkeletonRow';
 
 // =============================================================================
 // TYPES
@@ -332,7 +338,7 @@ export default function TraderStateDetailPage() {
   
   // State
   const [portfolio, setPortfolio] = useState<PortfolioData | null>(null);
-  const [trades, setTrades] = useState<Trade[]>([]);
+  // const [trades, setTrades] = useState<Trade[]>([]); // Replaced by hook
   const [starTraders, setStarTraders] = useState<{ address: string; name: string; image?: string }[]>([]);
   const [tokenMeta, setTokenMeta] = useState<Record<string, TokenMeta>>({});
   const [loading, setLoading] = useState(true);
@@ -340,13 +346,9 @@ export default function TraderStateDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Pagination state
-  const [tradesPage, setTradesPage] = useState(1);
-  const [pagination, setPagination] = useState({ page: 1, pageSize: 20, totalCount: 0, totalPages: 0 });
   const [tradeStats, setTradeStats] = useState({ avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0, profitableCount: 0, lossCount: 0, profitFactor: 0 });
-  
+  const [totalTradeCount, setTotalTradeCount] = useState(0);
 
-  
   // Tab state for Portfolio/Copy Trades switching
   const [activeTab, setActiveTab] = useState<'portfolio' | 'trades'>('portfolio');
   
@@ -380,6 +382,55 @@ export default function TraderStateDetailPage() {
     }
   }, []); // Stable callback with no dependencies
 
+  const fetchTradesPage = useCallback(async (cursor?: string) => {
+     if (!walletAddress || !traderStateId) return { data: [], nextCursor: null };
+     
+     const url = new URL('/api/demo-vault/trades', window.location.origin);
+     url.searchParams.set('wallet', walletAddress);
+     url.searchParams.set('traderStateId', traderStateId);
+     url.searchParams.set('pageSize', '50');
+     if (cursor) url.searchParams.set('cursor', cursor);
+
+     const res = await fetch(url.toString());
+     const data = await res.json();
+     
+     if (data.error) throw new Error(data.error);
+
+     // Update stats and total count from latest fetch
+     if (data.stats) setTradeStats(data.stats);
+     if (data.pagination) setTotalTradeCount(data.pagination.totalCount);
+
+     // Fetch metadata for new trades
+     const mints = new Set<string>();
+     data.trades?.forEach((t: Trade) => {
+        if (t.token_in_mint) mints.add(t.token_in_mint);
+        if (t.token_out_mint) mints.add(t.token_out_mint);
+      });
+      if (mints.size > 0) {
+        fetchTokenMetadata(Array.from(mints));
+      }
+
+     return { 
+       data: data.trades || [], 
+       nextCursor: data.pagination?.nextCursor || null 
+     };
+  }, [walletAddress, traderStateId, fetchTokenMetadata]);
+
+  const { 
+    data: trades, 
+    loading: infiniteLoading, 
+    hasMore, 
+    lastElementRef, 
+    setData: setTrades,
+    setCursor: setTradesCursor,
+    setHasMore: setTradesHasMore
+  } = useInfiniteScroll<Trade>({
+    fetchData: fetchTradesPage,
+    limit: 50,
+    rootMargin: '100px', // Explicit strict triggering
+    throttleMs: 500
+  });
+
   
   const fetchData = useCallback(async () => {
     if (!walletAddress || !traderStateId) return;
@@ -388,6 +439,7 @@ export default function TraderStateDetailPage() {
     setError(null);
     
     try {
+      // 1. Fetch Portfolio
       const portfolioRes = await fetch(
         `/api/demo-vault/portfolio?wallet=${walletAddress}&traderStateId=${traderStateId}`
       );
@@ -399,22 +451,17 @@ export default function TraderStateDetailPage() {
       }
       
       setPortfolio(portfolioData);
+
+       // 2. Fetch Initial Trades (Page 1) directly to populate stats/metadata immediately
+       // We reuse the fetchTradesPage logic but call it manually to init the hook state
+       const initialTradesRes = await fetchTradesPage();
+       setTrades(initialTradesRes.data);
+       setTradesCursor(initialTradesRes.nextCursor);
+       setTradesHasMore(!!initialTradesRes.nextCursor);
       
-      const tradesRes = await fetch(
-        `/api/demo-vault/trades?wallet=${walletAddress}&traderStateId=${traderStateId}&page=${tradesPage}&pageSize=20`
-      );
-      const tradesData = await tradesRes.json();
-      setTrades(tradesData.trades || []);
-      setPagination(tradesData.pagination || { page: 1, pageSize: 20, totalCount: 0, totalPages: 0 });
-      setTradeStats(tradesData.stats || { avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0, profitableCount: 0, lossCount: 0, profitFactor: 0 });
-      
+      // Meta for portfolio
       const mints = new Set<string>();
       portfolioData.positions?.forEach((p: Position) => mints.add(p.mint));
-      tradesData.trades?.forEach((t: Trade) => {
-        if (t.token_in_mint) mints.add(t.token_in_mint);
-        if (t.token_out_mint) mints.add(t.token_out_mint);
-      });
-      
       if (mints.size > 0) {
         await fetchTokenMetadata(Array.from(mints));
       }
@@ -425,7 +472,8 @@ export default function TraderStateDetailPage() {
       setLoading(false);
       setHasCheckedData(true);
     }
-  }, [walletAddress, traderStateId, tradesPage, fetchTokenMetadata]);
+  }, [walletAddress, traderStateId, fetchTradesPage, fetchTokenMetadata, setTrades, setTradesCursor, setTradesHasMore]);
+
   
   const fetchStarTraders = useCallback(async () => {
     try {
@@ -826,7 +874,7 @@ export default function TraderStateDetailPage() {
                   borderColor: activeTab === 'trades' ? COLORS.brand : 'transparent'
                 }}
               >
-                Copy Trades ({pagination.totalCount || trades.length})
+                Copy Trades ({totalTradeCount || trades.length})
               </button>
             </div>
             <button 
@@ -981,9 +1029,14 @@ export default function TraderStateDetailPage() {
                     const displayOutAmount = trade.token_out_amount ?? trade.leader_out_amount;
                     const displayUsdValue = trade.usd_value ?? trade.leader_usd_value;
                     
+                    
                     return (
-                      <div 
-                        key={trade.id} 
+                      <motion.div 
+                        key={trade.id}
+                        initial={{ opacity: 0, y: 10 }}
+                        whileInView={{ opacity: 1, y: 0 }}
+                        viewport={{ once: true, margin: "-50px" }}
+                        transition={{ duration: 0.3, ease: "easeOut" }}
                         className={`grid grid-cols-[70px_2fr_0.8fr_0.8fr_0.6fr_0.6fr_70px] gap-2 px-5 py-3 items-center transition-colors min-w-[700px] ${
                           isFailed 
                             ? 'bg-red-500/10 hover:bg-red-500/15 border-l-2 border-red-500' 
@@ -1067,41 +1120,29 @@ export default function TraderStateDetailPage() {
                             <span style={{ color: COLORS.data }}>—</span>
                           )}
                         </div>
-                      </div>
+                      </motion.div>
                     );
                   })
                 )}
-              </div>
               
-              {/* Pagination */}
-              {pagination.totalPages > 1 && (
-                <div className="flex items-center justify-between px-5 py-3 border-t border-white/10 bg-white/[0.02]">
-                  <div className="text-xs" style={{ color: COLORS.data }}>
-                    Showing {trades.length} of {pagination.totalCount} trades
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setTradesPage(p => Math.max(1, p - 1))}
-                      disabled={tradesPage === 1}
-                      className="px-3 py-1.5 rounded text-xs font-medium border border-white/10 hover:bg-white/5 disabled:opacity-40 transition-colors"
-                      style={{ color: COLORS.text }}
-                    >
-                      ← Prev
-                    </button>
-                    <span className="text-xs px-3 font-mono" style={{ color: COLORS.text }}>
-                      {pagination.page} / {pagination.totalPages}
-                    </span>
-                    <button
-                      onClick={() => setTradesPage(p => Math.min(pagination.totalPages, p + 1))}
-                      disabled={tradesPage >= pagination.totalPages}
-                      className="px-3 py-1.5 rounded text-xs font-medium border border-white/10 hover:bg-white/5 disabled:opacity-40 transition-colors"
-                      style={{ color: COLORS.text }}
-                    >
-                      Next →
-                    </button>
-                  </div>
+                {/* Sentinel / Loading State - MOVED INSIDE SCROLLABLE CONTAINER */}
+                <div ref={lastElementRef} className="py-2 min-h-[40px]">
+                  {infiniteLoading && (
+                    <div className="flex flex-col">
+                       {[...Array(3)].map((_, i) => (
+                          <SkeletonRow key={`skeleton-${i}`} />
+                       ))}
+                    </div>
+                  )}
+                  {!hasMore && trades.length > 0 && (
+                    <div className="flex items-center justify-center gap-4 py-4 opacity-50">
+                      <div className="h-px w-12 bg-white/10" />
+                      <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">End of History</span>
+                      <div className="h-px w-12 bg-white/10" />
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           )}
         </div>
