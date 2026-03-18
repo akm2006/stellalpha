@@ -92,3 +92,13 @@ whitepaper/
 
 # Context / Knowledge Base
 context/
+
+# ===========================================
+# Isolated Development Assets
+# ===========================================
+_logs/
+_scratch/
+backups/
+experiments/
+tests/
+*.bak
