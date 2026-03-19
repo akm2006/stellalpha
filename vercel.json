@@ -1,10 +1,6 @@
 {
-  "ignoreBuildCommand": "git diff HEAD^ HEAD --quiet -- . ':(exclude)README.md' ':(exclude)ai/' ':(exclude)task.md'",
+  "ignoreBuildCommand": "if [ \"$VERCEL_GIT_COMMIT_REF\" = \"dev\" ]; then exit 0; fi; git diff HEAD^ HEAD --quiet -- . ':(exclude)README.md' ':(exclude)ai/' ':(exclude)task.md'",
   "crons": [
-    {
-      "path": "/api/cron/reconcile",
-      "schedule": "*/5 * * * *"
-    },
     {
       "path": "/api/cron/cleanup-trades",
       "schedule": "0 0 * * *"
