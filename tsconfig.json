@@ -39,6 +39,7 @@
     "node_modules",
     "worker",
     "anchor",
-    "scripts"
+    "scripts",
+    "experiments"
   ]
 }

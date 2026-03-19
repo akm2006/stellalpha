@@ -1,6 +1,6 @@
 import { getSolPrice, getTokenSymbol, enrichTradeSymbols } from '@/lib/services/token-service';
 import { getStarTradersByAddresses } from '@/lib/repositories/star-traders.repo';
-import { upsertTrade } from '@/lib/repositories/trades.repo';
+import { claimTrade, updateTradePnL } from '@/lib/repositories/trades.repo';
 import { getPosition, upsertPosition } from '@/lib/repositories/positions.repo';
 import { executeCopyTrades } from '@/lib/ingestion/follower-producer';
 import { detectTrade as detectTradeParser, RawTrade } from '@/lib/trade-parser';
@@ -73,6 +73,12 @@ export async function processBatch(transactions: IngestedTransaction[], received
   let processed = 0;
   let inserted = 0;
 
+  // ── Phase 3: Observability — source win counters ───────────────────────────
+  // Tracks which ingestion source (webhook vs websocket) claimed the trade first
+  // in this batch. Logged at the end for operational visibility.
+  const winCounts: Record<string, number> = {};
+  const skipCounts: Record<string, number> = {};
+
   for (const tx of transactions) {
     if (!tx.signature) continue;
 
@@ -115,7 +121,7 @@ export async function processBatch(transactions: IngestedTransaction[], received
       const traderAddress = starTrader.address;
       const isFeePayer = traderAddress === tx.feePayer;
 
-      console.log(`Matched Star Trader: ${traderAddress.slice(0, 12)}... (${isFeePayer ? 'feePayer' : 'involved, not feePayer'})`);
+      console.log(`[${tx.source?.toUpperCase() || 'UNKNOWN'}] Matched Star Trader: ${traderAddress.slice(0, 12)}... (${isFeePayer ? 'feePayer' : 'involved, not feePayer'})`);
 
       const trade = await detectTrade(tx.raw, traderAddress);
       if (!trade) {
@@ -129,54 +135,76 @@ export async function processBatch(transactions: IngestedTransaction[], received
       // Calculate latency (time from on-chain to now)
       const latencyMs = receivedAt - (trade.timestamp * 1000);
 
-      // Update position and get PnL
-      const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
-      txTimer.checkpoint('Update leader position');
+      // 1. CLAIM the trade — INSERT is the gate
+      // Trade row built WITHOUT PnL fields (backfilled after position update)
+      try {
+        const { claimed } = await claimTrade({
+          signature: trade.signature,
+          wallet: trade.wallet,
+          type: trade.type,
+          token_mint: trade.tokenMint,
+          token_symbol: getTokenSymbol(trade.tokenMint),
+          token_in_mint: trade.tokenInMint,
+          token_in_symbol: getTokenSymbol(trade.tokenInMint),
+          token_in_amount: trade.tokenInAmount,
+          token_out_mint: trade.tokenOutMint,
+          token_out_symbol: getTokenSymbol(trade.tokenOutMint),
+          token_out_amount: trade.tokenOutAmount,
+          usd_value: trade.baseAmount,
+          realized_pnl: null,     // will be backfilled
+          avg_cost_basis: null,   // will be backfilled
+          block_timestamp: trade.timestamp,
+          source: trade.source,
+          gas: trade.gas,
+          latency_ms: latencyMs
+        });
 
-      // Insert trade (ignore if duplicate)
-      const { error } = await upsertTrade({
-        signature: trade.signature,
-        wallet: trade.wallet,
-        type: trade.type,
-        token_mint: trade.tokenMint,
-        token_symbol: getTokenSymbol(trade.tokenMint),
-        token_in_mint: trade.tokenInMint,
-        token_in_symbol: getTokenSymbol(trade.tokenInMint),
-        token_in_amount: trade.tokenInAmount,
-        token_out_mint: trade.tokenOutMint,
-        token_out_symbol: getTokenSymbol(trade.tokenOutMint),
-        token_out_amount: trade.tokenOutAmount,
-        usd_value: trade.baseAmount,
-        realized_pnl: realizedPnl,
-        avg_cost_basis: avgCostBasis,
-        block_timestamp: trade.timestamp,
-        source: trade.source,
-        gas: trade.gas,
-        latency_ms: latencyMs
-      });
+        if (!claimed) {
+          // Another source already owns this signature — skip everything
+          const skipSrc = tx.source?.toUpperCase() || 'UNKNOWN';
+          console.log(`[ORCHESTRATOR] [${skipSrc}] Signature ${trade.signature.slice(0, 12)}... already claimed, skipping`);
+          skipCounts[skipSrc] = (skipCounts[skipSrc] || 0) + 1;
+          txTimer.finish('TX skipped - already claimed');
+          continue;
+        }
 
-      if (!error) {
         inserted++;
-        txTimer.checkpoint('DB: Insert leader trade');
-        console.log(`Inserted trade: ${trade.type} ${trade.tokenMint.slice(0, 8)}... | Latency: ${latencyMs}ms`);
+        txTimer.checkpoint('DB: Insert leader trade (Claimed)');
+        const winSrc = tx.source?.toUpperCase() || 'UNKNOWN';
+        winCounts[winSrc] = (winCounts[winSrc] || 0) + 1;
+        console.log(`[${winSrc}] Inserted trade: ${trade.type} ${trade.tokenMint.slice(0, 8)}... | Latency: ${latencyMs}ms`);
 
-        // COPY TRADE ENGINE: Process copy trades
+        // === FROM HERE, ONLY THE WINNER EXECUTES ===
+
+        // 2. Update leader position (safe — only one process reaches here per signature)
+        const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
+        txTimer.checkpoint('Update leader position');
+
+        // 3. Backfill PnL on the trade row we already inserted
+        await updateTradePnL(trade.signature, realizedPnl, avgCostBasis);
+        txTimer.checkpoint('Backfill Trade PnL');
+
+        // 4. COPY TRADE ENGINE: Process copy trades
         // CRITICAL: We MUST await on Vercel serverless - CPU freezes when response returns!
-        // With batch limit of 5 trades and parallel fetching, this completes in ~3-5 seconds.
         await executeCopyTrades(trade, receivedAt);
         txTimer.checkpoint('Copy trades queued');
 
-        // BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
+        // 5. BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
         enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => { });
 
-        // NOTE: Star traders are no longer auto-added here.
-        // They must be added manually via database to prevent unauthorized wallet tracking.
-      } else {
-        console.log(`Trade insert error for ${trade.signature}:`, error.message);
+      } catch (error: any) {
+        console.log(`Trade insert/process error for ${trade.signature}:`, error.message);
       }
 
       txTimer.finish('TX processing complete');
     } // End of for (starTrader of matchedStarTraders)
+  }
+
+  // ── Phase 3: Batch observability summary ──────────────────────────────────
+  if (processed > 0 || inserted > 0) {
+    const winStr = Object.entries(winCounts).map(([k, v]) => `${k}=${v}`).join(', ') || 'none';
+    const skipStr = Object.entries(skipCounts).map(([k, v]) => `${k}=${v}`).join(', ') || 'none';
+    console.log(`[ORCHESTRATOR] Batch summary — processed: ${processed}, inserted: ${inserted} | wins: {${winStr}} | dedup-skips: {${skipStr}}`);
   }
 
   return { processed, inserted };

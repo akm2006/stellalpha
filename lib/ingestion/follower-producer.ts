@@ -4,6 +4,7 @@ import { RawTrade } from '@/lib/trade-parser';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { getActiveFollowers } from '@/lib/repositories/demo-trader-states.repo';
 import { queueTrade } from '@/lib/repositories/demo-trades.repo';
+import { getFollowerPosition } from '@/lib/repositories/demo-positions.repo';
 import { 
   getSolPrice, 
   getTokenDecimals, 
@@ -13,6 +14,12 @@ import {
 
 // Import the consumer queue processor to trigger execution
 import { processTradeQueue } from '@/lib/ingestion/follower-execution';
+
+// ============ PHASE 3: BUY STALENESS POLICY ============
+// Stale BUY: skip followers who have no existing position (risky new entry).
+// Stale BUY with existing position: allow (maintain position consistency).
+// SELL: always execute regardless of age — exiting late beats not exiting.
+const BUY_STALENESS_THRESHOLD_MS = 30_000; // 30 seconds, tunable
 
 const SAFE_BOOST_TIERS = [
   { maxRatio: 0.0025, multiplier: 15, name: 'Micro Dust' },   // < 0.25% → 15x
@@ -246,11 +253,38 @@ export async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 
   timer.checkpoint('Calculate copy ratio + boost');
 
+  // ── Phase 3: BUY Staleness Policy ─────────────────────────────────────────
+  // Compute trade age at the moment we are about to queue follower trades.
+  // Transport-agnostic: applies identically to webhook and websocket paths.
+  const tradeAgeMs = receivedAt - trade.timestamp * 1000;
+  const isStaleBuy = type === 'buy' && tradeAgeMs > BUY_STALENESS_THRESHOLD_MS;
+  if (isStaleBuy) {
+    console.log(`[STALENESS] BUY is ${Math.round(tradeAgeMs / 1000)}s old (threshold ${BUY_STALENESS_THRESHOLD_MS / 1000}s) — will check per-follower position`);
+  }
+
   // 4. Insert queued trade for each follower
   for (const traderState of followers) {
     const traderStateId = traderState.id;
 
     try {
+      // ── Staleness gate (per-follower) ──────────────────────────────────────
+      // Each follower may be in a different position state, so check individually.
+      if (isStaleBuy) {
+        const { data: existingPos } = await getFollowerPosition(traderStateId, destMint);
+        const hasOpenPosition = existingPos && Number(existingPos.size) > 0;
+
+        if (!hasOpenPosition) {
+          console.log(`  [STALENESS] SKIP stale BUY | TS ${traderStateId.slice(0, 8)} — no existing position (age: ${Math.round(tradeAgeMs / 1000)}s)`);
+          continue; // Skip: risky late entry into a new memecoin position
+        }
+        console.log(`  [STALENESS] ALLOW stale BUY | TS ${traderStateId.slice(0, 8)} — follower has existing position (age: ${Math.round(tradeAgeMs / 1000)}s)`);
+      }
+
+      // SELL: log if delayed, but always proceed — exiting late beats not exiting
+      if (type === 'sell' && tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
+        console.log(`  [STALENESS] Delayed SELL executing | TS ${traderStateId.slice(0, 8)} (age: ${Math.round(tradeAgeMs / 1000)}s)`);
+      }
+
       // Insert with status='queued' and STORE V2 COPY RATIO
       const { error: insertError } = await queueTrade({
         trader_state_id: traderStateId,

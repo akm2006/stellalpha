@@ -9,6 +9,7 @@ export function normalizeWebhookPayload(body: any): IngestedTransaction[] {
       signature: tx.signature,
       timestamp: tx.timestamp || 0,
       feePayer: tx.feePayer || '',
+      source: 'webhook',
       raw: tx
     }));
 }

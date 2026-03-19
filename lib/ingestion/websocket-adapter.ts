@@ -7,6 +7,7 @@ export function normalizeWebsocketPayload(enhancedTxs: any[]): IngestedTransacti
       signature: tx.signature,
       timestamp: tx.timestamp || Math.floor(Date.now() / 1000),
       feePayer: tx.feePayer || '',
+      source: 'websocket',
       raw: tx
     }));
 }
