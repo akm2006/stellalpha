@@ -38,3 +38,10 @@ export async function updateTradePnL(
     .update({ realized_pnl: realizedPnl, avg_cost_basis: avgCostBasis })
     .eq('signature', signature);
 }
+
+export async function deleteClaimedTrade(signature: string) {
+  return supabase
+    .from('trades')
+    .delete()
+    .eq('signature', signature);
+}

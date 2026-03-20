@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getSession } from '@/lib/session';
 
 // GET: Fetch trades for a specific trader state with pagination and stats
 export async function GET(request: NextRequest) {
+  const session = await getSession();
+  if (!session.isLoggedIn || !session.user?.wallet) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
-  const wallet = searchParams.get('wallet');
+  const requestedWallet = searchParams.get('wallet');
+  const wallet = session.user.wallet;
   const starTrader = searchParams.get('starTrader');
   const traderStateId = searchParams.get('traderStateId');
   
@@ -14,8 +21,8 @@ export async function GET(request: NextRequest) {
   const cursor = searchParams.get('cursor'); // Format: "timestamp,id"
   const offset = (page - 1) * pageSize;
   
-  if (!wallet) {
-    return NextResponse.json({ error: 'Wallet address required' }, { status: 400 });
+  if (requestedWallet && requestedWallet !== wallet) {
+    return NextResponse.json({ error: 'Forbidden: wallet does not match authenticated user' }, { status: 403 });
   }
   
   try {

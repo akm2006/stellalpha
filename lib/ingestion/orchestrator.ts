@@ -1,8 +1,9 @@
 import { getSolPrice, getTokenSymbol, enrichTradeSymbols } from '@/lib/services/token-service';
 import { getStarTradersByAddresses } from '@/lib/repositories/star-traders.repo';
-import { claimTrade, updateTradePnL } from '@/lib/repositories/trades.repo';
+import { claimTrade, deleteClaimedTrade, updateTradePnL } from '@/lib/repositories/trades.repo';
 import { getPosition, upsertPosition } from '@/lib/repositories/positions.repo';
-import { executeCopyTrades } from '@/lib/ingestion/follower-producer';
+import { queueCopyTrades, triggerQueuedTradeProcessors } from '@/lib/ingestion/follower-producer';
+import { deleteQueuedTradesBySignature } from '@/lib/repositories/demo-trades.repo';
 import { detectTrade as detectTradeParser, RawTrade } from '@/lib/trade-parser';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { extractInvolvedAddresses } from '@/lib/ingestion/utils';
@@ -72,6 +73,7 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
 export async function processBatch(transactions: IngestedTransaction[], receivedAt: number): Promise<IngestionResult> {
   let processed = 0;
   let inserted = 0;
+  let batchError: Error | null = null;
 
   // ── Phase 3: Observability — source win counters ───────────────────────────
   // Tracks which ingestion source (webhook vs websocket) claimed the trade first
@@ -134,10 +136,13 @@ export async function processBatch(transactions: IngestedTransaction[], received
 
       // Calculate latency (time from on-chain to now)
       const latencyMs = receivedAt - (trade.timestamp * 1000);
+      let leaderPositionUpdated = false;
 
       // 1. CLAIM the trade — INSERT is the gate
       // Trade row built WITHOUT PnL fields (backfilled after position update)
       try {
+        let queuedTraderStateIds: string[] = [];
+
         const { claimed } = await claimTrade({
           signature: trade.signature,
           wallet: trade.wallet,
@@ -176,24 +181,45 @@ export async function processBatch(transactions: IngestedTransaction[], received
 
         // === FROM HERE, ONLY THE WINNER EXECUTES ===
 
-        // 2. Update leader position (safe — only one process reaches here per signature)
+        // 2. Queue follower rows only. Triggering happens after leader position succeeds.
+        const queueResult = await queueCopyTrades(trade, receivedAt);
+        queuedTraderStateIds = queueResult.queuedTraderStateIds;
+        txTimer.checkpoint('Queue follower rows');
+
+        // 3. Update leader position.
         const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
+        leaderPositionUpdated = true;
         txTimer.checkpoint('Update leader position');
 
-        // 3. Backfill PnL on the trade row we already inserted
-        await updateTradePnL(trade.signature, realizedPnl, avgCostBasis);
-        txTimer.checkpoint('Backfill Trade PnL');
+        // 4. Backfill PnL on the trade row we already inserted (best-effort only).
+        try {
+          await updateTradePnL(trade.signature, realizedPnl, avgCostBasis);
+          txTimer.checkpoint('Backfill Trade PnL');
+        } catch (pnlError: any) {
+          console.warn(`[ORCHESTRATOR] Failed to backfill PnL for ${trade.signature.slice(0, 12)}...`, pnlError.message);
+        }
 
-        // 4. COPY TRADE ENGINE: Process copy trades
-        // CRITICAL: We MUST await on Vercel serverless - CPU freezes when response returns!
-        await executeCopyTrades(trade, receivedAt);
-        txTimer.checkpoint('Copy trades queued');
+        // 5. Trigger queue processors only after the leader position commit point.
+        triggerQueuedTradeProcessors(queuedTraderStateIds);
+        txTimer.checkpoint('Trigger queue processors');
 
-        // 5. BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
+        // 6. BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
         enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => { });
 
       } catch (error: any) {
+        if (!leaderPositionUpdated) {
+          const { error: queuedDeleteError } = await deleteQueuedTradesBySignature(trade.signature);
+          if (queuedDeleteError) {
+            throw new Error(`Failed to delete queued follower trades for ${trade.signature}: ${queuedDeleteError.message}`);
+          }
+
+          const { error: tradeDeleteError } = await deleteClaimedTrade(trade.signature);
+          if (tradeDeleteError) {
+            throw new Error(`Failed to delete claimed trade for ${trade.signature}: ${tradeDeleteError.message}`);
+          }
+        }
         console.log(`Trade insert/process error for ${trade.signature}:`, error.message);
+        batchError ??= error instanceof Error ? error : new Error(String(error));
       }
 
       txTimer.finish('TX processing complete');
@@ -205,6 +231,10 @@ export async function processBatch(transactions: IngestedTransaction[], received
     const winStr = Object.entries(winCounts).map(([k, v]) => `${k}=${v}`).join(', ') || 'none';
     const skipStr = Object.entries(skipCounts).map(([k, v]) => `${k}=${v}`).join(', ') || 'none';
     console.log(`[ORCHESTRATOR] Batch summary — processed: ${processed}, inserted: ${inserted} | wins: {${winStr}} | dedup-skips: {${skipStr}}`);
+  }
+
+  if (batchError) {
+    throw batchError;
   }
 
   return { processed, inserted };

@@ -22,19 +22,23 @@ export async function POST(request: NextRequest) {
 
   webhookTimer.checkpoint('Auth verification');
 
+  let body: any;
   try {
-    const body = await request.json();
-    const transactions = Array.isArray(body) ? body : [body];
+    body = await request.json();
+  } catch (error) {
+    console.error('Webhook JSON parse error:', error);
+    return NextResponse.json({ error: 'Malformed JSON body' }, { status: 400 });
+  }
 
+  try {
+    const transactions = Array.isArray(body) ? body : [body];
     webhookTimer.checkpoint('Parse request body');
 
     console.log(`Received ${transactions.length} transaction(s) from webhook`);
 
-    // Track Helius delay stats
     let totalHeliusDelay = 0;
     let heliusDelayCount = 0;
 
-    // Log individual Helius delays
     for (const tx of transactions) {
       if (tx.timestamp && tx.signature) {
         const heliusDelay = receivedAt - (tx.timestamp * 1000);
@@ -44,7 +48,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Log aggregate Helius delay stats
     if (heliusDelayCount > 0) {
       const avgHeliusDelay = Math.round(totalHeliusDelay / heliusDelayCount);
       console.log(`[HELIUS] Average delay: ${avgHeliusDelay}ms across ${heliusDelayCount} transaction(s)`);
@@ -62,9 +65,8 @@ export async function POST(request: NextRequest) {
       receivedAt: new Date(receivedAt).toISOString()
     });
   } catch (error) {
-    console.error('Webhook error:', error);
-    // Always return 200 to prevent Helius retries
-    return NextResponse.json({ ok: true, error: 'Processing failed' });
+    console.error('Webhook processing error:', error);
+    return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
   }
 }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { getTokensMetadata } from '@/lib/jupiter-tokens';
+import { getSession } from '@/lib/session';
 
 const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
 
@@ -137,12 +138,22 @@ async function fetchJupiterPrices(mints: string[]): Promise<Map<string, { price:
 // ============================================
 export async function GET(request: NextRequest) {
   try {
+    const session = await getSession();
+    if (!session.isLoggedIn || !session.user?.wallet) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
-    const wallet = searchParams.get('wallet');
+    const requestedWallet = searchParams.get('wallet');
+    const wallet = session.user.wallet;
     const traderStateId = searchParams.get('traderStateId');
+
+    if (requestedWallet && requestedWallet !== wallet) {
+      return NextResponse.json({ error: 'Forbidden: wallet does not match authenticated user' }, { status: 403 });
+    }
     
-    if (!wallet || !traderStateId) {
-      return NextResponse.json({ error: 'Missing wallet or traderStateId' }, { status: 400 });
+    if (!traderStateId) {
+      return NextResponse.json({ error: 'Missing traderStateId' }, { status: 400 });
     }
     
     // 1. Fetch trader state with ownership check

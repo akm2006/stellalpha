@@ -84,7 +84,7 @@ Experience the power of Stellalpha without financial risk:
 3. Setup environment variables:
    ```bash
    cp .env.example .env.local
-   # Add your HELIUS_API_KEY, SUPABASE_URL, etc.
+   # Fill in the required values for the web app first, then worker/cron if used.
    ```
 4. Run the development server:
    ```bash
@@ -96,6 +96,34 @@ To start the real-time WebSocket ingestion worker:
 ```bash
 pnpm worker
 ```
+
+## Runtime / Deployment
+
+Current production-like behavior in this repo is the demo vault system backed by
+Supabase. Deployment still has three runtime components:
+
+- **Next.js app service**: serves the frontend and all `app/api/*` routes,
+  including demo-vault APIs, the Helius webhook receiver, and cron endpoints.
+- **WebSocket worker service**: run separately with `pnpm worker`. It subscribes
+  to tracked-wallet logs, performs startup recovery over the last 25 confirmed
+  signatures per tracked wallet, and pushes recovered/live events through the
+  shared ingestion path.
+- **Cron / reconcile path**: schedule authenticated requests to
+  `/api/cron/reconcile` and `/api/cron/cleanup-trades` with
+  `Authorization: Bearer $CRON_SECRET`. Reconcile checks the last 50 signatures
+  per tracked wallet and replays missing events oldest-to-newest through the
+  same shared orchestrator path and dedupe gate.
+
+Minimal env split:
+
+- **Web app**: `SUPABASE_URL`, `SUPABASE_SECRET`, `IRON_SESSION_PASSWORD`,
+  `NEXT_PUBLIC_REOWN_PROJECT_ID`, `HELIUS_API_KEY`, `JUPITER_API_KEY`,
+  `HELIUS_WEBHOOK_SECRET`
+- **Worker**: all web app vars above, plus `CHAINSTACK_WSS_URL` and
+  `HELIUS_API_RPC_URL` recommended
+- **Cron**: `CRON_SECRET`, plus the shared Helius/Supabase app vars
+- **On-chain/localnet/operator-only**: `RPC_URL`, `STELLALPHA_PROGRAM_ID`,
+  `BACKEND_WALLET_PATH`
 
 ---
 

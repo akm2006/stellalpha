@@ -11,7 +11,7 @@ export const maxDuration = 60; // 60s timeout for Vercel
 // ============================================================
 // Runs every 5 minutes (configure in vercel.json or Railway cron).
 // For each tracked wallet:
-//   1. Fetch last 20 signatures from Helius
+//   1. Fetch last 50 signatures from Helius
 //   2. Compare against `trades` table
 //   3. For any missing signatures: fetch enhanced tx → processBatch()
 //
@@ -23,7 +23,7 @@ export const maxDuration = 60; // 60s timeout for Vercel
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY!;
 const HELIUS_RPC_URL = process.env.HELIUS_API_RPC_URL || `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
-const LOOKBACK_LIMIT = 20; // last N signatures per wallet
+const LOOKBACK_LIMIT = 50; // last N signatures per wallet
 const ENHANCED_TX_URL = `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS_API_KEY}`;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

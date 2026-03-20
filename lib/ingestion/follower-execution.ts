@@ -3,6 +3,9 @@ import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { 
   getOldestQueuedTrade, 
   claimQueuedTrade, 
+  getProcessingTrades,
+  getQueuedTradeCount,
+  requeueProcessingTrade,
   updateDemoTrade 
 } from '@/lib/repositories/demo-trades.repo';
 import { 
@@ -30,6 +33,45 @@ export const MAX_TRADES_PER_BATCH = 5;
 export const activeQueueProcessors = new Set<string>();
 
 const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
+const PROCESSING_STALE_MS = 5 * 60 * 1000;
+
+function getProcessorStartedAt(processorId: string | null | undefined): number | null {
+  if (!processorId) return null;
+
+  const [timestamp] = processorId.split('-', 1);
+  const startedAt = Number(timestamp);
+  return Number.isFinite(startedAt) ? startedAt : null;
+}
+
+async function reclaimStaleProcessingTrades(traderStateId: string) {
+  const { data: processingTrades, error } = await getProcessingTrades(traderStateId);
+
+  if (error) {
+    console.error(`[CONSUMER] Failed to inspect processing trades:`, error.message);
+    return 0;
+  }
+
+  let reclaimed = 0;
+  for (const trade of processingTrades || []) {
+    const startedAt = getProcessorStartedAt(trade.processor_id);
+    if (!startedAt) continue;
+
+    if (Date.now() - startedAt <= PROCESSING_STALE_MS) {
+      continue;
+    }
+
+    const { error: requeueError } = await requeueProcessingTrade(trade.id);
+    if (requeueError) {
+      console.error(`[CONSUMER] Failed to requeue stale trade ${trade.id.slice(0, 8)}:`, requeueError.message);
+      continue;
+    }
+
+    reclaimed++;
+    console.warn(`[CONSUMER] Reclaimed stale processing trade ${trade.id.slice(0, 8)}`);
+  }
+
+  return reclaimed;
+}
 
 // ============ CONSUMER: Sequential Trade Processor with Atomic Locking ============
 // RACE CONDITION FIX: Uses atomic UPDATE with conditional WHERE to claim trades
@@ -46,8 +88,11 @@ export async function processTradeQueue(traderStateId: string) {
 
   let tradesProcessed = 0;
   const processorId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let shouldScheduleFollowUp = false;
 
   try {
+    await reclaimStaleProcessingTrades(traderStateId);
+
     // Process trades one-by-one until batch limit or no more queued trades
     while (tradesProcessed < MAX_TRADES_PER_BATCH) {
       // ========== ATOMIC CLAIM PATTERN ==========
@@ -149,11 +194,25 @@ export async function processTradeQueue(traderStateId: string) {
 
     // Log if we hit batch limit
     if (tradesProcessed >= MAX_TRADES_PER_BATCH) {
-      console.log(`[CONSUMER] Batch limit reached (${MAX_TRADES_PER_BATCH}). Remaining trades will be processed on next trigger.`);
+      const { count: queuedCount, error: countError } = await getQueuedTradeCount(traderStateId);
+      if (countError) {
+        console.error(`[CONSUMER] Failed to count remaining queued trades:`, countError.message);
+      } else if ((queuedCount || 0) > 0) {
+        shouldScheduleFollowUp = true;
+      }
+      console.log(`[CONSUMER] Batch limit reached (${MAX_TRADES_PER_BATCH}). Remaining trades will be processed in a follow-up pass.`);
     }
   } finally {
     activeQueueProcessors.delete(traderStateId);
     console.log(`[CONSUMER] Queue processor finished for ${traderStateId.slice(0, 8)} (processed ${tradesProcessed} trades)`);
+  }
+
+  if (shouldScheduleFollowUp) {
+    setTimeout(() => {
+      processTradeQueue(traderStateId).catch(err => {
+        console.error(`[CONSUMER] Follow-up queue processor error for ${traderStateId.slice(0, 8)}:`, err);
+      });
+    }, 0);
   }
 }
 
@@ -376,6 +435,7 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
         cost_usd: newCostBasis,
         avg_cost: newAvgCost
       });
+    } else {
       await insertDemoPosition(traderStateId, destMint, getTokenSymbol(destMint), newAmount, newCostBasis, newAvgCost);
     }
 

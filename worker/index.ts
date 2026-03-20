@@ -47,6 +47,7 @@ let slotSubId: number | null = null;
 let isReconnecting = false;
 let backoffMs = 1000;
 const MAX_BACKOFF = 30000;
+const STARTUP_RECONCILE_LIMIT = 25;
 
 // Helper to clean up cache periodically to prevent memory leaks
 setInterval(() => {
@@ -275,12 +276,16 @@ async function syncTrackedWallets() {
 // STARTUP RECONCILIATION
 // ----------------------------------------------------------------------------
 async function reconcileStartup() {
-  console.log(`[WORKER] Starting startup reconciliation...`);
+  console.log(`[WORKER] Starting startup reconciliation (lookback: last ${STARTUP_RECONCILE_LIMIT} confirmed signatures per wallet)...`);
   
   for (const wallet of trackedWallets) {
     try {
-      // 1. Fetch last 10 confirmed signatures from RPC for this wallet
-      const sigs = await connection.getSignaturesForAddress(new PublicKey(wallet), { limit: 10 }, 'confirmed');
+      // 1. Fetch a modestly deeper confirmed-signature window for startup recovery.
+      const sigs = await connection.getSignaturesForAddress(
+        new PublicKey(wallet),
+        { limit: STARTUP_RECONCILE_LIMIT },
+        'confirmed'
+      );
       const signatureList = sigs.map(s => s.signature);
       
       if (signatureList.length === 0) continue;

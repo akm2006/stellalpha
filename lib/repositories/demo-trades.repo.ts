@@ -35,3 +35,38 @@ export async function updateDemoTrade(tradeId: string, updateData: any) {
     .update(updateData)
     .eq('id', tradeId);
 }
+
+export async function deleteQueuedTradesBySignature(signature: string) {
+  return supabase
+    .from('demo_trades')
+    .delete()
+    .eq('star_trade_signature', signature)
+    .eq('status', 'queued');
+}
+
+export async function getProcessingTrades(traderStateId: string) {
+  return supabase
+    .from('demo_trades')
+    .select('id, processor_id')
+    .eq('trader_state_id', traderStateId)
+    .eq('status', 'processing');
+}
+
+export async function requeueProcessingTrade(tradeId: string) {
+  return supabase
+    .from('demo_trades')
+    .update({
+      status: 'queued',
+      processor_id: null,
+    })
+    .eq('id', tradeId)
+    .eq('status', 'processing');
+}
+
+export async function getQueuedTradeCount(traderStateId: string) {
+  return supabase
+    .from('demo_trades')
+    .select('*', { count: 'exact', head: true })
+    .eq('trader_state_id', traderStateId)
+    .eq('status', 'queued');
+}

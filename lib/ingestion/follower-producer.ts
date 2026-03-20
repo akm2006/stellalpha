@@ -100,8 +100,13 @@ export async function getTraderBuyingPower(walletAddress: string, connection: Co
 }
 
 // ============ PRODUCER: Fast Queue Insert ============
-export async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
+export interface QueueCopyTradesResult {
+  queuedTraderStateIds: string[];
+}
+
+export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Promise<QueueCopyTradesResult> {
   const timer = new PerformanceTimer(`PRODUCER(${trade.signature?.slice(0, 8)}...)`);
+  const queuedTraderStateIds: string[] = [];
 
   const starTrader = trade.wallet;
   const sourceMint = trade.tokenInMint;
@@ -112,8 +117,8 @@ export async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 
   if (!sourceMint || !destMint) {
     console.log(`[PRODUCER] Missing sourceMint or destMint, skipping`);
-    timer.finish('executeCopyTrades - ABORTED');
-    return;
+    timer.finish('queueCopyTrades - ABORTED');
+    return { queuedTraderStateIds };
   }
 
   timer.checkpoint('Validate inputs');
@@ -125,14 +130,14 @@ export async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
 
   if (followersError) {
     console.log(`[PRODUCER] DB error fetching followers:`, followersError.message);
-    timer.finish('executeCopyTrades - DB ERROR');
-    return;
+    timer.finish('queueCopyTrades - DB ERROR');
+    throw new Error(`Failed to fetch followers: ${followersError.message}`);
   }
 
   if (!followers || followers.length === 0) {
     console.log(`[PRODUCER] No initialized followers found for ${starTrader.slice(0, 20)}...`);
-    timer.finish('executeCopyTrades - NO FOLLOWERS');
-    return;
+    timer.finish('queueCopyTrades - NO FOLLOWERS');
+    return { queuedTraderStateIds };
   }
 
   console.log(`[PRODUCER] Queueing trade for ${followers.length} trader state(s)`);
@@ -310,21 +315,31 @@ export async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
       });
 
       if (insertError) {
-        console.log(`  TS ${traderStateId.slice(0, 8)}: Trade already queued or error: ${insertError.message}`);
-        continue;
+        throw new Error(`Failed to queue trade for ${traderStateId}: ${insertError.message}`);
       }
 
+      queuedTraderStateIds.push(traderStateId);
       console.log(`  TS ${traderStateId.slice(0, 8)}: Trade queued (Ratio: ${(finalRatio * 100).toFixed(2)}%${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
-
-      // 5. Trigger queue processor (fire and forget)
-      processTradeQueue(traderStateId).catch(err => {
-        console.error(`[PRODUCER] Queue processor error for ${traderStateId.slice(0, 8)}:`, err);
-      });
 
     } catch (err) {
       console.error(`  TS ${traderStateId.slice(0, 8)}: Queue insert error`, err);
+      throw err;
     }
   }
 
-  timer.finish('executeCopyTrades - All queued');
+  timer.finish('queueCopyTrades - All queued');
+  return { queuedTraderStateIds };
+}
+
+export function triggerQueuedTradeProcessors(traderStateIds: string[]) {
+  for (const traderStateId of new Set(traderStateIds)) {
+    processTradeQueue(traderStateId).catch(err => {
+      console.error(`[PRODUCER] Queue processor error for ${traderStateId.slice(0, 8)}:`, err);
+    });
+  }
+}
+
+export async function executeCopyTrades(trade: RawTrade, receivedAt: number) {
+  const { queuedTraderStateIds } = await queueCopyTrades(trade, receivedAt);
+  triggerQueuedTradeProcessors(queuedTraderStateIds);
 }
