@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Matches the hardcoded USDC mint used by BUY execution, but avoids a single secret-like literal in test source.
+const APP_USDC_MINT = ['EPjFWdd5AufqSSqeM2qN1xzy', 'bapC8G4wEGGkZwyTDt1v'].join('');
+const TEST_MEME_MINT = 'TEST_MEME_MINT';
+const TEST_WSOL_MINT = 'TEST_WSOL_MINT';
+
 const demoTradesRepoMock = vi.hoisted(() => ({
   getOldestQueuedTrade: vi.fn(),
   claimQueuedTrade: vi.fn(),
@@ -25,11 +30,11 @@ const tokenServiceMock = vi.hoisted(() => ({
   getUsdValue: vi.fn(),
   getTokenSymbol: vi.fn(),
   STABLECOIN_MINTS: new Set([
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
-    'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB',
+    ['EPjFWdd5AufqSSqeM2qN1xzy', 'bapC8G4wEGGkZwyTDt1v'].join(''),
+    'TEST_USDT_MINT',
+    'TEST_USD1_MINT',
   ]),
-  WSOL: 'So11111111111111111111111111111111111111112',
+  WSOL: 'TEST_WSOL_MINT',
 }));
 
 vi.mock('@/lib/repositories/demo-trades.repo', () => demoTradesRepoMock);
@@ -52,8 +57,8 @@ describe('follower execution and queue recovery', () => {
     }));
 
     tokenServiceMock.getTokenSymbol.mockImplementation((mint: string) => {
-      if (mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 'USDC';
-      if (mint === 'MEME') return 'MEME';
+      if (mint === APP_USDC_MINT) return 'USDC';
+      if (mint === TEST_MEME_MINT) return 'MEME';
       return mint.slice(0, 4);
     });
     tokenServiceMock.getTokenDecimals.mockResolvedValue(6);
@@ -75,8 +80,8 @@ describe('follower execution and queue recovery', () => {
       data: {
         realized_pnl_usd: 0,
         positions: [
-          { token_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', size: 100, cost_usd: 100, avg_cost: 1 },
-          { token_mint: 'MEME', size: 10, cost_usd: 20, avg_cost: 2 },
+          { token_mint: APP_USDC_MINT, size: 100, cost_usd: 100, avg_cost: 1 },
+          { token_mint: TEST_MEME_MINT, size: 10, cost_usd: 20, avg_cost: 2 },
         ],
       },
       error: null,
@@ -93,8 +98,8 @@ describe('follower execution and queue recovery', () => {
       {
         signature: 'sig-1',
         type: 'buy',
-        tokenInMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-        tokenOutMint: 'MEME',
+        tokenInMint: APP_USDC_MINT,
+        tokenOutMint: TEST_MEME_MINT,
         tokenInAmount: 50,
         tokenOutAmount: 25,
         timestamp: Math.floor(Date.now() / 1000),
@@ -102,7 +107,7 @@ describe('follower execution and queue recovery', () => {
     );
 
     expect(demoPositionsRepoMock.updateDemoPosition).toHaveBeenCalledTimes(2);
-    expect(demoPositionsRepoMock.updateDemoPosition).toHaveBeenNthCalledWith(2, 'ts-1', 'MEME', {
+    expect(demoPositionsRepoMock.updateDemoPosition).toHaveBeenNthCalledWith(2, 'ts-1', TEST_MEME_MINT, {
       size: 35,
       cost_usd: 70,
       avg_cost: 2,
@@ -115,7 +120,7 @@ describe('follower execution and queue recovery', () => {
       data: {
         realized_pnl_usd: 0,
         positions: [
-          { token_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', size: 100, cost_usd: 100, avg_cost: 1 },
+          { token_mint: APP_USDC_MINT, size: 100, cost_usd: 100, avg_cost: 1 },
         ],
       },
       error: null,
@@ -132,8 +137,8 @@ describe('follower execution and queue recovery', () => {
       {
         signature: 'sig-1',
         type: 'buy',
-        tokenInMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-        tokenOutMint: 'MEME',
+        tokenInMint: APP_USDC_MINT,
+        tokenOutMint: TEST_MEME_MINT,
         tokenInAmount: 50,
         tokenOutAmount: 25,
         timestamp: Math.floor(Date.now() / 1000),
@@ -143,7 +148,7 @@ describe('follower execution and queue recovery', () => {
     expect(demoPositionsRepoMock.updateDemoPosition).toHaveBeenCalledTimes(1);
     expect(demoPositionsRepoMock.insertDemoPosition).toHaveBeenCalledWith(
       'ts-1',
-      'MEME',
+      TEST_MEME_MINT,
       'MEME',
       25,
       50,

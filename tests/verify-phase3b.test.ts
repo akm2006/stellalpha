@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { executeCopyTrades as newExecuteCopyTrades } from '../lib/ingestion/follower-producer';
 import { processTradeQueue as newProcessTradeQueue } from '../lib/ingestion/follower-execution';
 
+const TEST_USDC_MINT = 'TEST_USDC_MINT';
+
 // We will mock supabase, fetch, and connection so we can verify the payload propagation
 // without modifying the database.
 
@@ -52,7 +54,7 @@ describe('Phase 3B Verification', () => {
            data: {
              id: 'follower1',
              realized_pnl_usd: 10,
-             positions: [{ token_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', size: 1000 }] // USDC
+             positions: [{ token_mint: TEST_USDC_MINT, size: 1000 }] // USDC
            }, 
            error: null 
          });
@@ -75,7 +77,7 @@ describe('Phase 3B Verification', () => {
           // as returning the chain, wait! claimQueuedTrade doesn't await the `select`, it awaits the result.
           // Let's redefine `select` to return the chain but when `await`ed it returns data.
           chain.then = vi.fn((cb) => cb({ 
-             data: [{ id: 'trade1', raw_data: { type: 'buy', wallet: 'leader', tokenInMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', tokenOutMint: 'SOL' } }], 
+             data: [{ id: 'trade1', raw_data: { type: 'buy', wallet: 'leader', tokenInMint: TEST_USDC_MINT, tokenOutMint: 'SOL' } }], 
              error: null 
           }));
           return chain;

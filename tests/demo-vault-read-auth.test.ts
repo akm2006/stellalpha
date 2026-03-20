@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const TEST_USDC_MINT = 'TEST_USDC_MINT';
+
 const supabaseMock = vi.hoisted(() => ({
   from: vi.fn(),
 }));
@@ -97,7 +99,7 @@ describe('demo-vault read routes auth', () => {
             eq: vi.fn().mockReturnValue(createThenable({
               data: [
                 {
-                  token_mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+                  token_mint: TEST_USDC_MINT,
                   token_symbol: 'USDC',
                   size: 50,
                   cost_usd: 50,
