@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "next build",
+    "cron:test": "tsx scripts/test-crons.ts",
     "dev": "tsx lib/banner.ts && next dev",
     "lint": "eslint .",
     "start": "next start",

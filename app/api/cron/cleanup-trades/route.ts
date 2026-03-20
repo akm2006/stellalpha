@@ -5,6 +5,16 @@ import { supabase } from '@/lib/supabase';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60; // Set timeout to 60s for vercel
 
+const DELETE_BATCH_SIZE = 500;
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
 export async function GET(request: Request) {
   try {
     const authHeader = request.headers.get('authorization');
@@ -47,18 +57,24 @@ export async function GET(request: Request) {
 
       if (idsToDelete && idsToDelete.length > 0) {
         const ids = idsToDelete.map(t => t.id);
-        const { count: deleteCount, error } = await supabase
-          .from('trades')
-          .delete({ count: 'exact' })
-          .in('id', ids);
+        let deletedForWallet = 0;
 
-        if (error) {
-          throw new Error(`Failed to delete trades for ${trader.address}: ${error.message}`);
+        for (const idBatch of chunkArray(ids, DELETE_BATCH_SIZE)) {
+          const { count: deleteCount, error } = await supabase
+            .from('trades')
+            .delete({ count: 'exact' })
+            .in('id', idBatch);
+
+          if (error) {
+            throw new Error(`Failed to delete trades for ${trader.address}: ${error.message}`);
+          }
+
+          deletedForWallet += deleteCount || 0;
         }
 
-        if (deleteCount) {
-          totalDeleted += deleteCount;
-          results.push({ wallet: trader.address, deleted: deleteCount });
+        if (deletedForWallet > 0) {
+          totalDeleted += deletedForWallet;
+          results.push({ wallet: trader.address, deleted: deletedForWallet });
         }
       }
     }
