@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { processBatch } from '@/lib/ingestion/orchestrator';
 import { normalizeWebsocketPayload } from '@/lib/ingestion/websocket-adapter';
+import { detectTrade } from '@/lib/trade-parser';
+import { getSolPrice } from '@/lib/services/token-service';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60; // 60s timeout for Vercel
@@ -25,6 +27,8 @@ const HELIUS_API_KEY = process.env.HELIUS_API_KEY!;
 const HELIUS_RPC_URL = process.env.HELIUS_API_RPC_URL || `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 const LOOKBACK_LIMIT = 50; // last N signatures per wallet
 const ENHANCED_TX_URL = `https://api.helius.xyz/v0/transactions/?api-key=${HELIUS_API_KEY}`;
+const NON_TRADE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const nonTradeSignatureCache = new Map<string, number>();
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 function isAuthorized(request: Request): boolean {
@@ -35,6 +39,21 @@ function isAuthorized(request: Request): boolean {
     return process.env.NODE_ENV !== 'production';
   }
   return authHeader === `Bearer ${cronSecret}`;
+}
+
+function pruneNonTradeCache(now: number) {
+  for (const [signature, expiresAt] of nonTradeSignatureCache.entries()) {
+    if (expiresAt <= now) {
+      nonTradeSignatureCache.delete(signature);
+    }
+  }
+}
+
+function markNonTradeSignatures(signatures: string[], now: number) {
+  const expiresAt = now + NON_TRADE_CACHE_TTL_MS;
+  for (const signature of signatures) {
+    nonTradeSignatureCache.set(signature, expiresAt);
+  }
 }
 
 // ── Helius helpers ────────────────────────────────────────────────────────────
@@ -94,6 +113,7 @@ export async function GET(request: Request) {
   }
 
   const startedAt = Date.now();
+  pruneNonTradeCache(startedAt);
   console.log('[RECONCILE] Starting reconciliation run...');
 
   try {
@@ -109,6 +129,7 @@ export async function GET(request: Request) {
 
     console.log(`[RECONCILE] Checking ${traders.length} wallets (lookback: last ${LOOKBACK_LIMIT} signatures each)`);
 
+    const solPrice = await getSolPrice();
     let totalMissing = 0;
     let totalProcessed = 0;
     let totalInserted = 0;
@@ -130,15 +151,18 @@ export async function GET(request: Request) {
           .in('signature', recentSigs);
 
         const knownSigs = new Set((knownTrades || []).map(t => t.signature));
-        const missingSigs = recentSigs.filter(sig => !knownSigs.has(sig));
+        const unseenSigs = recentSigs.filter(sig => !knownSigs.has(sig));
+        const missingSigs = unseenSigs.filter(sig => !nonTradeSignatureCache.has(sig));
 
         if (missingSigs.length === 0) {
-          console.log(`[RECONCILE] ${wallet.slice(0, 8)}...: all ${recentSigs.length} sigs known, no gaps`);
+          console.log(`[RECONCILE] ${wallet.slice(0, 8)}...: all ${recentSigs.length} sigs are known or recently classified as non-trades`);
           continue;
         }
 
-        totalMissing += missingSigs.length;
-        console.log(`[RECONCILE] ${wallet.slice(0, 8)}...: found ${missingSigs.length} missing sig(s) — fetching enhanced txs`);
+        console.log(
+          `[RECONCILE] ${wallet.slice(0, 8)}...: found ${missingSigs.length} unresolved sig(s) ` +
+          `(raw missing: ${unseenSigs.length}) — fetching enhanced txs`
+        );
 
         // 4. Fetch enhanced transactions for missing signatures
         const enhancedTxs = await fetchEnhancedTransactions(missingSigs);
@@ -148,18 +172,47 @@ export async function GET(request: Request) {
           continue;
         }
 
+        const tradeCandidates: any[] = [];
+        const nonTradeSignatures: string[] = [];
+
+        for (const tx of enhancedTxs) {
+          if (!tx?.signature) continue;
+
+          const detectedTrade = detectTrade(tx, wallet, solPrice);
+          if (!detectedTrade) {
+            nonTradeSignatures.push(tx.signature);
+            continue;
+          }
+
+          tradeCandidates.push(tx);
+        }
+
+        if (nonTradeSignatures.length > 0) {
+          markNonTradeSignatures(nonTradeSignatures, Date.now());
+        }
+
+        if (tradeCandidates.length === 0) {
+          console.log(`[RECONCILE] ${wallet.slice(0, 8)}...: ${missingSigs.length} unresolved sig(s) were non-trades`);
+          continue;
+        }
+
+        totalMissing += tradeCandidates.length;
+
         // 5. Normalize and run through the shared orchestrator pipeline.
         //    claimTrade() inside processBatch() provides idempotency:
         //    already-processed signatures will be safely skipped.
-        const ingestedTxs = normalizeWebsocketPayload(enhancedTxs);
+        const ingestedTxs = normalizeWebsocketPayload(tradeCandidates);
         const receivedAt = Date.now();
         const result = await processBatch(ingestedTxs, receivedAt);
 
         totalProcessed += result.processed;
         totalInserted += result.inserted;
-        walletSummaries.push({ wallet: wallet.slice(0, 8), missing: missingSigs.length, inserted: result.inserted });
+        walletSummaries.push({ wallet: wallet.slice(0, 8), missing: tradeCandidates.length, inserted: result.inserted });
 
-        console.log(`[RECONCILE] ${wallet.slice(0, 8)}...: processed ${result.processed}, inserted ${result.inserted}`);
+        console.log(
+          `[RECONCILE] ${wallet.slice(0, 8)}...: processed ${result.processed}, inserted ${result.inserted} ` +
+          `(trade candidates: ${tradeCandidates.length}, cached non-trades: ${nonTradeSignatures.length})`
+        );
 
       } catch (walletErr: any) {
         console.error(`[RECONCILE] Error for wallet ${wallet.slice(0, 8)}...:`, walletErr.message);

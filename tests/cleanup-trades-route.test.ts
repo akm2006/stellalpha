@@ -128,4 +128,67 @@ describe('cleanup-trades route', () => {
     expect(tradeDeleteChain.lte).not.toHaveBeenCalled();
     expect(tradeDeleteChain.neq).not.toHaveBeenCalled();
   });
+
+  it('deletes trade IDs in batches to avoid oversized delete requests', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.CRON_SECRET = 'top-secret';
+
+    const deleteChain = {
+      in: vi.fn().mockReturnValue(createThenable({ count: 500, error: null })),
+      lte: vi.fn(),
+      neq: vi.fn(),
+      lt: vi.fn(),
+    };
+
+    const ids = Array.from({ length: 1_200 }, (_, index) => ({ id: `trade-${index}` }));
+
+    supabaseMock.from.mockImplementation((table: string) => {
+      if (table === 'star_traders') {
+        return {
+          select: vi.fn().mockReturnValue(createThenable({ data: [{ address: 'wallet-1' }], error: null })),
+        };
+      }
+
+      if (table === 'trades') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              order: vi.fn().mockReturnValue({
+                range: vi.fn().mockReturnValue(createThenable({ data: ids, error: null })),
+              }),
+            }),
+          }),
+          delete: vi.fn().mockReturnValue(deleteChain),
+        };
+      }
+
+      if (table === 'token_prices') {
+        return {
+          select: vi.fn().mockReturnValue({
+            order: vi.fn().mockReturnValue({
+              range: vi.fn().mockReturnValue({
+                single: vi.fn().mockResolvedValue({ data: null, error: null }),
+              }),
+            }),
+          }),
+          delete: vi.fn(),
+        };
+      }
+
+      throw new Error(`Unexpected table: ${table}`);
+    });
+
+    const { GET } = await import('@/app/api/cron/cleanup-trades/route');
+    const response = await GET(
+      new Request('http://localhost/api/cron/cleanup-trades', {
+        headers: { authorization: 'Bearer top-secret' },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(deleteChain.in).toHaveBeenCalledTimes(3);
+    expect(deleteChain.in.mock.calls[0][1]).toHaveLength(500);
+    expect(deleteChain.in.mock.calls[1][1]).toHaveLength(500);
+    expect(deleteChain.in.mock.calls[2][1]).toHaveLength(200);
+  });
 });

@@ -7,6 +7,14 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { supabase } from '../lib/supabase';
 import { processBatch } from '../lib/ingestion/orchestrator';
 import { normalizeWebsocketPayload } from '../lib/ingestion/websocket-adapter';
+import {
+  dequeueReadyBatch,
+  ENHANCED_BATCH_SIZE,
+  ENHANCED_REQUEST_INTERVAL_MS,
+  enqueueSignature,
+  PendingSignatureEntry,
+  rescheduleEntries,
+} from './enhanced-fetch-queue';
 
 // Env config
 // Connection() first arg = HTTP/HTTPS endpoint (for RPC calls)
@@ -36,6 +44,7 @@ let connection = createConnection();
 
 // Cache to deduplicate parsed signatures (if 1 tx mentions 2 tracked wallets, or if retries occur)
 const signatureCache = new Set<string>();
+const pendingEnhancedFetches = new Map<string, PendingSignatureEntry>();
 
 // Tracked wallets
 let trackedWallets: string[] = [];
@@ -45,6 +54,7 @@ const activeSubscriptions = new Map<string, number>();
 let lastSlotTime = Date.now();
 let slotSubId: number | null = null;
 let isReconnecting = false;
+let isDrainingEnhancedQueue = false;
 let backoffMs = 1000;
 const MAX_BACKOFF = 30000;
 const STARTUP_RECONCILE_LIMIT = 25;
@@ -66,79 +76,132 @@ async function fetchTrackedWallets() {
 // ----------------------------------------------------------------------------
 // MANDATORY FETCH RETRY (3 attempts)
 // ----------------------------------------------------------------------------
-async function fetchEnhancedTransaction(signature: string, attempt = 1): Promise<any> {
+async function fetchEnhancedTransactions(signatures: string[]): Promise<{ ok: true; payload: any[] } | { ok: false; status?: number; statusText?: string }> {
   const start = Date.now();
-  console.log(`[WORKER] Fetching enhanced tx: ${signature} (Attempt ${attempt})`);
+  console.log(`[WORKER] Fetching ${signatures.length} enhanced tx(s)`);
   
   try {
     const res = await fetch(`https://api.helius.xyz/v0/transactions/?api-key=${HELIUS_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transactions: [signature] })
+      body: JSON.stringify({ transactions: signatures })
     });
 
     if (!res.ok) {
       console.error(`[WORKER] Helius fetch failed: ${res.status} ${res.statusText}`);
-      if (attempt < 3) {
-        await new Promise(r => setTimeout(r, attempt === 1 ? 200 : attempt === 2 ? 500 : 1000));
-        return fetchEnhancedTransaction(signature, attempt + 1);
-      }
-      return null;
+      return { ok: false, status: res.status, statusText: res.statusText };
     }
 
     const payload = await res.json();
-    
-    // Guard against Helius indexing delays — payload might be empty immediately after confirmation
-    if (!payload || payload.length === 0 || !payload[0]) {
-      console.log(`[WORKER] Enhanced payload empty for ${signature}, Helius indexing delay?`);
-      if (attempt < 3) {
-        await new Promise(r => setTimeout(r, attempt === 1 ? 200 : attempt === 2 ? 500 : 1000));
-        return fetchEnhancedTransaction(signature, attempt + 1);
-      }
-      return null;
-    }
 
     console.log(`[WORKER] Enhanced tx fetch took ${Date.now() - start}ms`);
-    return payload[0]; // Returns array of enriched txs
+    return { ok: true, payload: Array.isArray(payload) ? payload : [] };
   } catch (err) {
     console.error(`[WORKER] Helius fetch error:`, err);
-    if (attempt < 3) {
-      await new Promise(r => setTimeout(r, attempt === 1 ? 200 : attempt === 2 ? 500 : 1000));
-      return fetchEnhancedTransaction(signature, attempt + 1);
-    }
-    return null;
+    return { ok: false };
   }
 }
 
-async function handleNewSignature(signature: string, wallet: string) {
+async function getClaimedSignatures(signatures: string[]): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('trades')
+    .select('signature')
+    .in('signature', signatures);
+
+  if (error) {
+    console.error('[WORKER] Failed to check existing trade claims:', error);
+    return new Set();
+  }
+
+  return new Set((data || []).map((row) => row.signature));
+}
+
+async function drainEnhancedFetchQueue() {
+  if (isDrainingEnhancedQueue || pendingEnhancedFetches.size === 0) {
+    return;
+  }
+
+  const batch = dequeueReadyBatch(pendingEnhancedFetches, Date.now(), ENHANCED_BATCH_SIZE);
+  if (batch.length === 0) {
+    return;
+  }
+
+  isDrainingEnhancedQueue = true;
+
+  try {
+    const signatures = batch.map((entry) => entry.signature);
+    const alreadyClaimed = await getClaimedSignatures(signatures);
+    const fetchEntries = batch.filter((entry) => !alreadyClaimed.has(entry.signature));
+
+    if (alreadyClaimed.size > 0) {
+      console.log(`[WORKER] Skipping ${alreadyClaimed.size} queued signature(s) already claimed by webhook/reconcile`);
+    }
+
+    if (fetchEntries.length === 0) {
+      return;
+    }
+
+    const fetchResult = await fetchEnhancedTransactions(fetchEntries.map((entry) => entry.signature));
+    if (!fetchResult.ok) {
+      rescheduleEntries(pendingEnhancedFetches, fetchEntries, fetchResult.status, Date.now());
+      console.warn(
+        `[WORKER] Re-queued ${fetchEntries.length} signature(s) after enhanced fetch failure` +
+        `${fetchResult.status ? ` (${fetchResult.status}${fetchResult.statusText ? ` ${fetchResult.statusText}` : ''})` : ''}`
+      );
+      return;
+    }
+
+    const payloadBySignature = new Map<string, any>();
+    for (const tx of fetchResult.payload) {
+      if (tx?.signature) {
+        payloadBySignature.set(tx.signature, tx);
+      }
+    }
+
+    const missingPayloadEntries = fetchEntries.filter((entry) => !payloadBySignature.has(entry.signature));
+    if (missingPayloadEntries.length > 0) {
+      console.log(`[WORKER] Enhanced payload missing ${missingPayloadEntries.length} signature(s), re-queueing`);
+      rescheduleEntries(pendingEnhancedFetches, missingPayloadEntries, undefined, Date.now());
+    }
+
+    const enrichedBatch = fetchEntries
+      .map((entry) => payloadBySignature.get(entry.signature))
+      .filter(Boolean);
+
+    if (enrichedBatch.length === 0) {
+      return;
+    }
+
+    const normalizedBatch = normalizeWebsocketPayload(enrichedBatch);
+    if (normalizedBatch.length === 0) {
+      console.error(`[WORKER] Normalization failed for ${enrichedBatch.length} enhanced tx(s)`);
+      return;
+    }
+
+    console.log(`[WORKER] Triggering orchestrator for ${normalizedBatch.length} batched tx(s)`);
+    const orchestratorStart = Date.now();
+
+    try {
+      const { processed, inserted } = await processBatch(normalizedBatch, Date.now());
+      console.log(
+        `[WORKER] Orchestrator completed in ${Date.now() - orchestratorStart}ms | ` +
+        `Batch size: ${normalizedBatch.length} | Processed: ${processed}, Inserted: ${inserted}`
+      );
+    } catch (error) {
+      console.error(`[WORKER] Orchestrator error on batched fetch:`, error);
+    }
+  } finally {
+    isDrainingEnhancedQueue = false;
+  }
+}
+
+function handleNewSignature(signature: string, wallet: string) {
   if (signatureCache.has(signature)) return;
   signatureCache.add(signature);
 
   const receiveTimestamp = Date.now();
   console.log(`[WORKER] New log for ${wallet.slice(0, 8)}... | SIG: ${signature}`);
-
-  const enrichedTx = await fetchEnhancedTransaction(signature);
-  if (!enrichedTx) {
-    console.error(`[WORKER] Failed to pull payload for ${signature} after retries, skipping`);
-    return;
-  }
-
-  const normalizedBatch = normalizeWebsocketPayload([enrichedTx]);
-
-  if (normalizedBatch.length === 0) {
-     console.error(`[WORKER] Normalization failed for ${signature}`);
-     return;
-  }
-
-  console.log(`[WORKER] Triggering orchestrator for ${signature}`);
-  const orchestratorStart = Date.now();
-  
-  try {
-    const { processed, inserted } = await processBatch(normalizedBatch, receiveTimestamp);
-    console.log(`[WORKER] Orchestrator completed in ${Date.now() - orchestratorStart}ms | Processed: ${processed}, Inserted: ${inserted}`);
-  } catch (error) {
-    console.error(`[WORKER] Orchestrator error on ${signature}:`, error);
-  }
+  enqueueSignature(pendingEnhancedFetches, signature, wallet, receiveTimestamp);
 }
 
 // ----------------------------------------------------------------------------
@@ -151,7 +214,7 @@ function subscribeToWallet(wallet: string) {
       pubkey,
       (logs, ctx) => {
         if (logs.err) return; // Skip failed txs early
-        handleNewSignature(logs.signature, wallet).catch(console.error);
+        handleNewSignature(logs.signature, wallet);
       },
       'confirmed'
     );
@@ -238,7 +301,10 @@ function monitorConnectionHealth() {
     const timeSinceLastSlot = Date.now() - lastSlotTime;
     
     // Log basic health stats
-    console.log(`[HEALTH] Active Subs: ${activeSubscriptions.size} | Last Slot: ${timeSinceLastSlot}ms ago | Cache Size: ${signatureCache.size}`);
+    console.log(
+      `[HEALTH] Active Subs: ${activeSubscriptions.size} | Last Slot: ${timeSinceLastSlot}ms ago | ` +
+      `Cache Size: ${signatureCache.size} | Pending Enhanced: ${pendingEnhancedFetches.size}`
+    );
 
     // Idle timeout detection (Chainstack drops idle over 1h, but 60s without slot is anomalous)
     if (timeSinceLastSlot > 60 * 1000) {
@@ -305,9 +371,9 @@ async function reconcileStartup() {
       const missingSigs = signatureList.filter(s => !existingSet.has(s));
       
       if (missingSigs.length > 0) {
-        console.log(`[WORKER] Reconciliation: Found ${missingSigs.length} missing txs for ${wallet.slice(0, 8)}... Processing...`);
+        console.log(`[WORKER] Reconciliation: Found ${missingSigs.length} missing txs for ${wallet.slice(0, 8)}... Queueing...`);
         for (const sig of missingSigs.reverse()) { // Process oldest to newest
-           await handleNewSignature(sig, wallet);
+           handleNewSignature(sig, wallet);
         }
       }
     } catch (e) {
@@ -339,6 +405,9 @@ async function startWorker() {
 
   // Periodic polling for wallet updates (every 60s)
   setInterval(syncTrackedWallets, 60 * 1000);
+  setInterval(() => {
+    drainEnhancedFetchQueue().catch(console.error);
+  }, ENHANCED_REQUEST_INTERVAL_MS);
 
   // Monitor connection health continually
   monitorConnectionHealth();
