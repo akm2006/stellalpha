@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { createDemoTradeStatsMap } from '@/lib/demo-trade-stats';
+import {
+  calculateDemoVaultPortfolioValue,
+  fetchDemoVaultPriceMap,
+  normalizeDemoVaultPositions,
+} from '@/lib/demo-vault-pricing';
 import { getSession } from '@/lib/session';
 
 // GET: Fetch user's demo vault with trader states
@@ -156,53 +162,7 @@ export async function DELETE(request: NextRequest) {
   }
 }
 
-// DELETE: Delete demo vault
 const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
-// Stablecoins always = $1
-const STABLECOIN_MINTS = new Set([
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-  'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', // USD1
-]);
-
-async function fetchJupiterPrices(mints: string[]): Promise<Map<string, number>> {
-  const priceMap = new Map<string, number>();
-  
-  // Set stablecoins to $1
-  for (const mint of mints) {
-    if (STABLECOIN_MINTS.has(mint)) priceMap.set(mint, 1);
-  }
-  
-  const nonStableMints = mints.filter(m => !STABLECOIN_MINTS.has(m));
-  if (nonStableMints.length === 0) return priceMap;
-  
-  // Chunk into 100s if needed, or simple fetch for now
-  try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-    
-    // Split into chunks of 100 to respect API limits
-    const CHUNK_SIZE = 100;
-    for (let i = 0; i < nonStableMints.length; i += CHUNK_SIZE) {
-      const chunk = nonStableMints.slice(i, i + CHUNK_SIZE);
-      const url = `https://api.jup.ag/price/v3?ids=${chunk.join(',')}`;
-      
-      const response = await fetch(url, { headers });
-      if (response.ok) {
-        const data = await response.json();
-        for (const mint of chunk) {
-          if (data[mint] && data[mint].usdPrice) {
-            priceMap.set(mint, Number(data[mint].usdPrice));
-          }
-        }
-      }
-    }
-  } catch (e) {
-    console.error('Price fetch error:', e);
-  }
-  
-  return priceMap;
-}
 
 // GET: Fetch user's demo vault with trader states
 export async function GET(request: NextRequest) {
@@ -223,7 +183,7 @@ export async function GET(request: NextRequest) {
     // Fetch vault
     const { data: vault, error: vaultError } = await supabase
       .from('demo_vaults')
-      .select('*')
+      .select('id, user_wallet, balance_usd, total_deposited, created_at')
       .eq('user_wallet', wallet)
       .single();
     
@@ -240,55 +200,55 @@ export async function GET(request: NextRequest) {
     const { data: traderStates } = await supabase
       .from('demo_trader_states')
       .select(`
-        *,
-        positions:demo_positions(*)
+        id,
+        star_trader,
+        allocated_usd,
+        realized_pnl_usd,
+        is_syncing,
+        is_initialized,
+        is_paused,
+        is_settled,
+        positions:demo_positions(token_mint, token_symbol, size, cost_usd)
       `)
       .eq('vault_id', vault.id);
+
+    const traderStateIds = (traderStates || []).map((state) => state.id);
+    const { data: tradeStatsRows, error: tradeStatsError } = traderStateIds.length > 0
+      ? await supabase.rpc('get_demo_trade_stats', { p_trader_state_ids: traderStateIds })
+      : { data: [], error: null };
+
+    if (tradeStatsError) {
+      console.error('Demo vault stats fetch error:', tradeStatsError);
+      return NextResponse.json({ error: 'Failed to fetch trader state stats' }, { status: 500 });
+    }
+
+    const tradeStatsMap = createDemoTradeStatsMap(traderStateIds, tradeStatsRows);
       
     // Collect all mints
     const allMints = new Set<string>();
     traderStates?.forEach(ts => {
-      ts.positions?.forEach((p: any) => {
+      const activePositions = normalizeDemoVaultPositions(ts.positions);
+      activePositions.forEach((p) => {
         if (p.token_mint) allMints.add(p.token_mint);
       });
     });
     
-    // Fetch prices
-    const prices = await fetchJupiterPrices(Array.from(allMints));
+    // Fetch prices only for active positions and use the same chunking path as the detail view.
+    const prices = await fetchDemoVaultPriceMap(Array.from(allMints), {
+      apiKey: JUPITER_API_KEY,
+    });
     
     // Calculate totals per trader state using LIVE prices
     const tradersWithTotals = (traderStates || []).map(ts => {
-      const positions = ts.positions || [];
-      const allocated = Number(ts.allocated_usd || 0);
-      const realizedPnl = Number(ts.realized_pnl_usd || 0);
+      const positions = normalizeDemoVaultPositions(ts.positions);
+      const { portfolioValue } = calculateDemoVaultPortfolioValue(positions, prices);
 
-      // Portfolio Value = Sum(Position Size * Price)
-      // Note: Assuming positions include USDC holdings if any
-      let currentPortfolioValue = 0;
-      positions.forEach((p: any) => {
-        const size = Number(p.size || 0);
-        const price = prices.get(p.token_mint) || 0;
-        
-        // Use price * size (if price (0) is returned, value is 0, matching portfolio page)
-        currentPortfolioValue += size * price;
-      });
-      
-      // If no positions (all cash realized?), Value = Allocated + Realized? 
-      // Issue: If all positions sold, we have no position entries?
-      // System logic: Closed positions are removed? Or kept with size 0?
-      // If positions are empty, we must rely on 'Allocated + Realized'.
-      // But if there ARE positions, currentPortfolioValue is the source of truth.
-      // Wait: If I hold only USDC, is it a position? Yes, likely.
-      // If position list is empty, assume uninitialized or fully withdrawn? No.
-      // Safe fallback: Math.max(0, allocated + realizedPnl + unrealizedPnL)
-      
-      // Let's trust currentPortfolioValue derived from positions if positions exist.
-      // If positions array is empty, then value is 0 (or uninitialized).
-      
       return {
         ...ts,
-        totalValue: currentPortfolioValue,
-        positionCount: positions.length
+        positions,
+        totalValue: portfolioValue,
+        positionCount: positions.length,
+        tradeStats: tradeStatsMap[ts.id]
       };
     });
     

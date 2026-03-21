@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { useAppKitAccount } from '@reown/appkit/react';
 import { useAuth } from '@/contexts/auth-context';
 import { useOnboarding } from '@/contexts/onboarding-context';
+import { getDemoTradeCount } from '@/lib/demo-trade-stats';
 import { COLORS } from '@/lib/theme';
 import { 
   Wallet, 
@@ -45,11 +46,14 @@ interface TraderState {
   positions: Position[];
   totalValue: number;
   positionCount: number;
+  tradeStats: TradeStats;
 }
 
 interface TradeStats {
+  totalCount?: number;
   completedCount: number;
   failedCount: number;
+  avgLatency?: number;
   totalRealizedPnl: number;
   profitableCount?: number;
   lossCount?: number;
@@ -357,7 +361,6 @@ export default function DemoVaultPage() {
   const { isAuthenticated, isLoading: authLoading, user, signIn, openWalletModal } = useAuth();
   const [vault, setVault] = useState<DemoVault | null>(null);
   const [traderStates, setTraderStates] = useState<TraderState[]>([]);
-  const [tradeStats, setTradeStats] = useState<Record<string, TradeStats>>({});
   const [starTraders, setStarTraders] = useState<{ address: string; name: string; image?: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [hasCheckedVault, setHasCheckedVault] = useState(false);
@@ -381,26 +384,9 @@ export default function DemoVaultPage() {
       if (data.exists) {
         setVault(data.vault);
         setTraderStates(data.traderStates || []);
-        
-        // Fetch trade stats for each trader state
-        const statsPromises = (data.traderStates || []).map(async (ts: TraderState) => {
-          try {
-            const statsRes = await fetch(`/api/demo-vault/trades?wallet=${walletAddress}&traderStateId=${ts.id}&pageSize=1`);
-            const statsData = await statsRes.json();
-            return { id: ts.id, stats: statsData.stats };
-          } catch {
-            return { id: ts.id, stats: { completedCount: 0, failedCount: 0, totalRealizedPnl: 0 } };
-          }
-        });
-        
-        const statsResults = await Promise.all(statsPromises);
-        const statsMap: Record<string, TradeStats> = {};
-        statsResults.forEach(r => { statsMap[r.id] = r.stats; });
-        setTradeStats(statsMap);
       } else {
         setVault(null);
         setTraderStates([]);
-        setTradeStats({});
       }
     } catch {
       setError('Failed to fetch vault');
@@ -510,7 +496,6 @@ export default function DemoVaultPage() {
       }
       setVault(null);
       setTraderStates([]);
-      setTradeStats({});
     } catch {
       setError('Failed to delete vault');
     }
@@ -906,11 +891,11 @@ export default function DemoVaultPage() {
                     const sparklineData = generateSparklineFromPnl(pnl, Number(ts.allocated_usd), ts.star_trader);
                     
                     // Get real trade stats
-                    const stats = tradeStats[ts.id] || { completedCount: 0, failedCount: 0, totalRealizedPnl: 0, profitableCount: 0, lossCount: 0 };
+                    const stats = ts.tradeStats || { completedCount: 0, failedCount: 0, totalRealizedPnl: 0, profitableCount: 0, lossCount: 0, avgLatency: 0, totalCount: 0, profitFactor: 0 };
                     
                     // Profit Factor provided by API or default to 0
                     const profitFactor = stats.profitFactor ?? 0;
-                    const totalTrades = stats.completedCount + stats.failedCount;
+                    const totalTrades = getDemoTradeCount(stats);
                     const roi = ts.allocated_usd > 0 ? (pnl / Number(ts.allocated_usd)) * 100 : 0;
                     
                     const isTargetForInit = onboardingStep === 'INITIALIZE' && !ts.is_initialized && !ts.is_settled;
@@ -1048,14 +1033,15 @@ export default function DemoVaultPage() {
 
                 {rankedTraderStates.map((ts, index) => {
                     const traderInfo = starTraders.find(t => t.address === ts.star_trader);
-                    const stats = tradeStats[ts.id] || { completedCount: 0, failedCount: 0, totalRealizedPnl: 0 };
+                    const stats = ts.tradeStats || { completedCount: 0, failedCount: 0, totalRealizedPnl: 0, avgLatency: 0, totalCount: 0, profitFactor: 0 };
                     
                     const totalPnl = (ts.totalValue - ts.allocated_usd);
                     const roi = (totalPnl / (ts.allocated_usd || 1)) * 100;
                     const isPositive = totalPnl >= 0;
                     
-                    const winRate = (stats.completedCount + stats.failedCount) > 0 
-                      ? (stats.completedCount / (stats.completedCount + stats.failedCount)) * 100 
+                    const resolvedTrades = stats.completedCount + stats.failedCount;
+                    const winRate = resolvedTrades > 0 
+                      ? (stats.completedCount / resolvedTrades) * 100 
                       : 0;
 
                     const sparklineData = generateSparklineFromPnl(totalPnl, ts.allocated_usd, ts.star_trader);
@@ -1152,7 +1138,7 @@ export default function DemoVaultPage() {
                                 </div>
                                 <div className="text-center border-l border-white/5">
                                     <div className="text-[10px] uppercase text-slate-500 font-mono mb-1">Trades</div>
-                                    <div className="text-xs font-medium font-mono text-slate-300">{stats.completedCount + stats.failedCount}</div>
+                                    <div className="text-xs font-medium font-mono text-slate-300">{getDemoTradeCount(stats)}</div>
                                 </div>
                              </div>
 

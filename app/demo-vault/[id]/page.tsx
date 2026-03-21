@@ -12,6 +12,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useAppKitAccount } from '@reown/appkit/react';
 import { useAuth } from '@/contexts/auth-context';
 import { useOnboarding } from '@/contexts/onboarding-context';
+import { getDemoTradeCount } from '@/lib/demo-trade-stats';
 import { COLORS } from '@/lib/theme';
 import { 
   ArrowLeft, 
@@ -97,6 +98,12 @@ interface TokenMeta {
   symbol: string;
   name: string;
   logoURI: string | null;
+}
+
+interface StarTraderSummary {
+  wallet: string;
+  name: string;
+  image?: string;
 }
 
 // =============================================================================
@@ -339,7 +346,7 @@ export default function TraderStateDetailPage() {
   // State
   const [portfolio, setPortfolio] = useState<PortfolioData | null>(null);
   // const [trades, setTrades] = useState<Trade[]>([]); // Replaced by hook
-  const [starTraders, setStarTraders] = useState<{ address: string; name: string; image?: string }[]>([]);
+  const [starTraderProfile, setStarTraderProfile] = useState<StarTraderSummary | null>(null);
   const [tokenMeta, setTokenMeta] = useState<Record<string, TokenMeta>>({});
   const [loading, setLoading] = useState(true);
   const [hasCheckedData, setHasCheckedData] = useState(false);
@@ -390,6 +397,7 @@ export default function TraderStateDetailPage() {
      url.searchParams.set('traderStateId', traderStateId);
      url.searchParams.set('pageSize', '50');
      if (cursor) url.searchParams.set('cursor', cursor);
+     if (cursor) url.searchParams.set('includeSummary', '0');
 
      const res = await fetch(url.toString());
      const data = await res.json();
@@ -398,7 +406,9 @@ export default function TraderStateDetailPage() {
 
      // Update stats and total count from latest fetch
      if (data.stats) setTradeStats(data.stats);
-     if (data.pagination) setTotalTradeCount(data.pagination.totalCount);
+     if (typeof data.pagination?.totalCount === 'number') {
+       setTotalTradeCount(data.pagination.totalCount);
+     }
 
      // Fetch metadata for new trades
      const mints = new Set<string>();
@@ -451,6 +461,7 @@ export default function TraderStateDetailPage() {
       }
       
       setPortfolio(portfolioData);
+      setStarTraderProfile(null);
 
        // 2. Fetch Initial Trades (Page 1) directly to populate stats/metadata immediately
        // We reuse the fetchTradesPage logic but call it manually to init the hook state
@@ -462,8 +473,15 @@ export default function TraderStateDetailPage() {
       // Meta for portfolio
       const mints = new Set<string>();
       portfolioData.positions?.forEach((p: Position) => mints.add(p.mint));
-      if (mints.size > 0) {
-        await fetchTokenMetadata(Array.from(mints));
+       if (mints.size > 0) {
+         await fetchTokenMetadata(Array.from(mints));
+       }
+
+      // 3. Fetch only the followed trader summary instead of the full leaderboard
+      const traderRes = await fetch(`/api/star-traders/${portfolioData.starTrader}`);
+      const traderData = await traderRes.json();
+      if (traderRes.ok && traderData.trader) {
+        setStarTraderProfile(traderData.trader);
       }
       
     } catch {
@@ -474,23 +492,11 @@ export default function TraderStateDetailPage() {
     }
   }, [walletAddress, traderStateId, fetchTradesPage, fetchTokenMetadata, setTrades, setTradesCursor, setTradesHasMore]);
 
-  
-  const fetchStarTraders = useCallback(async () => {
-    try {
-      const response = await fetch('/api/star-traders');
-      const data = await response.json();
-      setStarTraders((data.traders || []).map((t: any) => ({ address: t.wallet, name: t.name, image: t.image })));
-    } catch {
-      // Silent error
-    }
-  }, []);
-
   useEffect(() => {
     if (isConnected && walletAddress) {
       fetchData();
-      fetchStarTraders();
     }
-  }, [isConnected, walletAddress, fetchData, fetchStarTraders]);
+  }, [isConnected, walletAddress, fetchData]);
   
   // =============================================================================
   // ACTIONS
@@ -602,7 +608,7 @@ export default function TraderStateDetailPage() {
   } = portfolio;
   
   const avgLatency = tradeStats.avgLatency;
-  const totalTrades = tradeStats.completedCount + tradeStats.failedCount;
+  const totalTrades = getDemoTradeCount(tradeStats);
   
   // Win Rate = Profitable / (Profitable + Loss)
   const totalClosedTrades = (tradeStats.profitableCount || 0) + (tradeStats.lossCount || 0);
@@ -677,12 +683,12 @@ export default function TraderStateDetailPage() {
               <div className="transition-transform duration-200 group-hover:scale-110">
                 <TraderAvatar 
                   address={starTrader} 
-                  image={starTraders.find(t => t.address === starTrader)?.image}
+                  image={starTraderProfile?.image}
                 />
               </div>
               <div className="flex flex-col min-w-0">
                 <span className="font-semibold text-xs sm:text-sm truncate" style={{ color: COLORS.text }}>
-                   {starTraders.find(t => t.address === starTrader)?.name || 'Unknown Trader'}
+                   {starTraderProfile?.name || 'Unknown Trader'}
                 </span>
                 <span className="font-mono text-[10px] opacity-60 truncate" style={{ color: COLORS.data }}>
                   {starTrader.slice(0, 4)}...{starTrader.slice(-4)}
@@ -874,7 +880,7 @@ export default function TraderStateDetailPage() {
                   borderColor: activeTab === 'trades' ? COLORS.brand : 'transparent'
                 }}
               >
-                Copy Trades ({totalTradeCount || trades.length})
+                Copy Trades ({typeof totalTradeCount === 'number' ? totalTradeCount : (totalTrades || trades.length)})
               </button>
             </div>
             <button 

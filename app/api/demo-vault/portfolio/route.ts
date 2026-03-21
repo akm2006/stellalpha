@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  calculateDemoVaultPortfolioValue,
+  fetchDemoVaultPriceMap,
+  normalizeDemoVaultPositions,
+} from '@/lib/demo-vault-pricing';
 import { supabase } from '@/lib/supabase';
 import { getTokensMetadata } from '@/lib/jupiter-tokens';
 import { getSession } from '@/lib/session';
@@ -9,13 +14,6 @@ const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const SOL_LOGO = 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png';
-
-// Stablecoins always = $1
-const STABLECOIN_MINTS = new Set([
-  USDC_MINT,
-  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-  'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', // USD1
-]);
 
 interface Position {
   mint: string;
@@ -78,61 +76,6 @@ function safeDivide(numerator: number, denominator: number, fallback = 0): numbe
 // ============================================
 // HELPER: Fetch Jupiter prices with stale handling
 // ============================================
-async function fetchJupiterPrices(mints: string[]): Promise<Map<string, { price: number; stale: boolean }>> {
-  const priceMap = new Map<string, { price: number; stale: boolean }>();
-  
-  // Set stablecoins to $1 immediately
-  for (const mint of mints) {
-    if (STABLECOIN_MINTS.has(mint)) {
-      priceMap.set(mint, { price: 1, stale: false });
-    }
-  }
-  
-  // Filter out stablecoins for Jupiter fetch
-  const nonStableMints = mints.filter(m => !STABLECOIN_MINTS.has(m));
-  
-  if (nonStableMints.length === 0) return priceMap;
-  
-  try {
-    // Jupiter Price API v3 (same as star trader API)
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-    
-    const url = `https://api.jup.ag/price/v3?ids=${nonStableMints.join(',')}`;
-    const response = await fetch(url, { headers });
-    
-    if (!response.ok) {
-      console.warn(`Jupiter price API v3 returned ${response.status}`);
-      // Mark all as stale with fallback to cached prices
-      for (const mint of nonStableMints) {
-        priceMap.set(mint, { price: 0, stale: true });
-      }
-      return priceMap;
-    }
-    
-    const data = await response.json();
-    
-    // v3 API returns prices at top level with usdPrice field
-    for (const mint of nonStableMints) {
-      const priceData = data[mint];
-      if (priceData && typeof priceData === 'object' && 'usdPrice' in priceData) {
-        priceMap.set(mint, { price: Number(priceData.usdPrice), stale: false });
-      } else {
-        // Price not returned - mark as stale
-        priceMap.set(mint, { price: 0, stale: true });
-      }
-    }
-  } catch (error) {
-    console.error('Jupiter price fetch error:', error);
-    // Mark all as stale
-    for (const mint of nonStableMints) {
-      priceMap.set(mint, { price: 0, stale: true });
-    }
-  }
-  
-  return priceMap;
-}
-
 // ============================================
 // GET /api/demo-vault/portfolio
 // ============================================
@@ -180,7 +123,7 @@ export async function GET(request: NextRequest) {
     // 2. Fetch positions for this trader state
     const { data: dbPositions, error: posError } = await supabase
       .from('demo_positions')
-      .select('*')
+      .select('token_mint, token_symbol, size, cost_usd, avg_cost')
       .eq('trader_state_id', traderStateId);
     
     if (posError) {
@@ -189,32 +132,33 @@ export async function GET(request: NextRequest) {
     }
     
     // Filter out 0-balance positions (they clutter the UI)
-    const positions = (dbPositions || []).filter(p => Number(p.size) > 0);
+    const positions = normalizeDemoVaultPositions(dbPositions);
     
     // 3. Fetch live prices from Jupiter
     const mints = positions.map(p => p.token_mint);
-    const priceMap = await fetchJupiterPrices(mints);
+    const priceMap = await fetchDemoVaultPriceMap(mints, {
+      apiKey: JUPITER_API_KEY,
+    });
     
     // 4. Fetch token metadata
     const tokenMeta = await getTokensMetadata(mints);
     
     // 5. Build enriched positions with per-position metrics
-    let portfolioValue = 0;
-    let totalCostBasis = 0;
-    let hasStalePrices = false;
+    const { portfolioValue, totalCostBasis, hasStalePrices } = calculateDemoVaultPortfolioValue(
+      positions,
+      priceMap
+    );
     
     const enrichedPositions: Position[] = [];
     
     for (const pos of positions) {
-      const amount = Number(pos.size) || 0;
-      const costBasis = Number(pos.cost_usd) || 0;
-      const avgCost = Number(pos.avg_cost) || 0;
+      const amount = pos.size;
+      const costBasis = pos.cost_usd;
+      const avgCost = pos.avg_cost;
       
       const priceInfo = priceMap.get(pos.token_mint) || { price: 0, stale: true };
       const currentPrice = priceInfo.price;
       const priceStale = priceInfo.stale;
-      
-      if (priceStale) hasStalePrices = true;
       
       // Current value = price × amount
       const currentValue = currentPrice * amount;
@@ -222,10 +166,6 @@ export async function GET(request: NextRequest) {
       // Unrealized PnL per position
       const unrealizedPnL = currentValue - costBasis;
       const unrealizedPercent = safeDivide(unrealizedPnL, costBasis) * 100;
-      
-      // Accumulate totals
-      portfolioValue += currentValue;
-      totalCostBasis += costBasis;
       
       // Get token metadata
       const meta = tokenMeta[pos.token_mint];
