@@ -4,6 +4,7 @@ const TEST_USDC_MINT = 'TEST_USDC_MINT';
 
 const supabaseMock = vi.hoisted(() => ({
   from: vi.fn(),
+  rpc: vi.fn(),
 }));
 
 const getSessionMock = vi.hoisted(() => vi.fn());
@@ -32,6 +33,7 @@ describe('demo-vault read routes auth', () => {
     vi.resetModules();
     vi.clearAllMocks();
     getTokensMetadataMock.mockResolvedValue({});
+    supabaseMock.rpc.mockReset();
   });
 
   afterEach(() => {
@@ -188,6 +190,23 @@ describe('demo-vault read routes auth', () => {
       throw new Error(`Unexpected table: ${table}`);
     });
 
+    supabaseMock.rpc.mockResolvedValue({
+      data: [
+        {
+          trader_state_id: 'ts-1',
+          total_count: 0,
+          completed_count: 0,
+          failed_count: 0,
+          avg_latency_ms: 0,
+          total_realized_pnl: 0,
+          profitable_count: 0,
+          loss_count: 0,
+          profit_factor: 0,
+        },
+      ],
+      error: null,
+    });
+
     const { GET } = await import('@/app/api/demo-vault/trades/route');
     const response = await GET(
       new Request('http://localhost/api/demo-vault/trades?wallet=wallet-1&traderStateId=ts-1') as any
@@ -197,5 +216,6 @@ describe('demo-vault read routes auth', () => {
     expect(response.status).toBe(200);
     expect(json.trades).toEqual([]);
     expect(json.pagination.totalCount).toBe(0);
+    expect(json.stats.completedCount).toBe(0);
   });
 });

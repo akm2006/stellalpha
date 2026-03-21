@@ -15,7 +15,25 @@ export async function GET(request: NextRequest) {
 
     let query = supabase
       .from('trades')
-      .select('*')
+      .select(`
+        signature,
+        type,
+        token_mint,
+        token_symbol,
+        token_in_mint,
+        token_in_symbol,
+        token_in_amount,
+        token_out_mint,
+        token_out_symbol,
+        token_out_amount,
+        usd_value,
+        block_timestamp,
+        source,
+        gas,
+        realized_pnl,
+        avg_cost_basis,
+        latency_ms
+      `)
       .eq('wallet', wallet)
       .order('block_timestamp', { ascending: false })
       .order('signature', { ascending: false }) // Tie-breaker
