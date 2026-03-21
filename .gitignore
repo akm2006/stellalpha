@@ -89,3 +89,5 @@ LICENSE
 whitepaper/
 
 
+tests/
+migrations/
