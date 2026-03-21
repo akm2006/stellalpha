@@ -361,19 +361,14 @@ export default function TraderDetailPage() {
 
   const fetchTraderProfile = async () => {
     try {
-      const url = user?.wallet 
-        ? `/api/star-traders?userWallet=${user.wallet}`
-        : '/api/star-traders';
-      const response = await fetch(url);
+      const response = await fetch(`/api/star-traders/${wallet}`);
       const data = await response.json();
-      if (data.traders) {
-        const trader = data.traders.find((t: any) => t.wallet === wallet);
-        if (trader) {
-          if (trader.name) setTraderName(trader.name);
-          if (trader.image) setTraderImage(trader.image);
-          setIsFollowing(!!trader.isFollowing);
-          if (trader.stats) setStats(trader.stats);
-        }
+      if (data.trader) {
+        const trader = data.trader;
+        if (trader.name) setTraderName(trader.name);
+        if (trader.image) setTraderImage(trader.image);
+        setIsFollowing(!!trader.isFollowing);
+        if (trader.stats) setStats(trader.stats);
       }
     } catch (err) {
       console.error('Failed to fetch trader profile:', err);

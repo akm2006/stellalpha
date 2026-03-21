@@ -199,7 +199,7 @@ async function fetchFromDatabase(mint: string): Promise<TokenMeta | null> {
   try {
     const { data, error } = await supabase
       .from('tokens')
-      .select('*')
+      .select('mint, symbol, name, logo_uri, decimals')
       .eq('mint', mint)
       .single();
     
@@ -223,7 +223,7 @@ async function fetchManyFromDatabase(mints: string[]): Promise<Record<string, To
   try {
     const { data, error } = await supabase
       .from('tokens')
-      .select('*')
+      .select('mint, symbol, name, logo_uri, decimals')
       .in('mint', mints);
     
     if (!error && data) {
