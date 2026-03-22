@@ -6,15 +6,19 @@ dotenv.config({ path: '.env.local' });
 import { Connection, PublicKey } from '@solana/web3.js';
 import { supabase } from '../lib/supabase';
 import { processBatch } from '../lib/ingestion/orchestrator';
-import { normalizeWebsocketPayload } from '../lib/ingestion/websocket-adapter';
 import {
-  dequeueReadyBatch,
-  ENHANCED_BATCH_SIZE,
-  ENHANCED_REQUEST_INTERVAL_MS,
-  enqueueSignature,
-  PendingSignatureEntry,
-  rescheduleEntries,
-} from './enhanced-fetch-queue';
+  archiveParsedTxMessages,
+  enqueueParsedTxMessages,
+  PARSED_TX_BATCH_SIZE,
+  PARSED_TX_NON_TRADE_CACHE_TTL_MS,
+  PARSED_TX_REQUEST_INTERVAL_MS,
+  readParsedTxMessages,
+  ParsedTxQueueRecord,
+} from '../lib/ingestion/parsed-tx-queue';
+import { fetchParsedTransactionsForQueue } from '../lib/ingestion/parsed-tx-client';
+import { detectIngestedTrade } from '../lib/ingestion/detect-ingested-trade';
+import { cacheNonTradeSignatures, getCachedNonTradeSignatures } from '../lib/repositories/non-trade-signatures.repo';
+import { getSolPrice } from '../lib/services/token-service';
 
 // Env config
 // Connection() first arg = HTTP/HTTPS endpoint (for RPC calls)
@@ -42,9 +46,8 @@ function createConnection() {
 
 let connection = createConnection();
 
-// Cache to deduplicate parsed signatures (if 1 tx mentions 2 tracked wallets, or if retries occur)
+// Cache to deduplicate websocket signature notifications before durable enqueue.
 const signatureCache = new Set<string>();
-const pendingEnhancedFetches = new Map<string, PendingSignatureEntry>();
 
 // Tracked wallets
 let trackedWallets: string[] = [];
@@ -54,7 +57,7 @@ const activeSubscriptions = new Map<string, number>();
 let lastSlotTime = Date.now();
 let slotSubId: number | null = null;
 let isReconnecting = false;
-let isDrainingEnhancedQueue = false;
+let isDrainingParsedQueue = false;
 let backoffMs = 1000;
 const MAX_BACKOFF = 30000;
 const STARTUP_RECONCILE_LIMIT = 25;
@@ -73,35 +76,6 @@ async function fetchTrackedWallets() {
   return data.map(d => d.address);
 }
 
-// ----------------------------------------------------------------------------
-// MANDATORY FETCH RETRY (3 attempts)
-// ----------------------------------------------------------------------------
-async function fetchEnhancedTransactions(signatures: string[]): Promise<{ ok: true; payload: any[] } | { ok: false; status?: number; statusText?: string }> {
-  const start = Date.now();
-  console.log(`[WORKER] Fetching ${signatures.length} enhanced tx(s)`);
-  
-  try {
-    const res = await fetch(`https://api.helius.xyz/v0/transactions/?api-key=${HELIUS_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transactions: signatures })
-    });
-
-    if (!res.ok) {
-      console.error(`[WORKER] Helius fetch failed: ${res.status} ${res.statusText}`);
-      return { ok: false, status: res.status, statusText: res.statusText };
-    }
-
-    const payload = await res.json();
-
-    console.log(`[WORKER] Enhanced tx fetch took ${Date.now() - start}ms`);
-    return { ok: true, payload: Array.isArray(payload) ? payload : [] };
-  } catch (err) {
-    console.error(`[WORKER] Helius fetch error:`, err);
-    return { ok: false };
-  }
-}
-
 async function getClaimedSignatures(signatures: string[]): Promise<Set<string>> {
   const { data, error } = await supabase
     .from('trades')
@@ -116,82 +90,127 @@ async function getClaimedSignatures(signatures: string[]): Promise<Set<string>> 
   return new Set((data || []).map((row) => row.signature));
 }
 
-async function drainEnhancedFetchQueue() {
-  if (isDrainingEnhancedQueue || pendingEnhancedFetches.size === 0) {
+async function cacheConfirmedNonTrades(
+  recordsBySignature: Map<string, ParsedTxQueueRecord[]>,
+  transactionsBySignature: Map<string, any>
+) {
+  const solPrice = await getSolPrice();
+  const archiveIds: number[] = [];
+
+  for (const [signature, records] of recordsBySignature.entries()) {
+    const transaction = transactionsBySignature.get(signature);
+    if (!transaction) {
+      continue;
+    }
+
+    const wallets = Array.from(new Set(records.map((record) => record.message.wallet).filter(Boolean)));
+    if (wallets.length === 0) {
+      continue;
+    }
+
+    const detectionResults = await Promise.all(
+      wallets.map(async (wallet) => ({
+        wallet,
+        trade: await detectIngestedTrade(transaction.raw, wallet, { solPrice }),
+      }))
+    );
+
+    const nonTradeWallets = detectionResults.filter((result) => !result.trade).map((result) => result.wallet);
+    if (nonTradeWallets.length === 0 || nonTradeWallets.length !== wallets.length) {
+      continue;
+    }
+
+    const expiresAtIso = new Date(Date.now() + PARSED_TX_NON_TRADE_CACHE_TTL_MS).toISOString();
+    for (const wallet of nonTradeWallets) {
+      await cacheNonTradeSignatures(wallet, [signature], expiresAtIso);
+    }
+
+    archiveIds.push(...records.map((record) => record.msg_id));
+  }
+
+  return archiveIds;
+}
+
+async function drainParsedTxQueue() {
+  if (isDrainingParsedQueue) {
     return;
   }
 
-  const batch = dequeueReadyBatch(pendingEnhancedFetches, Date.now(), ENHANCED_BATCH_SIZE);
-  if (batch.length === 0) {
+  const queueRecords = await readParsedTxMessages(PARSED_TX_BATCH_SIZE);
+  if (queueRecords.length === 0) {
     return;
   }
 
-  isDrainingEnhancedQueue = true;
+  isDrainingParsedQueue = true;
 
   try {
-    const signatures = batch.map((entry) => entry.signature);
+    const queueBySignature = new Map<string, ParsedTxQueueRecord[]>();
+    for (const record of queueRecords) {
+      const signature = record.message?.signature;
+      if (!signature) {
+        continue;
+      }
+
+      const current = queueBySignature.get(signature) || [];
+      current.push(record);
+      queueBySignature.set(signature, current);
+    }
+
+    const signatures = Array.from(queueBySignature.keys());
     const alreadyClaimed = await getClaimedSignatures(signatures);
-    const fetchEntries = batch.filter((entry) => !alreadyClaimed.has(entry.signature));
+    const claimedMessageIds = signatures.flatMap((signature) =>
+      alreadyClaimed.has(signature) ? (queueBySignature.get(signature) || []).map((record) => record.msg_id) : []
+    );
 
     if (alreadyClaimed.size > 0) {
       console.log(`[WORKER] Skipping ${alreadyClaimed.size} queued signature(s) already claimed by webhook/reconcile`);
     }
 
-    if (fetchEntries.length === 0) {
+    if (claimedMessageIds.length > 0) {
+      await archiveParsedTxMessages(claimedMessageIds);
+    }
+
+    const fetchRecords = queueRecords.filter((record) => !alreadyClaimed.has(record.message.signature));
+    if (fetchRecords.length === 0) {
       return;
     }
 
-    const fetchResult = await fetchEnhancedTransactions(fetchEntries.map((entry) => entry.signature));
-    if (!fetchResult.ok) {
-      rescheduleEntries(pendingEnhancedFetches, fetchEntries, fetchResult.status, Date.now());
-      console.warn(
-        `[WORKER] Re-queued ${fetchEntries.length} signature(s) after enhanced fetch failure` +
-        `${fetchResult.status ? ` (${fetchResult.status}${fetchResult.statusText ? ` ${fetchResult.statusText}` : ''})` : ''}`
-      );
+    const fetchResult = await fetchParsedTransactionsForQueue(fetchRecords);
+    const transactionsBySignature = new Map(
+      fetchResult.transactions.map((transaction) => [transaction.signature, transaction])
+    );
+    const nonTradeArchiveIds = await cacheConfirmedNonTrades(queueBySignature, transactionsBySignature);
+
+    if (nonTradeArchiveIds.length > 0) {
+      await archiveParsedTxMessages(nonTradeArchiveIds);
+    }
+
+    const processableTransactions = fetchResult.transactions.filter((transaction) => {
+      const matchingRecords = queueBySignature.get(transaction.signature) || [];
+      return !matchingRecords.every((record) => nonTradeArchiveIds.includes(record.msg_id));
+    });
+
+    if (processableTransactions.length === 0) {
       return;
     }
 
-    const payloadBySignature = new Map<string, any>();
-    for (const tx of fetchResult.payload) {
-      if (tx?.signature) {
-        payloadBySignature.set(tx.signature, tx);
-      }
-    }
-
-    const missingPayloadEntries = fetchEntries.filter((entry) => !payloadBySignature.has(entry.signature));
-    if (missingPayloadEntries.length > 0) {
-      console.log(`[WORKER] Enhanced payload missing ${missingPayloadEntries.length} signature(s), re-queueing`);
-      rescheduleEntries(pendingEnhancedFetches, missingPayloadEntries, undefined, Date.now());
-    }
-
-    const enrichedBatch = fetchEntries
-      .map((entry) => payloadBySignature.get(entry.signature))
-      .filter(Boolean);
-
-    if (enrichedBatch.length === 0) {
-      return;
-    }
-
-    const normalizedBatch = normalizeWebsocketPayload(enrichedBatch);
-    if (normalizedBatch.length === 0) {
-      console.error(`[WORKER] Normalization failed for ${enrichedBatch.length} enhanced tx(s)`);
-      return;
-    }
-
-    console.log(`[WORKER] Triggering orchestrator for ${normalizedBatch.length} batched tx(s)`);
+    console.log(`[WORKER] Triggering orchestrator for ${processableTransactions.length} parsed tx(s)`);
     const orchestratorStart = Date.now();
 
     try {
-      const { processed, inserted } = await processBatch(normalizedBatch, Date.now());
+      const { processed, inserted } = await processBatch(processableTransactions, Date.now());
       console.log(
         `[WORKER] Orchestrator completed in ${Date.now() - orchestratorStart}ms | ` +
-        `Batch size: ${normalizedBatch.length} | Processed: ${processed}, Inserted: ${inserted}`
+        `Batch size: ${processableTransactions.length} | Processed: ${processed}, Inserted: ${inserted}`
+      );
+      await archiveParsedTxMessages(
+        fetchResult.archivedMessageIds.filter((msgId) => !nonTradeArchiveIds.includes(msgId))
       );
     } catch (error) {
-      console.error(`[WORKER] Orchestrator error on batched fetch:`, error);
+      console.error(`[WORKER] Orchestrator error on parsed batch:`, error);
     }
   } finally {
-    isDrainingEnhancedQueue = false;
+    isDrainingParsedQueue = false;
   }
 }
 
@@ -201,7 +220,16 @@ function handleNewSignature(signature: string, wallet: string) {
 
   const receiveTimestamp = Date.now();
   console.log(`[WORKER] New log for ${wallet.slice(0, 8)}... | SIG: ${signature}`);
-  enqueueSignature(pendingEnhancedFetches, signature, wallet, receiveTimestamp);
+  void enqueueParsedTxMessages([
+    {
+      signature,
+      wallet,
+      source: 'websocket',
+      discoveredAt: new Date(receiveTimestamp).toISOString(),
+    },
+  ]).catch((error) => {
+    console.error(`[WORKER] Failed to enqueue signature ${signature.slice(0, 12)}...`, error);
+  });
 }
 
 // ----------------------------------------------------------------------------
@@ -303,7 +331,7 @@ function monitorConnectionHealth() {
     // Log basic health stats
     console.log(
       `[HEALTH] Active Subs: ${activeSubscriptions.size} | Last Slot: ${timeSinceLastSlot}ms ago | ` +
-      `Cache Size: ${signatureCache.size} | Pending Enhanced: ${pendingEnhancedFetches.size}`
+      `Cache Size: ${signatureCache.size} | Parsed Queue Drain Active: ${isDrainingParsedQueue}`
     );
 
     // Idle timeout detection (Chainstack drops idle over 1h, but 60s without slot is anomalous)
@@ -352,7 +380,10 @@ async function reconcileStartup() {
         { limit: STARTUP_RECONCILE_LIMIT },
         'confirmed'
       );
-      const signatureList = sigs.map(s => s.signature);
+      const signatureList = sigs.map((entry) => ({
+        signature: entry.signature,
+        blockTime: entry.blockTime ?? null,
+      }));
       
       if (signatureList.length === 0) continue;
 
@@ -360,7 +391,7 @@ async function reconcileStartup() {
       const { data: existingTrades, error } = await supabase
         .from('trades')
         .select('signature')
-        .in('signature', signatureList);
+        .in('signature', signatureList.map((entry) => entry.signature));
 
       if (error) {
         console.error(`[WORKER] Recon DB error for ${wallet}:`, error);
@@ -368,13 +399,29 @@ async function reconcileStartup() {
       }
 
       const existingSet = new Set((existingTrades || []).map(t => t.signature));
-      const missingSigs = signatureList.filter(s => !existingSet.has(s));
+      const cachedNonTrades = await getCachedNonTradeSignatures(
+        wallet,
+        signatureList.map((entry) => entry.signature),
+        new Date().toISOString()
+      );
+      const missingSigs = signatureList.filter(
+        (entry) => !existingSet.has(entry.signature) && !cachedNonTrades.has(entry.signature)
+      );
       
       if (missingSigs.length > 0) {
         console.log(`[WORKER] Reconciliation: Found ${missingSigs.length} missing txs for ${wallet.slice(0, 8)}... Queueing...`);
-        for (const sig of missingSigs.reverse()) { // Process oldest to newest
-           handleNewSignature(sig, wallet);
-        }
+        await enqueueParsedTxMessages(
+          missingSigs
+            .slice()
+            .reverse()
+            .map((entry) => ({
+              signature: entry.signature,
+              wallet,
+              source: 'startup_reconcile' as const,
+              discoveredAt: new Date().toISOString(),
+              blockTime: entry.blockTime,
+            }))
+        );
       }
     } catch (e) {
       console.error(`[WORKER] Recon error for ${wallet}:`, e);
@@ -406,8 +453,8 @@ async function startWorker() {
   // Periodic polling for wallet updates (every 60s)
   setInterval(syncTrackedWallets, 60 * 1000);
   setInterval(() => {
-    drainEnhancedFetchQueue().catch(console.error);
-  }, ENHANCED_REQUEST_INTERVAL_MS);
+    drainParsedTxQueue().catch(console.error);
+  }, PARSED_TX_REQUEST_INTERVAL_MS);
 
   // Monitor connection health continually
   monitorConnectionHealth();

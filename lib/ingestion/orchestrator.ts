@@ -4,9 +4,10 @@ import { claimTrade, deleteClaimedTrade, updateTradePnL } from '@/lib/repositori
 import { getPosition, upsertPosition } from '@/lib/repositories/positions.repo';
 import { queueCopyTrades, triggerQueuedTradeProcessors } from '@/lib/ingestion/follower-producer';
 import { deleteQueuedTradesBySignature } from '@/lib/repositories/demo-trades.repo';
-import { detectTrade as detectTradeParser, RawTrade } from '@/lib/trade-parser';
+import { RawTrade } from '@/lib/trade-parser';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { extractInvolvedAddresses } from '@/lib/ingestion/utils';
+import { detectIngestedTrade } from '@/lib/ingestion/detect-ingested-trade';
 import { IngestedTransaction, IngestionResult } from './types';
 
 // detectTrade is now delegated to the extracted, tested trade-parser module.
@@ -14,10 +15,8 @@ import { IngestedTransaction, IngestionResult } from './types';
 async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   const timer = new PerformanceTimer(`detectTrade(${tx.signature?.slice(0, 8)}...)`);
 
-  const solPrice = await getSolPrice();
-  timer.checkpoint('Get SOL price for parser');
-
-  const result = detectTradeParser(tx, wallet, solPrice);
+  const result = await detectIngestedTrade(tx, wallet);
+  timer.checkpoint('Resolve trade using provider-aware parser');
 
   if (!result) {
     timer.checkpoint('No trade pattern detected');
