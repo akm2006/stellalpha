@@ -1,6 +1,6 @@
 import { getSolPrice } from '@/lib/services/token-service';
 import { BASE_MINTS, detectTrade as detectTradeParser, getUsdValueSync, RawTrade, WSOL } from '@/lib/trade-parser';
-import { adaptShyftParsedTx } from '@/scripts/shyft-test-adapter';
+import { adaptShyftParsedTx } from '@/lib/ingestion/shyft-adapter';
 
 const SOL_LITERAL = 'SOL';
 
