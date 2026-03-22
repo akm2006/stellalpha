@@ -4,6 +4,39 @@
 export function extractInvolvedAddresses(tx: any): Set<string> {
   const addresses = new Set<string>();
 
+  if (tx?.__parsedProvider === 'shyft') {
+    if (tx.fee_payer) {
+      addresses.add(tx.fee_payer);
+    }
+
+    for (const change of tx.token_balance_changes || []) {
+      if (change?.owner) addresses.add(change.owner);
+    }
+
+    for (const action of tx.actions || []) {
+      const info = action?.info || {};
+      if (info.swapper) addresses.add(info.swapper);
+      if (info.sender) addresses.add(info.sender);
+      if (info.receiver) addresses.add(info.receiver);
+      if (info.owner) addresses.add(info.owner);
+      if (info.authority) addresses.add(info.authority);
+      if (info.signer) addresses.add(info.signer);
+      if (info.from_address) addresses.add(info.from_address);
+      if (info.to_address) addresses.add(info.to_address);
+    }
+
+    for (const accountKey of tx.raw?.transaction?.message?.accountKeys || []) {
+      if (typeof accountKey === 'string') {
+        addresses.add(accountKey);
+        continue;
+      }
+
+      if (accountKey?.pubkey) {
+        addresses.add(accountKey.pubkey);
+      }
+    }
+  }
+
   // 1. Always include feePayer (may be the trader or a relayer)
   if (tx.feePayer) {
     addresses.add(tx.feePayer);
