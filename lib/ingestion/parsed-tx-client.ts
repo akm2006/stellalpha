@@ -33,6 +33,11 @@ export interface ParsedTxBatchFetchResult {
 let shyftFailureTimestamps: number[] = [];
 let shyftCooldownUntil = 0;
 
+function logParsedTx(message: string, level: 'info' | 'warn' = 'info') {
+  const logger = level === 'warn' ? console.warn : console.info;
+  logger(`[PARSED_TX] ${message}`);
+}
+
 function getHeliusApiKey() {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) {
@@ -90,18 +95,42 @@ function buildPayloadIndex(items: any[], signatures: string[]) {
   return payloadBySignature;
 }
 
-function recordShyftFailure(now: number) {
+function recordShyftFailure(now: number, status?: number) {
+  const wasCoolingDown = shyftCooldownUntil > now;
   shyftFailureTimestamps = [...shyftFailureTimestamps, now].filter(
     (timestamp) => now - timestamp <= SHYFT_COOLDOWN_FAILURE_WINDOW_MS
   );
 
-  if (shyftFailureTimestamps.length >= SHYFT_COOLDOWN_FAILURE_LIMIT) {
+  if (status === 429) {
+    logParsedTx(
+      `SHYFT returned 429 for parsed batch; recent failures in window: ${shyftFailureTimestamps.length}/${SHYFT_COOLDOWN_FAILURE_LIMIT}`,
+      'warn'
+    );
+  } else {
+    logParsedTx(
+      `SHYFT fetch failed${status ? ` with status ${status}` : ''}; recent failures in window: ${shyftFailureTimestamps.length}/${SHYFT_COOLDOWN_FAILURE_LIMIT}`,
+      'warn'
+    );
+  }
+
+  if (!wasCoolingDown && shyftFailureTimestamps.length >= SHYFT_COOLDOWN_FAILURE_LIMIT) {
     shyftCooldownUntil = now + SHYFT_COOLDOWN_DURATION_MS;
+    logParsedTx(
+      `Entering SHYFT cooldown for ${Math.round(SHYFT_COOLDOWN_DURATION_MS / 1000)}s after ${shyftFailureTimestamps.length} failures in ${Math.round(
+        SHYFT_COOLDOWN_FAILURE_WINDOW_MS / 1000
+      )}s`,
+      'warn'
+    );
   }
 }
 
 function clearShyftFailures() {
+  if (shyftFailureTimestamps.length > 0 || shyftCooldownUntil > 0) {
+    logParsedTx('SHYFT recovered; clearing failure window and cooldown state');
+  }
+
   shyftFailureTimestamps = [];
+  shyftCooldownUntil = 0;
 }
 
 export function isShyftCoolingDown(now: number = Date.now()) {
@@ -210,12 +239,13 @@ export async function fetchParsedTransactionsForQueue(records: ParsedTxQueueReco
   const providerBySignature: Record<string, ParsedProvider> = {};
   let usedHeliusFallback = false;
   let shyftFailedBatch = false;
+  const wasCoolingDown = isShyftCoolingDown(now);
 
   const shyftEligible = signatures.filter((signature) => !forceHelius.has(signature));
-  if (shyftEligible.length > 0 && !isShyftCoolingDown(now)) {
+  if (shyftEligible.length > 0 && !wasCoolingDown) {
     const shyftResult = await fetchShyft(shyftEligible);
     if (!shyftResult.ok) {
-      recordShyftFailure(now);
+      recordShyftFailure(now, shyftResult.status);
       shyftFailedBatch = true;
     } else {
       clearShyftFailures();
@@ -232,7 +262,7 @@ export async function fetchParsedTransactionsForQueue(records: ParsedTxQueueReco
       continue;
     }
 
-    if (isShyftCoolingDown(now) || shyftFailedBatch) {
+    if (wasCoolingDown || shyftFailedBatch) {
       heliusSubset.add(signature);
       continue;
     }
@@ -283,6 +313,18 @@ export async function fetchParsedTransactionsForQueue(records: ParsedTxQueueReco
       raw: providerPayload.raw,
     });
   }
+
+  const shyftResolved = Array.from(providerPayloadBySignature.values()).filter(
+    (payload) => payload.provider === 'shyft'
+  ).length;
+  const heliusResolved = Array.from(providerPayloadBySignature.values()).filter(
+    (payload) => payload.provider === 'helius_fallback'
+  ).length;
+  const unresolved = signatures.length - providerPayloadBySignature.size;
+
+  logParsedTx(
+    `Batch ${signatures.length} sig(s) | SHYFT eligible ${shyftEligible.length} | forced Helius ${forceHelius.size} | coolingDown ${wasCoolingDown} | SHYFT resolved ${shyftResolved} | Helius resolved ${heliusResolved} | fallback subset ${heliusSubset.size} | unresolved ${unresolved}`
+  );
 
   return {
     transactions,
