@@ -1,8 +1,7 @@
-import { yellowstone } from '@kdt-sol/solana-grpc-client';
-
 export const YELLOWSTONE_DEFAULT_ENDPOINT = 'https://solana-yellowstone-grpc.publicnode.com:443';
 export const YELLOWSTONE_RECEIVE_COMMITMENT = 'confirmed' as const;
 export const YELLOWSTONE_BLOCK_META_FILTER_KEY = '__yellowstone_block_meta__';
+export const YELLOWSTONE_CONFIRMED_COMMITMENT_LEVEL = 1;
 
 export interface YellowstoneRawTransactionCapture {
   signature: string;
@@ -45,7 +44,7 @@ export function buildYellowstoneSubscribeRequest(wallets: string[]) {
     },
     entry: {},
     accountsDataSlice: [],
-    commitment: yellowstone.CommitmentLevel.CONFIRMED,
+    commitment: YELLOWSTONE_CONFIRMED_COMMITMENT_LEVEL,
   };
 }
 

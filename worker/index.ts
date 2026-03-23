@@ -4,7 +4,6 @@ dotenv.config({ path: '.env.local' });
 
 import bs58 from 'bs58';
 import { Connection, PublicKey } from '@solana/web3.js';
-import { yellowstone } from '@kdt-sol/solana-grpc-client';
 import { supabase } from '../lib/supabase';
 import { processBatch } from '../lib/ingestion/orchestrator';
 import {
@@ -123,9 +122,20 @@ const RAW_CAPTURE_FLUSH_INTERVAL_MS = 1000;
 const BLOCK_META_CACHE_TTL_MS = 10 * 60 * 1000;
 const OBSERVED_SLOT_TTL_MS = 10 * 60 * 1000;
 
+type YellowstoneModule = typeof import('@kdt-sol/solana-grpc-client');
+let yellowstoneModulePromise: Promise<YellowstoneModule> | null = null;
+
 setInterval(() => {
   signatureCache.clear();
 }, 60 * 60 * 1000);
+
+async function loadYellowstoneModule() {
+  if (!yellowstoneModulePromise) {
+    yellowstoneModulePromise = import('@kdt-sol/solana-grpc-client');
+  }
+
+  return yellowstoneModulePromise;
+}
 
 function pruneYellowstoneCaches() {
   const cutoffMs = Date.now();
@@ -489,6 +499,7 @@ async function startYellowstoneSubscription(reason: string) {
   }
 
   const controller = new AbortController();
+  const { yellowstone } = await loadYellowstoneModule();
   const client = new yellowstone.YellowstoneGeyserClient(YELLOWSTONE_GRPC_URL, {
     token: YELLOWSTONE_X_TOKEN,
     signal: controller.signal,
