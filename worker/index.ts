@@ -121,6 +121,10 @@ const YELLOWSTONE_STALE_THRESHOLD_MS = 60 * 1000;
 const RAW_CAPTURE_FLUSH_INTERVAL_MS = 1000;
 const BLOCK_META_CACHE_TTL_MS = 10 * 60 * 1000;
 const OBSERVED_SLOT_TTL_MS = 10 * 60 * 1000;
+const YELLOWSTONE_METADATA_TIMEOUT_MS = 30 * 1000;
+const YELLOWSTONE_RECEIVE_TIMEOUT_MS = 5 * 60 * 1000;
+const YELLOWSTONE_KEEPALIVE_TIME_MS = 30 * 1000;
+const YELLOWSTONE_KEEPALIVE_TIMEOUT_MS = 10 * 1000;
 
 type YellowstoneModule = typeof import('@kdt-sol/solana-grpc-client');
 let yellowstoneModulePromise: Promise<YellowstoneModule> | null = null;
@@ -503,7 +507,12 @@ async function startYellowstoneSubscription(reason: string) {
   const client = new yellowstone.YellowstoneGeyserClient(YELLOWSTONE_GRPC_URL, {
     token: YELLOWSTONE_X_TOKEN,
     signal: controller.signal,
+    metadataTimeout: YELLOWSTONE_METADATA_TIMEOUT_MS,
+    receiveTimeout: YELLOWSTONE_RECEIVE_TIMEOUT_MS,
     'grpc.max_receive_message_length': 64 * 1024 * 1024,
+    'grpc.keepalive_time_ms': YELLOWSTONE_KEEPALIVE_TIME_MS,
+    'grpc.keepalive_timeout_ms': YELLOWSTONE_KEEPALIVE_TIMEOUT_MS,
+    'grpc.keepalive_permit_without_calls': true,
   });
 
   const stream = await client.subscribe();
@@ -522,8 +531,26 @@ async function startYellowstoneSubscription(reason: string) {
 
   console.log(
     `[WORKER] Yellowstone subscription established (${reason}) | `
-    + `Wallet filters: ${trackedWallets.length} | Commitment: ${YELLOWSTONE_RECEIVE_COMMITMENT}`
+    + `Wallet filters: ${trackedWallets.length} | Commitment: ${YELLOWSTONE_RECEIVE_COMMITMENT} | `
+    + `Metadata timeout: ${YELLOWSTONE_METADATA_TIMEOUT_MS}ms`
   );
+}
+
+async function startYellowstoneSubscriptionWithRetry(reason: string) {
+  while (!isShuttingDown) {
+    try {
+      await startYellowstoneSubscription(reason);
+      backoffMs = 1000;
+      return;
+    } catch (error) {
+      console.error(
+        `[WORKER] Yellowstone subscription failed during ${reason}. Retrying in ${backoffMs}ms:`,
+        error
+      );
+      await wait(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
+    }
+  }
 }
 
 async function performReconnection() {
@@ -592,7 +619,12 @@ async function syncTrackedWallets() {
 
   if (changed) {
     console.log('[WORKER] Tracked wallet set changed. Restarting Yellowstone subscription...');
-    await startYellowstoneSubscription('wallet sync');
+    try {
+      await startYellowstoneSubscription('wallet sync');
+    } catch (error) {
+      console.error('[WORKER] Yellowstone wallet sync restart failed. Falling back to reconnect loop:', error);
+      void performReconnection();
+    }
   }
 }
 
@@ -663,7 +695,7 @@ async function startWorker() {
   trackedWallets = await fetchTrackedWallets();
   console.log(`[WORKER] Loaded ${trackedWallets.length} tracked wallets from DB.`);
 
-  await startYellowstoneSubscription('startup');
+  await startYellowstoneSubscriptionWithRetry('startup');
 
   setInterval(syncTrackedWallets, 60 * 1000);
   setInterval(() => {
