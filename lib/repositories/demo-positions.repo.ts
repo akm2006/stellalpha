@@ -1,21 +1,5 @@
 import { supabase } from '@/lib/supabase';
 
-/**
- * Returns the follower's current demo position for a given token.
- * Used by the BUY staleness policy: if size > 0, the follower already entered
- * this position and a stale BUY should still be allowed to maintain consistency.
- */
-export async function getFollowerPosition(traderStateId: string, tokenMint: string) {
-  const { data, error } = await supabase
-    .from('demo_positions')
-    .select('size, cost_usd')
-    .eq('trader_state_id', traderStateId)
-    .eq('token_mint', tokenMint)
-    .maybeSingle();
-
-  return { data, error };
-}
-
 export async function updateDemoPosition(traderStateId: string, tokenMint: string, updateData: any) {
   return supabase.from('demo_positions').update({
     ...updateData,

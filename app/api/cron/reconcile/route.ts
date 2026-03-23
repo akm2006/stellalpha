@@ -18,8 +18,9 @@ export const maxDuration = 60; // 60s timeout for Vercel
 // Already-processed trades are safely deduped by claimTrade() (unique
 // constraint on `trades.signature`). The staleness policy in
 // follower-producer.ts applies to recovered trades just as to live ones:
-// stale BUYs with no follower position will be skipped once the worker drains
-// the queued transaction and routes it through the orchestrator.
+// BUYs older than 10 seconds will be skipped once the worker drains the queued
+// transaction and routes it through the orchestrator. SELLs still execute even
+// when delayed.
 // ============================================================
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY!;

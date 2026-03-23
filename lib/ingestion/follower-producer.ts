@@ -4,7 +4,6 @@ import { RawTrade } from '@/lib/trade-parser';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { getActiveFollowers } from '@/lib/repositories/demo-trader-states.repo';
 import { queueTrade } from '@/lib/repositories/demo-trades.repo';
-import { getFollowerPosition } from '@/lib/repositories/demo-positions.repo';
 import { 
   getSolPrice, 
   getTokenDecimals, 
@@ -16,10 +15,11 @@ import {
 import { processTradeQueue } from '@/lib/ingestion/follower-execution';
 
 // ============ PHASE 3: BUY STALENESS POLICY ============
-// Stale BUY: skip followers who have no existing position (risky new entry).
-// Stale BUY with existing position: allow (maintain position consistency).
+// Stale BUY: always skip once the leader signal is too old for latency-sensitive
+// memecoin trading. Late entries are treated as invalid regardless of whether
+// the follower already holds the token.
 // SELL: always execute regardless of age — exiting late beats not exiting.
-const BUY_STALENESS_THRESHOLD_MS = 30_000; // 30 seconds, tunable
+const BUY_STALENESS_THRESHOLD_MS = 10_000; // 10 seconds
 
 const SAFE_BOOST_TIERS = [
   { maxRatio: 0.0025, multiplier: 15, name: 'Micro Dust' },   // < 0.25% → 15x
@@ -264,7 +264,7 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
   const tradeAgeMs = receivedAt - trade.timestamp * 1000;
   const isStaleBuy = type === 'buy' && tradeAgeMs > BUY_STALENESS_THRESHOLD_MS;
   if (isStaleBuy) {
-    console.log(`[STALENESS] BUY is ${Math.round(tradeAgeMs / 1000)}s old (threshold ${BUY_STALENESS_THRESHOLD_MS / 1000}s) — will check per-follower position`);
+    console.log(`[STALENESS] BUY is ${Math.round(tradeAgeMs / 1000)}s old (threshold ${BUY_STALENESS_THRESHOLD_MS / 1000}s) — skipping for all followers`);
   }
 
   // 4. Insert queued trade for each follower
@@ -272,17 +272,9 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
     const traderStateId = traderState.id;
 
     try {
-      // ── Staleness gate (per-follower) ──────────────────────────────────────
-      // Each follower may be in a different position state, so check individually.
       if (isStaleBuy) {
-        const { data: existingPos } = await getFollowerPosition(traderStateId, destMint);
-        const hasOpenPosition = existingPos && Number(existingPos.size) > 0;
-
-        if (!hasOpenPosition) {
-          console.log(`  [STALENESS] SKIP stale BUY | TS ${traderStateId.slice(0, 8)} — no existing position (age: ${Math.round(tradeAgeMs / 1000)}s)`);
-          continue; // Skip: risky late entry into a new memecoin position
-        }
-        console.log(`  [STALENESS] ALLOW stale BUY | TS ${traderStateId.slice(0, 8)} — follower has existing position (age: ${Math.round(tradeAgeMs / 1000)}s)`);
+        console.log(`  [STALENESS] SKIP stale BUY | TS ${traderStateId.slice(0, 8)} (age: ${Math.round(tradeAgeMs / 1000)}s)`);
+        continue;
       }
 
       // SELL: log if delayed, but always proceed — exiting late beats not exiting

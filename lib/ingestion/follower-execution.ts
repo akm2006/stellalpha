@@ -384,9 +384,13 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
   // 7. UPDATE TRADE ROW WITH QUOTE DATA
   const copyTradeTimestamp = Date.now();
   const latencyDiff = copyTradeTimestamp - (trade.timestamp * 1000);
+  const actualExecutionRuntimeMs = Math.max(0, copyTradeTimestamp - processingStarted);
+  const upstreamPreQueueDelayMs = Math.max(0, latencyDiff - queueWaitTime - actualExecutionRuntimeMs);
 
-  // Log detailed latency breakdown
-  console.log(`[LATENCY] Trade ${tradeRow.id.slice(0, 8)}: Total=${latencyDiff}ms | Queue=${queueWaitTime}ms | Execution=${latencyDiff - queueWaitTime}ms`);
+  // Log a real latency breakdown instead of folding upstream delay into "execution".
+  console.log(
+    `[LATENCY] Trade ${tradeRow.id.slice(0, 8)}: Total=${latencyDiff}ms | Queue=${queueWaitTime}ms | Runtime=${actualExecutionRuntimeMs}ms | Upstream=${upstreamPreQueueDelayMs}ms`
+  );
 
   await updateDemoTrade(tradeRow.id, {
     token_in_mint: sourceMint,  // <--- V2 FIX: Save actual source (USDC)
