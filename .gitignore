@@ -91,3 +91,20 @@ whitepaper/
 
 tests/
 migrations/
+
+# ===========================================
+# AI Assistant / Agent files
+# ===========================================
+
+# Claude Code configuration and state
+.claude/
+
+# Claude project instructions and session state
+CLAUDE.md
+RESUME_STATE.md
+
+# Cursor IDE rules
+.cursorrules
+
+# Aider agent configuration
+.aider*

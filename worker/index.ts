@@ -27,7 +27,6 @@ import {
 } from '../lib/ingestion/yellowstone-stream';
 import { cacheNonTradeSignatures, getCachedNonTradeSignatures } from '../lib/repositories/non-trade-signatures.repo';
 import { upsertYellowstoneRawBlocksMeta, upsertYellowstoneRawTransactions } from '../lib/repositories/yellowstone-raw-captures.repo';
-import { getSolPrice } from '../lib/services/token-service';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HTTP_RPC_URL = process.env.HELIUS_API_RPC_URL
@@ -184,7 +183,6 @@ async function cacheConfirmedNonTrades(
   recordsBySignature: Map<string, ParsedTxQueueRecord[]>,
   transactionsBySignature: Map<string, any>
 ) {
-  const solPrice = await getSolPrice();
   const archiveIds: number[] = [];
 
   for (const [signature, records] of recordsBySignature.entries()) {
@@ -201,7 +199,7 @@ async function cacheConfirmedNonTrades(
     const detectionResults = await Promise.all(
       wallets.map(async (wallet) => ({
         wallet,
-        trade: await detectIngestedTrade(transaction.raw, wallet, { solPrice }),
+        trade: await detectIngestedTrade(transaction.raw, wallet),
       }))
     );
 

@@ -62,6 +62,7 @@ export interface RawTrade {
       tokenMint: string;
       tokenAmount: number;
       baseAmount: number;
+      baseMint: string;
       tokenInMint: string;
       tokenInAmount: number;
       tokenInPreBalance: number;
@@ -104,9 +105,8 @@ export function getUsdValueSync(mint: string, amount: number, solPrice: number):
  * 
  * @param tx - Helius Enhanced webhook transaction object
  * @param wallet - Star trader wallet address
- * @param solPrice - Current SOL price in USD (passed in to avoid async dependency)
  */
-export function detectTrade(tx: any, wallet: string, solPrice: number): RawTrade | null {
+export function detectTrade(tx: any, wallet: string): RawTrade | null {
       const t = tx.tokenTransfers || [];
       const fp = wallet;
 
@@ -123,6 +123,7 @@ export function detectTrade(tx: any, wallet: string, solPrice: number): RawTrade
       let tokenMint = '';
       let tokenAmount = 0;
       let baseAmount = 0;
+      let baseMint = '';
       let tokenInMint = '';
       let tokenInAmount = 0;
       let tokenOutMint = '';
@@ -177,18 +178,21 @@ export function detectTrade(tx: any, wallet: string, solPrice: number): RawTrade
                   type = 'buy';
                   tokenMint = outToken.mint;
                   tokenAmount = outToken.tokenAmount;
-                  baseAmount = getUsdValueSync(inToken.mint, inToken.tokenAmount, solPrice);
+                  baseAmount = inToken.tokenAmount;
+                  baseMint = inToken.mint;
                   confidence = 'medium'; // Base-to-base swaps are less useful for PnL
             } else if (inIsBase && !outIsBase) {
                   type = 'buy';
                   tokenMint = outToken.mint;
                   tokenAmount = outToken.tokenAmount;
-                  baseAmount = getUsdValueSync(inToken.mint, inToken.tokenAmount, solPrice);
+                  baseAmount = inToken.tokenAmount;
+                  baseMint = inToken.mint;
             } else if (!inIsBase && outIsBase) {
                   type = 'sell';
                   tokenMint = inToken.mint;
                   tokenAmount = inToken.tokenAmount;
-                  baseAmount = getUsdValueSync(outToken.mint, outToken.tokenAmount, solPrice);
+                  baseAmount = outToken.tokenAmount;
+                  baseMint = outToken.mint;
             } else {
                   // Both non-base: treat as sell of inToken (can't determine USD value)
                   type = 'sell';
@@ -204,7 +208,8 @@ export function detectTrade(tx: any, wallet: string, solPrice: number): RawTrade
             type = 'sell';
             tokenMint = largest.mint;
             tokenAmount = largest.tokenAmount;
-            baseAmount = solPrice * solChangeNet;
+            baseAmount = solChangeNet;
+            baseMint = 'SOL';
             tokenInMint = largest.mint;
             tokenInAmount = largest.tokenAmount;
             tokenOutMint = 'SOL';
@@ -217,7 +222,8 @@ export function detectTrade(tx: any, wallet: string, solPrice: number): RawTrade
             type = 'buy';
             tokenMint = largest.mint;
             tokenAmount = largest.tokenAmount;
-            baseAmount = solPrice * Math.abs(solChangeNet);
+            baseAmount = Math.abs(solChangeNet);
+            baseMint = 'SOL';
             tokenInMint = 'SOL';
             tokenInAmount = Math.abs(solChangeNet);
             tokenOutMint = largest.mint;
@@ -239,6 +245,7 @@ export function detectTrade(tx: any, wallet: string, solPrice: number): RawTrade
             tokenMint,
             tokenAmount,
             baseAmount,
+            baseMint,
             tokenInMint,
             tokenInAmount,
             tokenInPreBalance: tokensSent.length > 0

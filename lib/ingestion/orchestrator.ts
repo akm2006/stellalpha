@@ -1,4 +1,4 @@
-import { getSolPrice, getTokenSymbol, enrichTradeSymbols } from '@/lib/services/token-service';
+import { getTokenSymbol, enrichTradeSymbols, getUsdValue } from '@/lib/services/token-service';
 import { getStarTradersByAddresses } from '@/lib/repositories/star-traders.repo';
 import { claimTrade, deleteClaimedTrade, updateTradePnL } from '@/lib/repositories/trades.repo';
 import { getPosition, upsertPosition } from '@/lib/repositories/positions.repo';
@@ -28,8 +28,8 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   return result;
 }
 
-async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: number | null; avgCostBasis: number | null }> {
-  const { wallet, tokenMint, type, tokenAmount, baseAmount } = trade;
+async function updatePositionAndGetPnL(trade: RawTrade, usdValue: number): Promise<{ realizedPnl: number | null; avgCostBasis: number | null }> {
+  const { wallet, tokenMint, type, tokenAmount } = trade;
 
   // CONFIDENCE GUARD: If confidence is 'low', skip PnL to avoid phantom profit/loss.
   // The trade is still persisted for record-keeping, but realized_pnl stays null.
@@ -49,7 +49,7 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
   if (type === 'buy') {
     // Add to position
     const newSize = currentSize + tokenAmount;
-    const newCost = currentCost + baseAmount;
+    const newCost = currentCost + usdValue;
     avgCost = newSize > 0 ? newCost / newSize : 0;
 
     await upsertPosition(wallet, tokenMint, newSize, newCost, avgCost);
@@ -57,7 +57,7 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
     // Sell: calculate PnL
     if (currentSize > 0 && avgCost > 0) {
       const soldCost = avgCost * tokenAmount;
-      realizedPnl = baseAmount - soldCost;
+      realizedPnl = usdValue - soldCost;
 
       const remainingSize = Math.max(0, currentSize - tokenAmount);
       const remainingCost = remainingSize > 0 ? avgCost * remainingSize : 0;
@@ -133,6 +133,10 @@ export async function processBatch(transactions: IngestedTransaction[], received
       processed++;
       txTimer.checkpoint('Trade detected');
 
+      // Convert raw denomination baseAmount to USD for DB storage and PnL
+      const usdValue = await getUsdValue(trade.baseMint, trade.baseAmount);
+      txTimer.checkpoint('USD conversion');
+
       // Calculate latency (time from on-chain to now)
       const latencyMs = receivedAt - (trade.timestamp * 1000);
       let leaderPositionUpdated = false;
@@ -154,7 +158,7 @@ export async function processBatch(transactions: IngestedTransaction[], received
           token_out_mint: trade.tokenOutMint,
           token_out_symbol: getTokenSymbol(trade.tokenOutMint),
           token_out_amount: trade.tokenOutAmount,
-          usd_value: trade.baseAmount,
+          usd_value: usdValue,
           realized_pnl: null,     // will be backfilled
           avg_cost_basis: null,   // will be backfilled
           block_timestamp: trade.timestamp,
@@ -186,7 +190,7 @@ export async function processBatch(transactions: IngestedTransaction[], received
         txTimer.checkpoint('Queue follower rows');
 
         // 3. Update leader position.
-        const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
+        const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade, usdValue);
         leaderPositionUpdated = true;
         txTimer.checkpoint('Update leader position');
 
