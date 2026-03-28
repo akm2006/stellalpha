@@ -279,6 +279,7 @@ fn parse_inner_instructions(
 pub fn canonicalize_capture(
     capture: &RawTransactionCapture,
     block_meta_by_slot: &HashMap<u64, RawBlockMetaCapture>,
+    fallback_timestamp: Option<i64>,
 ) -> Result<CanonicalEnvelope> {
     let resolved_account_keys = build_resolved_account_keys(&capture.transaction_update);
     let account_keys = resolved_account_keys
@@ -330,7 +331,8 @@ pub fn canonicalize_capture(
                 &["transaction", "meta", "blockTime", "timestamp"],
             )
             .and_then(as_i64)
-        });
+        })
+        .or(fallback_timestamp);
 
     Ok(CanonicalEnvelope {
         signature: capture.signature.clone(),
@@ -377,7 +379,7 @@ pub fn canonicalize_captures(
     captures
         .iter()
         .map(|capture| {
-            canonicalize_capture(capture, block_meta_by_slot)
+            canonicalize_capture(capture, block_meta_by_slot, None)
                 .with_context(|| format!("failed to canonicalize capture {}", capture.signature))
         })
         .collect()

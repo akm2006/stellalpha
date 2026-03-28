@@ -12,6 +12,7 @@ use std::io::{self, BufRead, Write};
 struct StreamParseRequest {
     capture: RawTransactionCapture,
     block_meta: Option<RawBlockMetaCapture>,
+    fallback_timestamp: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,7 +45,7 @@ pub fn run_stream() -> Result<()> {
             block_meta_by_slot.insert(block_meta.slot, block_meta);
         }
 
-        let envelope = canonicalize_capture(&request.capture, &block_meta_by_slot)
+        let envelope = canonicalize_capture(&request.capture, &block_meta_by_slot, request.fallback_timestamp)
             .with_context(|| format!("failed to canonicalize capture {}", request.capture.signature))?;
         let decision = parser.parse(&envelope);
 
