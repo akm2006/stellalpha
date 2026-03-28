@@ -1,0 +1,19 @@
+# ── Stage 1: Build Rust binary ────────────────────────────────
+FROM rust:1.82-slim AS rust-builder
+WORKDIR /build
+COPY carbon-parser/ ./
+RUN cargo build --release
+
+# ── Stage 2: Node.js runtime ─────────────────────────────────
+FROM node:20-slim
+RUN corepack enable
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+COPY --from=rust-builder /build/target/release/stellalpha-carbon-parser /app/bin/stellalpha-carbon-parser
+
+ENV CARBON_PARSER_BINARY=/app/bin/stellalpha-carbon-parser
+CMD ["pnpm", "worker"]

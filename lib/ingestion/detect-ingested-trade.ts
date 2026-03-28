@@ -59,6 +59,11 @@ export async function detectIngestedTrade(
   tx: any,
   wallet: string,
 ): Promise<RawTrade | null> {
+  // Carbon parser pre-parsed result (set by worker when Carbon handles the transaction)
+  if (tx?.__carbonParsed) {
+    return tx.__carbonParsed as RawTrade;
+  }
+
   if (tx?.__parsedProvider === 'shyft') {
     return adaptShyftParsedTxToRawTrade(tx, wallet);
   }
