@@ -242,6 +242,7 @@ export class CarbonBridge {
             created_at: null,
           }
         : null,
+      fallback_timestamp: Math.floor(Date.now() / 1000),
     };
 
     const serialized = serializeYellowstoneRaw(request);
