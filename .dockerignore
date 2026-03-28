@@ -1,0 +1,33 @@
+# Build artifacts
+.next/
+node_modules/
+carbon-parser/target/
+carbon-parser/target-stream-runtime/
+
+# Dev-only directories (not tracked in git, but may exist locally)
+experiments/
+_logs/
+_scratch/
+backups/
+context/
+
+# AI/agent files
+ai/
+CLAUDE.md
+AGENTS.md
+RESUME_STATE.md
+.claude/
+
+# Other non-deployment files
+anchor/
+observer/
+scripts/
+docs/
+helius-docs/
+supabase/
+tests/
+coverage/
+whitepaper/
+
+# Git
+.git/

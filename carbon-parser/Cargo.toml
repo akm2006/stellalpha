@@ -1,0 +1,65 @@
+[package]
+name = "stellalpha-carbon-parser"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+publish = false
+
+[lib]
+name = "stellalpha_carbon_parser"
+path = "src/lib.rs"
+
+[features]
+default = ["pump-decoders"]
+pump-decoders = [
+  "dep:carbon-core",
+  "dep:carbon-pump-swap-decoder",
+  "dep:carbon-pumpfun-decoder",
+]
+carbon-decoders = [
+  "dep:carbon-core",
+  "dep:carbon-associated-token-account-decoder",
+  "dep:carbon-jupiter-swap-decoder",
+  "dep:carbon-meteora-damm-v2-decoder",
+  "dep:carbon-meteora-dbc-decoder",
+  "dep:carbon-meteora-dlmm-decoder",
+  "dep:carbon-orca-whirlpool-decoder",
+  "dep:carbon-pump-fees-decoder",
+  "dep:carbon-pump-swap-decoder",
+  "dep:carbon-pumpfun-decoder",
+  "dep:carbon-raydium-amm-v4-decoder",
+  "dep:carbon-raydium-clmm-decoder",
+  "dep:carbon-raydium-cpmm-decoder",
+  "dep:carbon-system-program-decoder",
+  "dep:carbon-token-2022-decoder",
+  "dep:carbon-token-program-decoder",
+]
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+bs58 = "0.5"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+solana-instruction = "3.3.0"
+solana-pubkey = "3.0.0"
+
+carbon-core = { version = "0.12.0", optional = true }
+carbon-associated-token-account-decoder = { version = "0.12.0", optional = true }
+carbon-jupiter-swap-decoder = { version = "0.12.0", optional = true }
+carbon-meteora-damm-v2-decoder = { version = "0.12.0", optional = true }
+carbon-meteora-dbc-decoder = { version = "0.12.0", optional = true }
+carbon-meteora-dlmm-decoder = { version = "0.12.0", optional = true }
+carbon-orca-whirlpool-decoder = { version = "0.12.0", optional = true }
+carbon-pump-fees-decoder = { version = "0.12.0", optional = true }
+carbon-pump-swap-decoder = { version = "0.12.0", optional = true }
+carbon-pumpfun-decoder = { version = "0.12.0", optional = true }
+carbon-raydium-amm-v4-decoder = { version = "0.12.0", optional = true }
+carbon-raydium-clmm-decoder = { version = "0.12.0", optional = true }
+carbon-raydium-cpmm-decoder = { version = "0.12.0", optional = true }
+carbon-system-program-decoder = { version = "0.12.0", optional = true }
+carbon-token-2022-decoder = { version = "0.12.0", optional = true }
+carbon-token-program-decoder = { version = "0.12.0", optional = true }

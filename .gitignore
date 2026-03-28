@@ -99,8 +99,7 @@ migrations/
 # Claude Code configuration and state
 .claude/
 
-# Claude project instructions and session state
-CLAUDE.md
+# Claude session state (project instructions CLAUDE.md should be tracked)
 RESUME_STATE.md
 
 # Cursor IDE rules
@@ -108,3 +107,9 @@ RESUME_STATE.md
 
 # Aider agent configuration
 .aider*
+
+CLAUDE.md
+
+# Carbon parser build artifacts (Rust source is tracked in carbon-parser/)
+carbon-parser/target/
+carbon-parser/target-stream-runtime/

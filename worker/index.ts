@@ -27,6 +27,16 @@ import {
 } from '../lib/ingestion/yellowstone-stream';
 import { cacheNonTradeSignatures, getCachedNonTradeSignatures } from '../lib/repositories/non-trade-signatures.repo';
 import { upsertYellowstoneRawBlocksMeta, upsertYellowstoneRawTransactions } from '../lib/repositories/yellowstone-raw-captures.repo';
+import {
+  initCarbonBridge,
+  stopCarbonBridge,
+  getCarbonBridge,
+  getCarbonParserEnabled,
+  type CarbonCaptureInput,
+  type CarbonBlockMetaInput,
+  type CarbonParseResult,
+} from '../lib/ingestion/carbon-bridge';
+import { IngestedTransaction } from '../lib/ingestion/types';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HTTP_RPC_URL = process.env.HELIUS_API_RPC_URL
@@ -375,6 +385,62 @@ async function flushYellowstoneRawCaptures() {
   }
 }
 
+// ── Carbon parser counters (logged periodically) ─────────────────────────────
+const carbonCounters = { trade: 0, no_trade: 0, unknown: 0, error: 0 };
+
+async function processCarbonSignature(
+  signature: string,
+  wallet: string,
+  transactionUpdate: unknown,
+  slot: number,
+  createdAt: Date | undefined,
+  receiveTimestamp: number,
+): Promise<CarbonParseResult | 'error'> {
+  const bridge = getCarbonBridge();
+  if (!bridge?.isRunning) return 'error';
+
+  const capture: CarbonCaptureInput = {
+    signature,
+    wallet,
+    slot,
+    receiveCommitment: YELLOWSTONE_RECEIVE_COMMITMENT,
+    sourceReceivedAt: new Date(receiveTimestamp).toISOString(),
+    yellowstoneCreatedAt: createdAt ? createdAt.toISOString() : null,
+    transactionUpdate,
+  };
+
+  const cachedMeta = recentBlockMetaBySlot.get(slot);
+  const blockMeta: CarbonBlockMetaInput | null = cachedMeta
+    ? {
+        slot: cachedMeta.capture.slot,
+        blockTime: cachedMeta.capture.blockTime,
+        blockMetaUpdate: cachedMeta.capture.blockMetaUpdate,
+      }
+    : null;
+
+  try {
+    return await bridge.parse(capture, blockMeta);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[CARBON] Parse error for ${signature.slice(0, 12)}...: ${msg}`);
+    carbonCounters.error++;
+    return 'error';
+  }
+}
+
+function enqueueSHYFTPath(signature: string, wallet: string, receiveTimestamp: number) {
+  void enqueueParsedTxMessages([
+    {
+      signature,
+      wallet,
+      source: 'websocket',
+      discoveredAt: new Date(receiveTimestamp).toISOString(),
+    },
+  ]).catch((error) => {
+    console.error(`[WORKER] Failed to enqueue signature ${signature.slice(0, 12)}...`, error);
+  });
+}
+
 function handleNewSignature(signature: string, wallet: string, transactionUpdate: unknown, slot: number, createdAt: Date | undefined) {
   if (signatureCache.has(signature)) {
     return;
@@ -400,15 +466,59 @@ function handleNewSignature(signature: string, wallet: string, transactionUpdate
   }
 
   console.log(`[WORKER] New Yellowstone tx for ${wallet.slice(0, 8)}... | SIG: ${signature}`);
-  void enqueueParsedTxMessages([
-    {
-      signature,
-      wallet,
-      source: 'websocket',
-      discoveredAt: new Date(receiveTimestamp).toISOString(),
-    },
-  ]).catch((error) => {
-    console.error(`[WORKER] Failed to enqueue signature ${signature.slice(0, 12)}...`, error);
+
+  // ── Carbon parser integration ──────────────────────────────────────────────
+  const bridge = getCarbonBridge();
+
+  if (!bridge?.isRunning) {
+    // Carbon not available — fall back to SHYFT queue
+    enqueueSHYFTPath(signature, wallet, receiveTimestamp);
+    return;
+  }
+
+  void (async () => {
+    const result = await processCarbonSignature(signature, wallet, transactionUpdate, slot, createdAt, receiveTimestamp);
+
+    if (result === 'error') {
+      enqueueSHYFTPath(signature, wallet, receiveTimestamp);
+      return;
+    }
+
+    carbonCounters[result.status]++;
+
+    if (result.status === 'trade' && result.trade) {
+      const tx: IngestedTransaction = {
+        signature: result.trade.signature,
+        timestamp: result.trade.timestamp,
+        feePayer: wallet,
+        source: 'websocket',
+        raw: { __carbonParsed: result.trade, feePayer: wallet },
+      };
+
+      try {
+        const { processed, inserted } = await processBatch([tx], receiveTimestamp);
+        console.log(
+          `[CARBON] Trade: ${result.trade.type} ${result.trade.tokenMint.slice(0, 8)}... `
+          + `| processed=${processed} inserted=${inserted} | Latency: ${Date.now() - receiveTimestamp}ms`
+        );
+      } catch (error) {
+        console.error(`[CARBON] Orchestrator error for ${signature.slice(0, 12)}...:`, error);
+      }
+      return;
+    }
+
+    if (result.status === 'no_trade') {
+      const expiresAtIso = new Date(Date.now() + PARSED_TX_NON_TRADE_CACHE_TTL_MS).toISOString();
+      await cacheNonTradeSignatures(wallet, [signature], expiresAtIso).catch(() => {});
+      return;
+    }
+
+    // unknown — fall through to SHYFT
+    console.log(`[CARBON] Unknown for ${signature.slice(0, 12)}... — queuing SHYFT fallback`);
+    enqueueSHYFTPath(signature, wallet, receiveTimestamp);
+  })().catch((error) => {
+    console.error(`[CARBON] Unhandled error for ${signature.slice(0, 12)}...:`, error);
+    enqueueSHYFTPath(signature, wallet, receiveTimestamp);
   });
 }
 
@@ -693,6 +803,14 @@ async function startWorker() {
   trackedWallets = await fetchTrackedWallets();
   console.log(`[WORKER] Loaded ${trackedWallets.length} tracked wallets from DB.`);
 
+  // ── Carbon parser init ─────────────────────────────────────────────────────
+  if (getCarbonParserEnabled()) {
+    const bridge = await initCarbonBridge();
+    if (bridge) {
+      console.log('[WORKER] Carbon parser active');
+    }
+  }
+
   await startYellowstoneSubscriptionWithRetry('startup');
 
   setInterval(syncTrackedWallets, 60 * 1000);
@@ -703,6 +821,18 @@ async function startWorker() {
     flushYellowstoneRawCaptures().catch(console.error);
   }, RAW_CAPTURE_FLUSH_INTERVAL_MS);
   setInterval(pruneYellowstoneCaches, 60 * 1000);
+
+  // Carbon parser observability: log counters every 60s
+  setInterval(() => {
+    const bridge = getCarbonBridge();
+    if (!bridge?.isRunning) return;
+    const { trade, no_trade, unknown, error } = carbonCounters;
+    if (trade + no_trade + unknown + error === 0) return;
+    console.log(
+      `[CARBON] Stats — trade=${trade} no_trade=${no_trade} unknown=${unknown} error=${error} `
+      + `| pending=${bridge.pendingCount}`
+    );
+  }, 60 * 1000);
 
   monitorConnectionHealth();
 
@@ -718,6 +848,7 @@ process.on('SIGINT', async () => {
     + `Pending raw tx: ${pendingTransactionCaptures.size} | Pending raw blockMeta: ${pendingBlockMetaCaptures.size}`
   );
   await stopYellowstoneSubscription();
+  await stopCarbonBridge().catch(console.error);
   await flushYellowstoneRawCaptures().catch(console.error);
   process.exit(0);
 });
