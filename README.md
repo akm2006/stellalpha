@@ -1,160 +1,261 @@
-# Stellalpha: Autonomous Non-Custodial Copy Trading on Solana
+<p align="center">
+  <img src="./public/stellalpha.png" alt="Stellalpha logo" width="132" />
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Next.js](https://img.shields.io/badge/Framework-Next.js%2016-black?logo=next.js)](https://nextjs.org/)
-[![Solana](https://img.shields.io/badge/Blockchain-Solana-blueviolet?logo=solana)](https://solana.com/)
-[![Jupiter](https://img.shields.io/badge/DEX-Jupiter-green?logo=jupiter)](https://jup.ag/)
+<h1 align="center">Stellalpha</h1>
 
-Stellalpha is a next-generation DeFi infrastructure layer on Solana that enables users to automatically follow top traders and replicate their strategies using a **non-custodial, intent-based execution engine**.
+<p align="center">
+  <strong>Autonomous, non-custodial copy trading for stablecoin capital on Solana.</strong>
+</p>
 
-Unlike traditional copy trading systems that mirror raw token movements, Stellalpha mirrors **trade intent (allocation weight)** — enabling more reliable, scalable, and capital-efficient execution.
+<p align="center">
+  <a href="https://stellalpha.xyz">App</a>
+  ·
+  <a href="https://stellalpha.xyz/whitepaper.pdf">Whitepaper</a>
+  ·
+  <a href="https://dorahacks.io/buidl/32072">DoraHacks</a>
+  ·
+  <a href="https://github.com/akm2006/stellalpha_vault">Vault Repo</a>
+  ·
+  <a href="https://x.com/stellalpha_">X</a>
+</p>
+
+<p align="center">
+  <img alt="Public demo live" src="https://img.shields.io/badge/Public%20Demo-Live-10B981?style=flat-square" />
+  <img alt="Non-custodial by design" src="https://img.shields.io/badge/Non--Custodial-By%20Design-0B0F14?style=flat-square" />
+  <img alt="Stablecoin capital" src="https://img.shields.io/badge/Stablecoin%20Capital-Strategy%20Base-0B0F14?style=flat-square" />
+  <img alt="Solana" src="https://img.shields.io/badge/Solana-Execution%20Layer-14F195?style=flat-square&logo=solana&logoColor=000000" />
+</p>
+
+Stellalpha is building a new execution layer for allocating stablecoin capital to high-signal on-chain traders without giving up custody. Instead of copying raw wallet movements, Stellalpha interprets **trade intent** and translates it into follower-specific execution.
+
+The core idea is simple: users should be able to deploy capital from a stablecoin-native base while keeping the capital path non-custodial, transparent, and programmable. The current public app demonstrates that experience through a live-market **demo vault**. The long-term product is a real non-custodial vault system for production execution on Solana.
+
+This repository is public because Stellalpha is being built in public. It is meant to communicate product direction, progress, and architecture at a high level, not to function as a self-hosting or deployment repository.
 
 ---
 
-## 🚀 Why Stellalpha?
+## The Thesis
 
-On-chain copy trading today suffers from balance desynchronization, slippage mismatches, and latency-driven execution failures. Stellalpha solves this by introducing **Intent-based trade replication**.
+Most copy trading systems are built around wallet mirroring.
 
-> **Intent-based trade replication instead of raw transaction copying**
+That works in a demo, but it breaks down in practice:
 
-- **Consistent Execution**: Strategies scale across different portfolio sizes seamlessly.
-- **Reduced Failure Rates**: Smart routing and slippage enforcement minimize broken trades.
-- **Accurate PnL Tracking**: Real-time weighted average cost analysis for followers.
+- follower portfolios do not match leader portfolios
+- execution timing drifts between users
+- routes and fills change in real markets
+- accounting becomes messy when every wallet has a different state
+
+Stellalpha is built around a different model:
+
+> **Replicate the trade decision, not the raw transaction.**
+
+For Stellalpha, that starts with stablecoin capital sitting inside a user-controlled vault and being deployed through trader-following logic rather than through raw wallet replay.
+
+That means:
+
+- **non-custodial capital**
+- **stablecoin-denominated allocation**
+- **intent-based replication**
+- **allocation-aware sizing**
+- **clearer follower accounting**
+- **a cleaner path to institution-ready strategy infrastructure**
 
 ---
 
-## ✨ Key Features
+## What Makes Stellalpha Different
 
-- **🛡️ Automated Copy Trading**: Follow any wallet and replicate trades using a weight-based allocation model.
-- **🔐 Non-Custodial Architecture**: User funds are secured via PDA-based vaults (Stellalpha Vault) on-chain.
-- **💵 USDC-Centric Model**: Designed for stablecoin-based capital allocation and predictable performance.
-- **🪐 Jupiter Integration**: Uses Jupiter for optimized swap routing and high-fidelity simulation.
-- **⚡ Real-Time Detection**: Powered by a Yellowstone worker, Helius webhooks, and reconciliation.
-- **🏎️ Fast Onboarding**: Deploy a demo vault and follow your first trader in under 60 seconds.
-- **🌐 Flexible Auth**: Supports Wallet signatures (SIWS), Google, X, and GitHub via Reown (AppKit).
+- **Non-custodial by design**  
+  Stellalpha is being built around dedicated user vaults rather than pooled or exchange-style custody.
+
+- **Stablecoin-native capital model**  
+  The product is designed around stablecoin capital as the base layer for allocation, accounting, and future treasury-style workflows.
+
+- **Intent-based execution**  
+  The system focuses on what a trader did and how much exposure they expressed, not on replaying every token movement literally.
+
+- **Follower-specific allocation logic**  
+  Execution is adapted to the follower's capital and configured allocation instead of assuming every account should behave identically.
+
+- **Simulation before real capital**  
+  The public product validates the user experience, execution flow, and portfolio accounting with realistic simulation before enabling live vault execution.
+
+- **Infrastructure-first product direction**  
+  Stellalpha is closer to execution infrastructure than a social trading app. The leaderboard is the surface; the product is the engine behind follower execution.
+
+- **Built for institution-ready capital flows**  
+  The combination of non-custodial vaults, stablecoin-denominated capital, and explicit execution logic creates a stronger foundation for professional and institutional use cases.
 
 ---
 
-## 🏗️ How It Works
+## What Is Live Today
+
+- **Star Trader discovery**  
+  Public pages for browsing tracked Solana wallets, recent activity, and performance context.
+
+- **Trader detail surfaces**  
+  Wallet-level trade history, holdings context, and follower-facing performance views.
+
+- **Demo Vault**  
+  A live-market simulation environment where users allocate virtual stablecoin capital and follow traders without real financial risk.
+
+- **Real-time ingestion stack**  
+  Yellowstone gRPC provides the sub-second backend detection path, with webhook delivery and reconciliation adding parallel delivery and recovery.
+
+- **Portfolio and PnL simulation**  
+  Position tracking, trade history, and portfolio updates based on live market conditions.
+
+The current public experience is **simulation**, not live capital execution.
+
+---
+
+## Real-Time Ingestion Path
 
 ```mermaid
-graph TD
-    A[Star Trader Trade] -->|Detection| B[Inbound Webhook / WS]
-    B -->|Parsing| C[Intent Extraction Engine]
-    C -->|Calculation| D[Follower Copy Ratio]
-    D -->|Execution| E[Jupiter Swap / Simulation]
-    E -->|Persistence| F[Vault State & PnL Update]
-    F -->|UI| G[Follower Dashboard]
+flowchart LR
+    A["Tracked wallets"]
+
+    subgraph S1["Detection"]
+        B["Yellowstone gRPC"]
+        C["Webhooks"]
+        D["Reconciliation"]
+    end
+
+    subgraph S2["Transaction Processing"]
+        E["Durable queue"]
+        F["Primary parsing"]
+        G["Fallback parsing"]
+        H["Trade detection"]
+    end
+
+    subgraph S3["Decision Engine"]
+        I["Atomic deduplication"]
+        J["Follower allocation"]
+    end
+
+    subgraph S4["Execution & State"]
+        K["Demo vault simulation"]
+        L["Portfolio, PnL, and trade history"]
+        M["Future mainnet vault execution"]
+    end
+
+    A --> B
+    A --> C
+    A --> D
+    B --> E
+    D --> E
+    E --> F
+    F -->|unresolved only| G
+    F --> H
+    G --> H
+    C --> H
+    H --> I
+    I --> J
+    J --> K
+    K --> L
+    J --> M
 ```
 
-1. **Detect**: Monitor "Star Traders" via low-latency WebSocket logs or Helius webhooks.
-2. **Parse**: Heuristic analysis filters out MEV and router noise to extract true trade intent.
-3. **Compute**: Calculate the appropriate copy ratio based on the follower's specific allocation.
-4. **Execute**: Submit swaps via Jupiter (Mainnet) or estimate output via Quotes (Demo).
-5. **Update**: Real-time state synchronization for positions, inventory, and realized PnL.
+1. **Yellowstone gRPC** is the lowest-latency backend path for tracked-wallet activity, giving Stellalpha a sub-second ingestion path for trade detection.
+2. **Webhook delivery** provides a parallel path, while **reconciliation** continuously backfills anything that was missed.
+3. **Queued signatures** move through a durable transaction-processing path with a primary parser and a bounded fallback path for unresolved transactions.
+4. **Trade detection** normalizes the payload into a common trade intent model before it reaches the decision engine.
+5. **Atomic deduplication** ensures only the first source that claims a signature advances it into follower logic.
+6. **Follower allocation and staleness rules** then drive demo-vault simulation today and prepare the path for future non-custodial vault execution.
+
+The stale-signal policy is intentionally asymmetric:
+
+- **BUY signals older than 10 seconds are skipped** because entering a fast-moving meme coin late can be worse than not entering at all.
+- **SELL signals are still executed even when delayed** because exiting late is still better than never exiting.
 
 ---
 
-## 🧪 Demo Vault System (Active)
+## Product Shape
 
-Experience the power of Stellalpha without financial risk:
-- **Seed Capital**: Every user starts with **1,000 virtual USDC**.
-- **Real-Time Simulation**: Trades use live Jupiter quotes for high-fidelity execution.
-- **Full Metrics**: Track positions, allocations, and PnL exactly as they would appear on-chain.
+Stellalpha currently spans two connected layers:
 
----
+- **Public application layer**  
+  Discovery, trader pages, and the demo vault experience.
 
-## 🛠️ Getting Started
+- **Execution layer**  
+  A real-time ingestion and decision stack built around Yellowstone gRPC, webhook delivery, a durable parsed-transaction queue, provider-aware trade detection, atomic deduplication, and explicit stale-signal handling before follower execution.
 
-### Prerequisites
-- [Node.js 20+](https://nodejs.org/)
-- [PnPM](https://pnpm.io/)
-- [Supabase Account](https://supabase.com/)
-
-### Installation
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/akm2006/stellalpha.git
-   cd stellalpha
-   ```
-2. Install dependencies:
-   ```bash
-   pnpm install
-   ```
-3. Setup environment variables:
-   ```bash
-   cp .env.example .env.local
-   # Fill in the required values for the web app first, then worker/cron if used.
-   ```
-4. Run the development server:
-   ```bash
-   pnpm dev
-   ```
-
-### Running the Worker
-To start the real-time WebSocket ingestion worker:
-```bash
-pnpm worker
-```
-
-## Runtime / Deployment
-
-Current production-like behavior in this repo is the demo vault system backed by
-Supabase. Deployment still has three runtime components:
-
-- **Next.js app service**: serves the frontend and all `app/api/*` routes,
-  including demo-vault APIs, the Helius webhook receiver, and cron endpoints.
-- **WebSocket worker service**: run separately with `pnpm worker`. It subscribes
-  to tracked-wallet logs, performs startup recovery over the last 25 confirmed
-  signatures per tracked wallet, and pushes recovered/live events through the
-  shared ingestion path.
-- **Cron / reconcile path**: schedule authenticated requests to
-  `/api/cron/reconcile` and `/api/cron/cleanup-trades` with
-  `Authorization: Bearer $CRON_SECRET`. Reconcile checks the last 50 signatures
-  per tracked wallet and replays missing events oldest-to-newest through the
-  same shared orchestrator path and dedupe gate.
-
-Minimal env split:
-
-- **Web app**: `SUPABASE_URL`, `SUPABASE_SECRET`, `IRON_SESSION_PASSWORD`,
-  `NEXT_PUBLIC_REOWN_PROJECT_ID`, `HELIUS_API_KEY`, `JUPITER_API_KEY`,
-  `HELIUS_WEBHOOK_SECRET`
-- **Worker**: all web app vars above, plus `SHYFT_API_KEY`, and either
-  `YELLOWSTONE_GRPC_URL` + `YELLOWSTONE_X_TOKEN` or the
-  `PUBLICNODE_YELLOWSTONE_*` equivalents. `HELIUS_API_RPC_URL` remains
-  recommended.
-- **Cron**: `CRON_SECRET`, plus the shared Helius/Supabase app vars
+That separation is intentional. The app proves the user experience and execution logic first. The vault system becomes the production capital layer when the product is ready.
 
 ---
 
-## 🗺️ Roadmap
+## Mainnet Vault Integration
 
-- [x] Copy Trading Engine v2 (Intent-based)
-- [x] Demo Vault Simulation System
-- [ ] Deploy Stellalpha Vault on Solana Mainnet
-- [ ] Enable Real Capital Copy Trading
-- [ ] Institutional-grade Risk Controls (KYC/KYT)
-- [ ] Ultra-low latency migration (Helius LaserStream)
+Stellalpha's intended mainnet architecture is centered on **`stellalpha_vault`**, the on-chain vault layer being built to turn the demo-vault experience into real, non-custodial execution.
+
+The model is a **vault -> trader states** architecture:
+
+- each user owns a base vault that holds their capital
+- each selected trader gets a dedicated **trader state**
+- the vault holds the capital base, while trader states isolate per-trader allocation, sync state, execution, settlement, and exit
+
+That structure is what lets Stellalpha combine automated execution with a strong non-custodial boundary. In the intended production model, Stellalpha receives **delegated execution authority**, but only inside a tightly scoped strategy envelope:
+
+- execution is intended to be **policy-constrained**, not arbitrary
+- swaps are intended to be **Jupiter-only**, not open-ended external execution
+- withdrawals remain **owner-controlled**
+- the protocol should be able to execute the strategy, but not take custody of the principal
+
+This aligns directly with the product shown in the app today. The current demo vault already models the same follower lifecycle Stellalpha wants to enforce on-chain: allocate capital, follow a selected trader, track positions and PnL, pause when needed, settle back to the base asset, and exit cleanly.
+
+The intended non-custodial permission split looks like this:
+
+| Capability | Vault owner | Stellalpha execution authority | What the boundary means |
+| --- | --- | --- | --- |
+| Create the vault and assign delegated execution authority | Yes | No | The user defines the trust boundary. |
+| Deposit or add capital to the vault | Yes | No | Stellalpha cannot pull funds into custody. |
+| Withdraw or redeem principal back to the owner wallet | Yes | No | Only the owner can take capital out. Stellalpha cannot redeem, withdraw, or drain user funds. |
+| Pause or stop strategy activity | Yes | Yes | Both sides can trigger the safety stop, but pausing is not the same as having withdrawal rights. |
+| Open, close, settle, and exit trader states | Yes | No | The user controls which strategy allocations exist and when they end. |
+| Execute approved Jupiter swaps inside active trader states | No* | Yes | Stellalpha gets execution power, not custody power. |
+| Send funds to an arbitrary external wallet | No | No | Principal should stay inside the vault and trader-state policy envelope. |
+
+\* Unless the owner is also set as the delegated authority. In Stellalpha's intended production model, execution authority is delegated to the protocol while withdrawal authority remains exclusively with the owner.
+
+In other words, the public app demonstrates **how Stellalpha behaves**, and `stellalpha_vault` is the mainnet capital layer being developed to enforce that same behavior on-chain.
+
+Vault repo: [stellalpha_vault](https://github.com/akm2006/stellalpha_vault)
 
 ---
 
-## 🏆 Hackathon Context
+## Current Status
 
-Stellalpha was built for **StableHacks 2026**, focusing on institutional-grade DeFi infrastructure:
-- **Stablecoin Focus**: Native USDC-centric allocation model.
-- **Security First**: Permissioned vault designs and gas abstraction.
-- **Transparency**: Audit-friendly execution logs and real-time monitoring.
+- The **public app is live in demo form**.
+- The **current follower experience is simulated** using live market data, real trader activity, and stablecoin-denominated demo capital.
+- The **real non-custodial vault layer is being developed separately** and will be integrated after the demo-vault flow is fully validated.
 
----
-
-## 🔗 Links
-
-- **Application**: [stellalpha.xyz](https://stellalpha.xyz)
-- **Whitepaper**: [Download PDF](https://stellalpha.xyz/whitepaper.pdf)
-- **Vault Contract**: [stellalpha_vault](https://github.com/akm2006/stellalpha_vault)
-- **Twitter**: [@stellalpha_](https://x.com/stellalpha_)
+This is why Stellalpha can already demonstrate the core product narrative today while still being honest about what is and is not live on-chain.
 
 ---
 
-## 📄 License
+## Roadmap
+
+- [x] Public star-trader discovery
+- [x] Demo vault for simulated copy trading
+- [x] Real-time multi-source trade ingestion
+- [x] Portfolio and PnL simulation
+- [ ] Non-custodial vault integration
+- [ ] Live capital execution
+- [ ] Risk controls and permissions
+- [ ] Institution-ready reporting and operations
+
+---
+
+## Links
+
+- **App**: [stellalpha.xyz](https://stellalpha.xyz)
+- **Whitepaper**: [stellalpha.xyz/whitepaper.pdf](https://stellalpha.xyz/whitepaper.pdf)
+- **DoraHacks**: [dorahacks.io/buidl/32072](https://dorahacks.io/buidl/32072)
+- **Vault repo**: [stellalpha_vault](https://github.com/akm2006/stellalpha_vault)
+- **X**: [@stellalpha_](https://x.com/stellalpha_)
+
+---
+
+## License
+
 Distributed under the MIT License. See `LICENSE` for more information.
