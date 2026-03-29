@@ -8,7 +8,7 @@ const PHASES = [
     id: "01",
     title: "Phase I: Foundation",
     status: "active",
-    desc: "Testing and achieving correctness and speed in demo vault environment. Verifying Helius integration."
+    desc: "Testing and achieving correctness and speed in demo vault environment. Verifying Yellowstone gRPC ingestion."
   },
   {
     id: "02",
