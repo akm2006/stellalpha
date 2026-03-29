@@ -160,9 +160,17 @@ export async function processTradeQueue(traderStateId: string) {
           lastError = err;
           console.warn(`[CONSUMER] Attempt ${attempt} failed:`, err.message);
 
-          // Don't retry on fatal logic errors (e.g. "No Balance"), only on potentially transient ones?
-          // For simplicity/robustness in V2, we retry EVERYTHING except explicit skips.
-          // Exponential Backoff: 1s, 2s, 3s
+          // Fast-fail on deterministic errors that will never succeed on retry.
+          // "No balance" = follower doesn't hold the token; retrying wastes 4.3s and blocks the queue.
+          const msg = err.message || '';
+          const isDeterministic = /No .+ balance \(have: 0\)/.test(msg)
+                               || msg === 'Copy amount 0 after ratio calculation';
+          if (isDeterministic) {
+            console.log(`[CONSUMER] Non-retryable: ${msg.slice(0, 60)} — skipping remaining attempts`);
+            break;
+          }
+
+          // Transient errors (Jupiter 400, network timeout) still retry with backoff
           if (attempt < MAX_RETRIES) {
             await new Promise(resolve => setTimeout(resolve, attempt * 1000));
           }
@@ -187,9 +195,6 @@ export async function processTradeQueue(traderStateId: string) {
       }
 
       tradesProcessed++;
-
-      // Small delay to prevent overwhelming the system
-      await new Promise(resolve => setTimeout(resolve, 50));
     }
 
     // Log if we hit batch limit
@@ -392,127 +397,134 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
     `[LATENCY] Trade ${tradeRow.id.slice(0, 8)}: Total=${latencyDiff}ms | Queue=${queueWaitTime}ms | Runtime=${actualExecutionRuntimeMs}ms | Upstream=${upstreamPreQueueDelayMs}ms`
   );
 
-  await updateDemoTrade(tradeRow.id, {
-    token_in_mint: sourceMint,  // <--- V2 FIX: Save actual source (USDC)
-    token_in_symbol: getTokenSymbol(sourceMint),
-    token_in_amount: copyAmount,
-    token_out_mint: destMint,   // <--- V2 FIX: Save actual dest (Token)
-    token_out_symbol: getTokenSymbol(destMint),
-    token_out_amount: quoteOutAmount,
-    usd_value: tradeUsdValue,
-    quote_in_amount: copyAmount,
-    quote_out_amount: quoteOutAmount,
-    price_impact: priceImpact,
-    copy_trade_timestamp: Math.floor(copyTradeTimestamp / 1000),
-    latency_diff_ms: latencyDiff
-  });
+  // 7+8. Run quote write and position update concurrently (different tables, no shared state)
+  async function updatePositions(): Promise<number | null> {
+    let pnl: number | null = null;
 
-  timer.checkpoint('DB: Update trade with quote');
+    if (isBuy) {
+      // ============ BUY LOGIC (Weighted Average Cost) ============
+      const usdSpent = tradeUsdValue;
+      const tokenReceived = quoteOutAmount;
 
-  // 8. POSITION & PNL UPDATES (Master Fix Logic)
-  let realizedPnl: number | null = null;
-
-  if (isBuy) {
-    // ============ BUY LOGIC (Weighted Average Cost) ============
-    const usdSpent = tradeUsdValue;
-    const tokenReceived = quoteOutAmount;
-
-    // Decrease source (stablecoin/SOL) position
-    await updateDemoPosition(traderStateId, sourceMint, {
-      size: sourceBalance - copyAmount,
-      cost_usd: await getUsdValue(sourceMint, sourceBalance - copyAmount),
-      avg_cost: isSolSource ? await getSolPrice() : 1
-    });
-
-    // Increase/create destination (token) position
-    const destPosition = positions.find((p: any) => p.token_mint === destMint);
-    const oldAmount = Number(destPosition?.size || 0);
-    const oldCostBasis = Number(destPosition?.cost_usd || 0);
-
-    const newAmount = oldAmount + tokenReceived;
-    const newCostBasis = oldCostBasis + usdSpent;
-    const newAvgCost = newAmount > 0 ? newCostBasis / newAmount : 0;
-
-    if (destPosition) {
-      await updateDemoPosition(traderStateId, destMint, {
-        size: newAmount,
-        cost_usd: newCostBasis,
-        avg_cost: newAvgCost
+      // Decrease source (stablecoin/SOL) position
+      await updateDemoPosition(traderStateId, sourceMint, {
+        size: sourceBalance - copyAmount,
+        cost_usd: await getUsdValue(sourceMint, sourceBalance - copyAmount),
+        avg_cost: isSolSource ? await getSolPrice() : 1
       });
+
+      // Increase/create destination (token) position
+      const destPosition = positions.find((p: any) => p.token_mint === destMint);
+      const oldAmount = Number(destPosition?.size || 0);
+      const oldCostBasis = Number(destPosition?.cost_usd || 0);
+
+      const newAmount = oldAmount + tokenReceived;
+      const newCostBasis = oldCostBasis + usdSpent;
+      const newAvgCost = newAmount > 0 ? newCostBasis / newAmount : 0;
+
+      if (destPosition) {
+        await updateDemoPosition(traderStateId, destMint, {
+          size: newAmount,
+          cost_usd: newCostBasis,
+          avg_cost: newAvgCost
+        });
+      } else {
+        await insertDemoPosition(traderStateId, destMint, getTokenSymbol(destMint), newAmount, newCostBasis, newAvgCost);
+      }
+
+    } else if (isSell) {
+      // ============ SELL LOGIC (Realize PnL - WAC Method) ============
+      const usdReceived = tradeUsdValue;
+      const currentAvgCost = Number(sourcePosition?.avg_cost || 0);
+      const costRemoved = currentAvgCost * copyAmount;
+
+      pnl = usdReceived - costRemoved;
+
+      // Update Source Position
+      const remainingAmount = sourceBalance - copyAmount;
+      const remainingCostBasis = remainingAmount * currentAvgCost;
+
+      await updateDemoPosition(traderStateId, sourceMint, {
+        size: remainingAmount,
+        cost_usd: remainingCostBasis,
+        avg_cost: remainingAmount > 0 ? currentAvgCost : 0
+      });
+
+      // Update Trader State PnL
+      const currentRealizedPnl = Number(traderState.realized_pnl_usd) || 0;
+      await updateTraderStateRealizedPnl(traderStateId, currentRealizedPnl + pnl);
+
+      // Increase destination (stablecoin/SOL) position
+      const destPosition = positions.find((p: any) => p.token_mint === destMint);
+      if (destPosition) {
+        const newSize = Number(destPosition.size) + quoteOutAmount;
+        await updateDemoPosition(traderStateId, destMint, {
+          size: newSize,
+          cost_usd: await getUsdValue(destMint, newSize),
+          avg_cost: isSolDest ? await getSolPrice() : 1
+        });
+      } else {
+        await insertDemoPosition(
+          traderStateId,
+          destMint,
+          getTokenSymbol(destMint),
+          quoteOutAmount,
+          await getUsdValue(destMint, quoteOutAmount),
+          isSolDest ? await getSolPrice() : 1
+        );
+      }
+
     } else {
-      await insertDemoPosition(traderStateId, destMint, getTokenSymbol(destMint), newAmount, newCostBasis, newAvgCost);
+      // Token → Token swap (rare)
+      console.log(`  Token→Token swap, no USD cost tracking`);
+
+      await updateDemoPosition(traderStateId, sourceMint, {
+        size: sourceBalance - copyAmount
+      });
+
+      const destPosition = positions.find((p: any) => p.token_mint === destMint);
+      if (destPosition) {
+        await updateDemoPosition(traderStateId, destMint, {
+          size: Number(destPosition.size) + quoteOutAmount
+        });
+      } else {
+        await insertDemoPosition(traderStateId, destMint, getTokenSymbol(destMint), quoteOutAmount, 0, 0);
+      }
     }
 
-  } else if (isSell) {
-    // ============ SELL LOGIC (Realize PnL - WAC Method) ============
-    const usdReceived = tradeUsdValue;
-    const currentAvgCost = Number(sourcePosition?.avg_cost || 0);
-    const costRemoved = currentAvgCost * copyAmount;
-
-    realizedPnl = usdReceived - costRemoved;
-
-    // Update Source Position
-    const remainingAmount = sourceBalance - copyAmount;
-    const remainingCostBasis = remainingAmount * currentAvgCost;
-
-    await updateDemoPosition(traderStateId, sourceMint, {
-      size: remainingAmount,
-      cost_usd: remainingCostBasis,
-      avg_cost: remainingAmount > 0 ? currentAvgCost : 0
-    });
-
-    // Update Trader State PnL
-    const currentRealizedPnl = Number(traderState.realized_pnl_usd) || 0;
-    await updateTraderStateRealizedPnl(traderStateId, currentRealizedPnl + realizedPnl);
-
-    // Increase destination (stablecoin/SOL) position
-    const destPosition = positions.find((p: any) => p.token_mint === destMint);
-    if (destPosition) {
-      const newSize = Number(destPosition.size) + quoteOutAmount;
-      await updateDemoPosition(traderStateId, destMint, {
-        size: newSize,
-        cost_usd: await getUsdValue(destMint, newSize),
-        avg_cost: isSolDest ? await getSolPrice() : 1
-      });
-    } else {
-      await insertDemoPosition(
-        traderStateId, 
-        destMint, 
-        getTokenSymbol(destMint), 
-        quoteOutAmount, 
-        await getUsdValue(destMint, quoteOutAmount), 
-        isSolDest ? await getSolPrice() : 1
-      );
-    }
-
-  } else {
-    // Token → Token swap (rare)
-    console.log(`  Token→Token swap, no USD cost tracking`);
-
-    await updateDemoPosition(traderStateId, sourceMint, {
-      size: sourceBalance - copyAmount
-    });
-
-    const destPosition = positions.find((p: any) => p.token_mint === destMint);
-    if (destPosition) {
-      await updateDemoPosition(traderStateId, destMint, {
-        size: Number(destPosition.size) + quoteOutAmount
-      });
-    } else {
-      await insertDemoPosition(traderStateId, destMint, getTokenSymbol(destMint), quoteOutAmount, 0, 0);
-    }
+    return pnl;
   }
 
-  // 9. Update trade with realized PnL
-  if (realizedPnl !== null) {
+  const [, pnlResult] = await Promise.all([
+    updateDemoTrade(tradeRow.id, {
+      token_in_mint: sourceMint,
+      token_in_symbol: getTokenSymbol(sourceMint),
+      token_in_amount: copyAmount,
+      token_out_mint: destMint,
+      token_out_symbol: getTokenSymbol(destMint),
+      token_out_amount: quoteOutAmount,
+      usd_value: tradeUsdValue,
+      quote_in_amount: copyAmount,
+      quote_out_amount: quoteOutAmount,
+      price_impact: priceImpact,
+      copy_trade_timestamp: Math.floor(copyTradeTimestamp / 1000),
+      latency_diff_ms: latencyDiff
+    }),
+    updatePositions(),
+  ]);
+
+  timer.checkpoint('DB: Update trade + positions (parallel)');
+
+  // 9. Backfill PnL — sequential, depends on position result
+  if (pnlResult !== null) {
     await updateDemoTrade(tradeRow.id, {
-      realized_pnl: realizedPnl
+      realized_pnl: pnlResult
     });
   }
 
-  timer.checkpoint('DB: Update positions + PnL');
+  timer.checkpoint('DB: Backfill PnL');
 
-  console.log(`  Copied ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} → ${quoteOutAmount.toFixed(4)} ${getTokenSymbol(destMint)} | USD: $${tradeUsdValue.toFixed(2)} | PnL: ${realizedPnl !== null ? '$' + realizedPnl.toFixed(2) : 'N/A'} | Latency: ${latencyDiff}ms`);
+  console.log(`  Copied ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} → ${quoteOutAmount.toFixed(4)} ${getTokenSymbol(destMint)} | USD: $${tradeUsdValue.toFixed(2)} | PnL: ${pnlResult !== null ? '$' + pnlResult.toFixed(2) : 'N/A'} | Latency: ${latencyDiff}ms`);
 
   timer.finish('executeQueuedTrade - SUCCESS');
 }

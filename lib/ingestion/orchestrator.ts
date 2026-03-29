@@ -184,19 +184,40 @@ export async function processBatch(transactions: IngestedTransaction[], received
 
         // === FROM HERE, ONLY THE WINNER EXECUTES ===
 
-        // 2. Queue follower rows only. Triggering happens after leader position succeeds.
-        const queueResult = await queueCopyTrades(trade, receivedAt);
-        queuedTraderStateIds = queueResult.queuedTraderStateIds;
-        txTimer.checkpoint('Queue follower rows');
+        // 2+3. Queue followers and update leader position in parallel (different tables).
+        const [queueResult, pnlResult] = await Promise.allSettled([
+          queueCopyTrades(trade, receivedAt),
+          updatePositionAndGetPnL(trade, usdValue),
+        ]);
 
-        // 3. Update leader position.
-        const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade, usdValue);
+        // Handle partial failures individually
+        if (queueResult.status === 'rejected') {
+          if (pnlResult.status === 'fulfilled') {
+            // Position updated but no followers queued. Leader position is still correct.
+            leaderPositionUpdated = true;
+            try {
+              await updateTradePnL(trade.signature, pnlResult.value.realizedPnl, pnlResult.value.avgCostBasis);
+            } catch (_) { /* best effort */ }
+            console.warn(`[ORCHESTRATOR] Follower queueing failed but leader position updated for ${trade.signature.slice(0, 12)}...`);
+          }
+          throw queueResult.reason;
+        }
+
+        if (pnlResult.status === 'rejected') {
+          // Position update failed but followers were queued.
+          // Don't set leaderPositionUpdated — let error handler clean up trade + queued rows.
+          queuedTraderStateIds = queueResult.value.queuedTraderStateIds;
+          throw pnlResult.reason;
+        }
+
+        // Both succeeded
+        queuedTraderStateIds = queueResult.value.queuedTraderStateIds;
         leaderPositionUpdated = true;
-        txTimer.checkpoint('Update leader position');
+        txTimer.checkpoint('Queue followers + Update position (parallel)');
 
-        // 4. Backfill PnL on the trade row we already inserted (best-effort only).
+        // 4. Backfill PnL on the trade row (best-effort, depends on position result).
         try {
-          await updateTradePnL(trade.signature, realizedPnl, avgCostBasis);
+          await updateTradePnL(trade.signature, pnlResult.value.realizedPnl, pnlResult.value.avgCostBasis);
           txTimer.checkpoint('Backfill Trade PnL');
         } catch (pnlError: any) {
           console.warn(`[ORCHESTRATOR] Failed to backfill PnL for ${trade.signature.slice(0, 12)}...`, pnlError.message);

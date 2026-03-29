@@ -267,57 +267,56 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
     console.log(`[STALENESS] BUY is ${Math.round(tradeAgeMs / 1000)}s old (threshold ${BUY_STALENESS_THRESHOLD_MS / 1000}s) — skipping for all followers`);
   }
 
-  // 4. Insert queued trade for each follower
+  // 4. Insert queued trades for all followers in parallel
+  const insertPromises: Promise<void>[] = [];
+
   for (const traderState of followers) {
     const traderStateId = traderState.id;
 
-    try {
-      if (isStaleBuy) {
-        console.log(`  [STALENESS] SKIP stale BUY | TS ${traderStateId.slice(0, 8)} (age: ${Math.round(tradeAgeMs / 1000)}s)`);
-        continue;
-      }
-
-      // SELL: log if delayed, but always proceed — exiting late beats not exiting
-      if (type === 'sell' && tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
-        console.log(`  [STALENESS] Delayed SELL executing | TS ${traderStateId.slice(0, 8)} (age: ${Math.round(tradeAgeMs / 1000)}s)`);
-      }
-
-      // Insert with status='queued' and STORE V2 COPY RATIO
-      const { error: insertError } = await queueTrade({
-        trader_state_id: traderStateId,
-        star_trade_signature: trade.signature,
-        type: trade.type,
-        token_in_mint: sourceMint,
-        token_in_symbol: getTokenSymbol(sourceMint),
-        token_in_amount: null,  // Copy amount - populated by Consumer using copy_ratio
-        token_out_mint: destMint,
-        token_out_symbol: getTokenSymbol(destMint),
-        token_out_amount: null,
-        star_trade_timestamp: trade.timestamp,
-        status: 'queued',
-        // Store metadata
-        leader_in_amount: trade.tokenInAmount,
-        leader_out_amount: trade.tokenOutAmount,
-        leader_usd_value: leaderUsdValue,
-        leader_before_balance: leaderMetric,
-        copy_ratio: finalRatio,  // <--- Use boosted ratio for BUY, original for SELL
-        boost_tier: boostTier,
-        boost_multiplier: boostMultiplier,
-        raw_data: trade
-      });
-
-      if (insertError) {
-        throw new Error(`Failed to queue trade for ${traderStateId}: ${insertError.message}`);
-      }
-
-      queuedTraderStateIds.push(traderStateId);
-      console.log(`  TS ${traderStateId.slice(0, 8)}: Trade queued (Ratio: ${(finalRatio * 100).toFixed(2)}%${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
-
-    } catch (err) {
-      console.error(`  TS ${traderStateId.slice(0, 8)}: Queue insert error`, err);
-      throw err;
+    if (isStaleBuy) {
+      console.log(`  [STALENESS] SKIP stale BUY | TS ${traderStateId.slice(0, 8)} (age: ${Math.round(tradeAgeMs / 1000)}s)`);
+      continue;
     }
+
+    if (type === 'sell' && tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
+      console.log(`  [STALENESS] Delayed SELL executing | TS ${traderStateId.slice(0, 8)} (age: ${Math.round(tradeAgeMs / 1000)}s)`);
+    }
+
+    insertPromises.push(
+      (async () => {
+        const { error: insertError } = await queueTrade({
+          trader_state_id: traderStateId,
+          star_trade_signature: trade.signature,
+          type: trade.type,
+          token_in_mint: sourceMint,
+          token_in_symbol: getTokenSymbol(sourceMint),
+          token_in_amount: null,
+          token_out_mint: destMint,
+          token_out_symbol: getTokenSymbol(destMint),
+          token_out_amount: null,
+          star_trade_timestamp: trade.timestamp,
+          status: 'queued',
+          leader_in_amount: trade.tokenInAmount,
+          leader_out_amount: trade.tokenOutAmount,
+          leader_usd_value: leaderUsdValue,
+          leader_before_balance: leaderMetric,
+          copy_ratio: finalRatio,
+          boost_tier: boostTier,
+          boost_multiplier: boostMultiplier,
+          raw_data: trade
+        });
+
+        if (insertError) {
+          throw new Error(`Failed to queue trade for ${traderStateId}: ${insertError.message}`);
+        }
+
+        queuedTraderStateIds.push(traderStateId);
+        console.log(`  TS ${traderStateId.slice(0, 8)}: Trade queued (Ratio: ${(finalRatio * 100).toFixed(2)}%${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
+      })()
+    );
   }
+
+  await Promise.all(insertPromises);
 
   timer.finish('queueCopyTrades - All queued');
   return { queuedTraderStateIds };
