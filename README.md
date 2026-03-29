@@ -29,7 +29,7 @@ On-chain copy trading today suffers from balance desynchronization, slippage mis
 - **🔐 Non-Custodial Architecture**: User funds are secured via PDA-based vaults (Stellalpha Vault) on-chain.
 - **💵 USDC-Centric Model**: Designed for stablecoin-based capital allocation and predictable performance.
 - **🪐 Jupiter Integration**: Uses Jupiter for optimized swap routing and high-fidelity simulation.
-- **⚡ Real-Time Detection**: Powered by Chainstack WebSockets with Helius backup and reconciliation.
+- **⚡ Real-Time Detection**: Powered by a Yellowstone worker, Helius webhooks, and reconciliation.
 - **🏎️ Fast Onboarding**: Deploy a demo vault and follow your first trader in under 60 seconds.
 - **🌐 Flexible Auth**: Supports Wallet signatures (SIWS), Google, X, and GitHub via Reown (AppKit).
 
@@ -119,11 +119,11 @@ Minimal env split:
 - **Web app**: `SUPABASE_URL`, `SUPABASE_SECRET`, `IRON_SESSION_PASSWORD`,
   `NEXT_PUBLIC_REOWN_PROJECT_ID`, `HELIUS_API_KEY`, `JUPITER_API_KEY`,
   `HELIUS_WEBHOOK_SECRET`
-- **Worker**: all web app vars above, plus `CHAINSTACK_WSS_URL` and
-  `HELIUS_API_RPC_URL` recommended
+- **Worker**: all web app vars above, plus `SHYFT_API_KEY`, and either
+  `YELLOWSTONE_GRPC_URL` + `YELLOWSTONE_X_TOKEN` or the
+  `PUBLICNODE_YELLOWSTONE_*` equivalents. `HELIUS_API_RPC_URL` remains
+  recommended.
 - **Cron**: `CRON_SECRET`, plus the shared Helius/Supabase app vars
-- **On-chain/localnet/operator-only**: `RPC_URL`, `STELLALPHA_PROGRAM_ID`,
-  `BACKEND_WALLET_PATH`
 
 ---
 

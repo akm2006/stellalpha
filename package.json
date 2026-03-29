@@ -13,7 +13,6 @@
     "worker": "tsx --env-file=.env.local worker/index.ts"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "^0.32.1",
     "@kdt-sol/solana-grpc-client": "^0.1.2",
     "@reown/appkit": "^1.8.17",
     "@reown/appkit-adapter-solana": "^1.8.17",
