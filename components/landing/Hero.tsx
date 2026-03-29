@@ -2,19 +2,8 @@
 
 import React from "react";
 import { motion } from "framer-motion";
-import { ArrowRight, FileText, Zap } from "lucide-react";
-import { COLORS } from "@/lib/theme";
+import { ArrowRight, FileText } from "lucide-react";
 import { Terminal } from "./Terminal";
-
-// Helper for branding consistency
-const PoweredByLogo = ({ src, alt, label }: { src: string, alt: string, label: string }) => (
-  <div className="flex items-center gap-2.5 opacity-60 hover:opacity-100 transition-opacity cursor-pointer group">
-    <div className="h-8 w-8 flex items-center justify-center bg-white/5 border border-white/5 group-hover:border-white/10 transition-colors">
-      <img src={src} alt={alt} className="h-4 w-4 object-contain" />
-    </div>
-    <span className="text-sm font-medium text-slate-400 group-hover:text-slate-200 transition-colors">{label}</span>
-  </div>
-);
 
 export const Hero = () => {
   return (
@@ -37,6 +26,11 @@ export const Hero = () => {
             className="space-y-6"
           >
             <div className="space-y-4">
+              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[10px] font-mono uppercase tracking-[0.24em] text-emerald-400">
+                Demo simulation live
+                <span className="h-1 w-1 rounded-full bg-emerald-500/50" />
+                Mainnet mode coming soon
+              </div>
               <h1 className="text-3xl sm:text-5xl md:text-6xl font-semibold tracking-tighter leading-tight md:leading-[1.05] text-white">
                 Autonomous <br />
                 Copy Trading <br />
@@ -88,7 +82,6 @@ export const Hero = () => {
                 <div className="flex items-center gap-6"> 
                   <img src="/solana.png" alt="Solana" className="h-6 w-auto object-contain opacity-50 hover:opacity-100 transition-opacity" />
                   <img src="/jupiter.png" alt="Jupiter" className="h-6 w-auto object-contain opacity-50 hover:opacity-100 transition-opacity" />
-                  <img src="https://www.helius.dev/_next/image?url=%2Flogo.svg&w=384&q=90" alt="Helius" className="h-5 w-auto object-contain opacity-50 hover:opacity-100 transition-opacity" />
                 </div>
               </div>
             </motion.div>

@@ -1,36 +1,18 @@
 "use client";
 
-import React, { useState, useEffect } from "react"; // Modified import
-import { motion, AnimatePresence } from "framer-motion";
-import PageLoader from "@/components/PageLoader";
+import React from "react";
 import { Hero } from "@/components/landing/Hero";
-import { StatsBar } from "@/components/landing/StatsBar";
 import { Features } from "@/components/landing/Features";
 import { VaultPreview } from "@/components/landing/VaultPreview";
 import { TokenUtility } from "@/components/landing/TokenUtility";
 import { Roadmap } from "@/components/landing/Roadmap";
 import { Team } from "@/components/landing/Team";
 import { Footer } from "@/components/landing/Footer";
-import { COLORS } from "@/lib/theme";
 
 export default function HomePage() {
-  const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 2000); // 2 second splash screen to show off the animation
-    return () => clearTimeout(timer);
-  }, []);
-
-  if (isLoading) {
-    return <PageLoader className="bg-black" />;
-  }
-
   return (
     <div className="min-h-screen font-sans overflow-x-hidden bg-[#050505] text-slate-200 animate-in fade-in duration-700">
       <Hero />
-      {/* <StatsBar /> */}
       <VaultPreview />
       <Features />
       <TokenUtility />

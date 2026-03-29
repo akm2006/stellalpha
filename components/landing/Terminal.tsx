@@ -5,13 +5,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import { COLORS } from "@/lib/theme";
 
 const TERMINAL_LOGS = [
-  { type: "INFO", msg: "System Active. Monitoring 14 'Star Trader' Wallets." },
-  { type: "WARN", msg: "Signal Detected: 8x...F29a swapped 500 USDC -> SOL" },
-  { type: "EXEC", msg: "Calc Ratio: (Trade 500 / Equity 1M) = 0.05%" },
-  { type: "EXEC", msg: "Simulating Trade & Calculating Route (Jupiter)..." },
-  { type: "INFO", msg: "Best Route: MERCURIAL -> ORCA (Impact: <0.01%)" },
-  { type: "EXEC", msg: "Executing via PDA Vault (CPI Invoke)..." },
-  { type: "SUCCESS", msg: "Transaction Confirmed. Fee Payer: Relayer." },
+  { type: "INFO", msg: "Yellowstone gRPC active. Monitoring tracked Star Trader wallets." },
+  { type: "WARN", msg: "Signal detected: 8x...F29a swapped 500 USDC -> SOL." },
+  { type: "EXEC", msg: "Normalized trade intent and follower ratio from leader state." },
+  { type: "EXEC", msg: "Calculating Jupiter route for delegated vault execution..." },
+  { type: "INFO", msg: "Best route selected with slippage and fee constraints." },
+  { type: "EXEC", msg: "Executing through the Stellalpha PDA vault path..." },
+  { type: "SUCCESS", msg: "Vault state updated. Mainnet copy execution confirmed." },
 ];
 
 export const Terminal = () => {
@@ -38,7 +38,7 @@ export const Terminal = () => {
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: COLORS.brand }}></span>
             <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ backgroundColor: COLORS.brand }}></span>
           </span>
-          <span className="text-[9px] tracking-wider font-medium text-emerald-400/90">HELIUS_LASER_STREAM :: ACTIVE</span>
+          <span className="text-[9px] tracking-wider font-medium text-emerald-400/90">YELLOWSTONE_GRPC :: ACTIVE</span>
         </div>
       </div>
       
