@@ -23,10 +23,8 @@ import {
   YELLOWSTONE_DEFAULT_ENDPOINT,
   YELLOWSTONE_RECEIVE_COMMITMENT,
   YellowstoneRawBlockMetaCapture,
-  YellowstoneRawTransactionCapture,
 } from '../lib/ingestion/yellowstone-stream';
 import { cacheNonTradeSignatures, getCachedNonTradeSignatures } from '../lib/repositories/non-trade-signatures.repo';
-import { upsertYellowstoneRawBlocksMeta, upsertYellowstoneRawTransactions } from '../lib/repositories/yellowstone-raw-captures.repo';
 import {
   initCarbonBridge,
   stopCarbonBridge,
@@ -87,19 +85,6 @@ function isAbortLikeError(message: string) {
   );
 }
 
-function isMissingRawCaptureSetupError(message: string) {
-  const lowered = message.toLowerCase();
-  return (
-    lowered.includes('yellowstone_raw_transactions')
-    || lowered.includes('yellowstone_raw_blocks_meta')
-  ) && (
-    lowered.includes('relation')
-    || lowered.includes('does not exist')
-    || lowered.includes('schema cache')
-    || lowered.includes('permission')
-  );
-}
-
 type CachedBlockMeta = {
   capture: YellowstoneRawBlockMetaCapture;
   seenAtMs: number;
@@ -110,24 +95,18 @@ let trackedWallets: string[] = [];
 let lastYellowstoneMessageTime = Date.now();
 let isReconnecting = false;
 let isDrainingParsedQueue = false;
-let isFlushingRawCaptures = false;
 let isShuttingDown = false;
 let backoffMs = 1000;
 let yellowstoneAbortController: AbortController | null = null;
 let yellowstoneStreamTask: Promise<void> | null = null;
-let lastRawCaptureError: string | null = null;
-let rawCaptureDisabled = false;
 
 const signatureCache = new Set<string>();
 const recentBlockMetaBySlot = new Map<number, CachedBlockMeta>();
 const observedTransactionSlots = new Map<number, number>();
-const pendingTransactionCaptures = new Map<string, YellowstoneRawTransactionCapture>();
-const pendingBlockMetaCaptures = new Map<number, YellowstoneRawBlockMetaCapture>();
 
 const MAX_BACKOFF = 30000;
 const STARTUP_RECONCILE_LIMIT = 25;
 const YELLOWSTONE_STALE_THRESHOLD_MS = 60 * 1000;
-const RAW_CAPTURE_FLUSH_INTERVAL_MS = 1000;
 const BLOCK_META_CACHE_TTL_MS = 10 * 60 * 1000;
 const OBSERVED_SLOT_TTL_MS = 10 * 60 * 1000;
 const YELLOWSTONE_METADATA_TIMEOUT_MS = 30 * 1000;
@@ -312,79 +291,6 @@ async function drainParsedTxQueue() {
   }
 }
 
-function queueYellowstoneTransactionCapture(capture: YellowstoneRawTransactionCapture) {
-  if (rawCaptureDisabled) {
-    return;
-  }
-
-  pendingTransactionCaptures.set(capture.signature, capture);
-  if (pendingTransactionCaptures.size >= 25) {
-    void flushYellowstoneRawCaptures().catch((error) => {
-      console.error('[WORKER] Failed to flush Yellowstone transaction captures:', error);
-    });
-  }
-}
-
-function queueYellowstoneBlockMetaCapture(capture: YellowstoneRawBlockMetaCapture) {
-  if (rawCaptureDisabled) {
-    return;
-  }
-
-  pendingBlockMetaCaptures.set(capture.slot, capture);
-  if (pendingBlockMetaCaptures.size >= 50) {
-    void flushYellowstoneRawCaptures().catch((error) => {
-      console.error('[WORKER] Failed to flush Yellowstone blockMeta captures:', error);
-    });
-  }
-}
-
-async function flushYellowstoneRawCaptures() {
-  if (isFlushingRawCaptures || rawCaptureDisabled) {
-    return;
-  }
-
-  const transactionBatch = Array.from(pendingTransactionCaptures.values());
-  const blockMetaBatch = Array.from(pendingBlockMetaCaptures.values());
-
-  if (transactionBatch.length === 0 && blockMetaBatch.length === 0) {
-    return;
-  }
-
-  isFlushingRawCaptures = true;
-  pendingTransactionCaptures.clear();
-  pendingBlockMetaCaptures.clear();
-
-  try {
-    await Promise.all([
-      upsertYellowstoneRawTransactions(transactionBatch),
-      upsertYellowstoneRawBlocksMeta(blockMetaBatch),
-    ]);
-    lastRawCaptureError = null;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-
-    if (isMissingRawCaptureSetupError(message)) {
-      rawCaptureDisabled = true;
-      console.error(`[WORKER] Yellowstone raw capture disabled because setup is missing: ${message}`);
-      return;
-    }
-
-    for (const capture of transactionBatch) {
-      pendingTransactionCaptures.set(capture.signature, capture);
-    }
-    for (const capture of blockMetaBatch) {
-      pendingBlockMetaCaptures.set(capture.slot, capture);
-    }
-
-    if (message !== lastRawCaptureError) {
-      console.error(`[WORKER] Failed to persist Yellowstone raw captures: ${message}`);
-      lastRawCaptureError = message;
-    }
-  } finally {
-    isFlushingRawCaptures = false;
-  }
-}
-
 // ── Carbon parser counters (logged periodically) ─────────────────────────────
 const carbonCounters = { trade: 0, no_trade: 0, unknown: 0, error: 0 };
 
@@ -450,21 +356,6 @@ function handleNewSignature(signature: string, wallet: string, transactionUpdate
   const receiveTimestamp = Date.now();
   observedTransactionSlots.set(slot, receiveTimestamp);
 
-  queueYellowstoneTransactionCapture({
-    signature,
-    wallet,
-    slot,
-    receiveCommitment: YELLOWSTONE_RECEIVE_COMMITMENT,
-    sourceReceivedAt: new Date(receiveTimestamp).toISOString(),
-    yellowstoneCreatedAt: createdAt ? createdAt.toISOString() : null,
-    transactionUpdate,
-  });
-
-  const cachedBlockMeta = recentBlockMetaBySlot.get(slot);
-  if (cachedBlockMeta) {
-    queueYellowstoneBlockMetaCapture(cachedBlockMeta.capture);
-  }
-
   console.log(`[WORKER] New Yellowstone tx for ${wallet.slice(0, 8)}... | SIG: ${signature}`);
 
   // ── Carbon parser integration ──────────────────────────────────────────────
@@ -527,10 +418,6 @@ function cacheBlockMeta(capture: YellowstoneRawBlockMetaCapture) {
     capture,
     seenAtMs: Date.now(),
   });
-
-  if (observedTransactionSlots.has(capture.slot)) {
-    queueYellowstoneBlockMetaCapture(capture);
-  }
 }
 
 async function consumeYellowstoneStream(stream: any, controller: AbortController, walletsSnapshot: string[]) {
@@ -704,9 +591,7 @@ function monitorConnectionHealth() {
     const timeSinceLastMessage = Date.now() - lastYellowstoneMessageTime;
     console.log(
       `[HEALTH] Tracked Wallets: ${trackedWallets.length} | Last Yellowstone Msg: ${timeSinceLastMessage}ms ago | `
-      + `Cache Size: ${signatureCache.size} | Parsed Queue Drain Active: ${isDrainingParsedQueue} | `
-      + `Raw Capture Disabled: ${rawCaptureDisabled} | Pending Raw Tx: ${pendingTransactionCaptures.size} | `
-      + `Pending Raw BlockMeta: ${pendingBlockMetaCaptures.size}`
+      + `Cache Size: ${signatureCache.size} | Parsed Queue Drain Active: ${isDrainingParsedQueue}`
     );
 
     if (trackedWallets.length > 0 && timeSinceLastMessage > YELLOWSTONE_STALE_THRESHOLD_MS) {
@@ -817,9 +702,6 @@ async function startWorker() {
   setInterval(() => {
     drainParsedTxQueue().catch(console.error);
   }, PARSED_TX_REQUEST_INTERVAL_MS);
-  setInterval(() => {
-    flushYellowstoneRawCaptures().catch(console.error);
-  }, RAW_CAPTURE_FLUSH_INTERVAL_MS);
   setInterval(pruneYellowstoneCaches, 60 * 1000);
 
   // Carbon parser observability: log counters every 60s
@@ -843,13 +725,9 @@ async function startWorker() {
 
 process.on('SIGINT', async () => {
   isShuttingDown = true;
-  console.log(
-    `\n[WORKER] Shutting down... tracked wallets: ${trackedWallets.length} | `
-    + `Pending raw tx: ${pendingTransactionCaptures.size} | Pending raw blockMeta: ${pendingBlockMetaCaptures.size}`
-  );
+  console.log(`\n[WORKER] Shutting down... tracked wallets: ${trackedWallets.length}`);
   await stopYellowstoneSubscription();
   await stopCarbonBridge().catch(console.error);
-  await flushYellowstoneRawCaptures().catch(console.error);
   process.exit(0);
 });
 
