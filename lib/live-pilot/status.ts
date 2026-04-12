@@ -1,5 +1,3 @@
-import 'server-only';
-
 import { toLivePilotConfigSummary } from '@/lib/live-pilot/config';
 import type { LivePilotConfig } from '@/lib/live-pilot/config';
 import type { LivePilotStatusResponse } from '@/lib/live-pilot/types';

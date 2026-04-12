@@ -1,5 +1,3 @@
-import 'server-only';
-
 import { PublicKey } from '@solana/web3.js';
 import { RawTrade } from '@/lib/trade-parser';
 import {

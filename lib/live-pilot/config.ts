@@ -1,5 +1,3 @@
-import 'server-only';
-
 import { PublicKey } from '@solana/web3.js';
 import type { LivePilotConfigSummary, PilotWalletConfigSummary } from '@/lib/live-pilot/types';
 
