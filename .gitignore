@@ -19,7 +19,7 @@ build/
 dist/
 
 # Environment files (secrets - never commit)
-.env
+.env*
 .env.local
 .env.production
 .env.development
@@ -113,3 +113,7 @@ CLAUDE.md
 # Carbon parser build artifacts (Rust source is tracked in carbon-parser/)
 carbon-parser/target/
 carbon-parser/target-stream-runtime/
+
+stellalpha_vault/
+
+buidl.md
