@@ -19,7 +19,7 @@ build/
 dist/
 
 # Environment files (secrets - never commit)
-.env*
+.env.colosseum
 .env.local
 .env.production
 .env.development
