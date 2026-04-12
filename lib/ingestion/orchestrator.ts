@@ -1,6 +1,6 @@
 import { getTokenSymbol, enrichTradeSymbols, getUsdValue } from '@/lib/services/token-service';
 import { getStarTradersByAddresses } from '@/lib/repositories/star-traders.repo';
-import { claimTrade, deleteClaimedTrade, updateTradePnL } from '@/lib/repositories/trades.repo';
+import { claimTrade, updateTradePnL } from '@/lib/repositories/trades.repo';
 import { getPosition, upsertPosition } from '@/lib/repositories/positions.repo';
 import { queueCopyTrades, triggerQueuedTradeProcessors } from '@/lib/ingestion/follower-producer';
 import { deleteQueuedTradesBySignature } from '@/lib/repositories/demo-trades.repo';
@@ -140,10 +140,10 @@ export async function processBatch(transactions: IngestedTransaction[], received
 
       // Calculate latency (time from on-chain to now)
       const latencyMs = receivedAt - (trade.timestamp * 1000);
-      let leaderPositionUpdated = false;
 
       // 1. CLAIM the trade — INSERT is the gate
       // Trade row built WITHOUT PnL fields (backfilled after position update)
+      let tradeClaimed = false;
       try {
         let queuedTraderStateIds: string[] = [];
 
@@ -177,6 +177,7 @@ export async function processBatch(transactions: IngestedTransaction[], received
           continue;
         }
 
+        tradeClaimed = true;
         inserted++;
         txTimer.checkpoint('DB: Insert leader trade (Claimed)');
         const winSrc = tx.source?.toUpperCase() || 'UNKNOWN';
@@ -185,51 +186,8 @@ export async function processBatch(transactions: IngestedTransaction[], received
 
         // === FROM HERE, ONLY THE WINNER EXECUTES ===
 
-        // 2+3. Queue followers and update leader position in parallel (different tables).
-        const [queueResult, pnlResult] = await Promise.allSettled([
-          queueCopyTrades(trade, receivedAt),
-          updatePositionAndGetPnL(trade, usdValue),
-        ]);
-
-        // Handle partial failures individually
-        if (queueResult.status === 'rejected') {
-          if (pnlResult.status === 'fulfilled') {
-            // Position updated but no followers queued. Leader position is still correct.
-            leaderPositionUpdated = true;
-            try {
-              await updateTradePnL(trade.signature, pnlResult.value.realizedPnl, pnlResult.value.avgCostBasis);
-            } catch (_) { /* best effort */ }
-            console.warn(`[ORCHESTRATOR] Follower queueing failed but leader position updated for ${trade.signature.slice(0, 12)}...`);
-          }
-          throw queueResult.reason;
-        }
-
-        if (pnlResult.status === 'rejected') {
-          // Position update failed but followers were queued.
-          // Don't set leaderPositionUpdated — let error handler clean up trade + queued rows.
-          queuedTraderStateIds = queueResult.value.queuedTraderStateIds;
-          throw pnlResult.reason;
-        }
-
-        // Both succeeded
-        queuedTraderStateIds = queueResult.value.queuedTraderStateIds;
-        leaderPositionUpdated = true;
-        txTimer.checkpoint('Queue followers + Update position (parallel)');
-
-        // 4. Backfill PnL on the trade row (best-effort, depends on position result).
-        try {
-          await updateTradePnL(trade.signature, pnlResult.value.realizedPnl, pnlResult.value.avgCostBasis);
-          txTimer.checkpoint('Backfill Trade PnL');
-        } catch (pnlError: any) {
-          console.warn(`[ORCHESTRATOR] Failed to backfill PnL for ${trade.signature.slice(0, 12)}...`, pnlError.message);
-        }
-
-        // 5. Trigger queue processors only after the leader position commit point.
-        triggerQueuedTradeProcessors(queuedTraderStateIds);
-        txTimer.checkpoint('Trigger queue processors');
-
-        // 6. Create the live-pilot parent intent only after the leader trade and
-        // demo queue path have both committed successfully.
+        // 2. Fan out the live-pilot parent intent immediately after the canonical
+        // claim gate so demo queueing/accounting cannot hold up the live path.
         try {
           const pilotIntent = await maybeCreatePilotIntent(trade, receivedAt);
           if (pilotIntent.considered) {
@@ -242,19 +200,97 @@ export async function processBatch(transactions: IngestedTransaction[], received
           );
         }
 
+        // 3+4. Queue followers and update the leader position in parallel, but
+        // treat both as sidecars after the canonical claim has committed.
+        const [queueResult, pnlResult] = await Promise.allSettled([
+          queueCopyTrades(trade, receivedAt),
+          updatePositionAndGetPnL(trade, usdValue),
+        ]);
+
+        if (queueResult.status === 'fulfilled') {
+          queuedTraderStateIds = queueResult.value.queuedTraderStateIds;
+        } else {
+          console.warn(
+            `[ORCHESTRATOR] Follower queueing failed for ${trade.signature.slice(0, 12)}...`,
+            queueResult.reason?.message || queueResult.reason,
+          );
+        }
+
+        if (pnlResult.status === 'rejected') {
+          console.warn(
+            `[ORCHESTRATOR] Leader position update failed for ${trade.signature.slice(0, 12)}...`,
+            pnlResult.reason?.message || pnlResult.reason,
+          );
+        } else {
+          txTimer.checkpoint('Update leader position');
+        }
+
+        const sidecarDegraded = queueResult.status === 'rejected' || pnlResult.status === 'rejected';
+        if (sidecarDegraded) {
+          const { error: queuedDeleteError } = await deleteQueuedTradesBySignature(trade.signature);
+          if (queuedDeleteError) {
+            console.warn(
+              `[ORCHESTRATOR] Failed to clean up queued follower trades for ${trade.signature.slice(0, 12)}...`,
+              queuedDeleteError.message,
+            );
+          } else if (queuedTraderStateIds.length > 0 || queueResult.status === 'rejected') {
+            console.warn(
+              `[ORCHESTRATOR] Cleared queued follower trades for ${trade.signature.slice(0, 12)}... `
+              + `because the demo sidecar did not fully commit.`
+            );
+          }
+        } else {
+          txTimer.checkpoint('Queue followers + Update position (parallel)');
+        }
+
+        // 5. Backfill PnL on the trade row whenever the leader position update succeeds.
+        try {
+          if (pnlResult.status === 'fulfilled') {
+            await updateTradePnL(trade.signature, pnlResult.value.realizedPnl, pnlResult.value.avgCostBasis);
+            txTimer.checkpoint('Backfill Trade PnL');
+          }
+        } catch (pnlBackfillError: any) {
+          console.warn(`[ORCHESTRATOR] Failed to backfill PnL for ${trade.signature.slice(0, 12)}...`, pnlBackfillError.message);
+        }
+
+        // 6. Trigger queue processors only after the leader position commit point.
+        if (!sidecarDegraded && queuedTraderStateIds.length > 0) {
+          triggerQueuedTradeProcessors(queuedTraderStateIds);
+          txTimer.checkpoint('Trigger queue processors');
+        } else if (queuedTraderStateIds.length > 0 && pnlResult.status === 'rejected') {
+          console.warn(
+            `[ORCHESTRATOR] Suppressed queued follower execution for ${trade.signature.slice(0, 12)}... `
+            + `because the leader position update failed.`
+          );
+        } else if (queuedTraderStateIds.length > 0 && queueResult.status === 'rejected') {
+          console.warn(
+            `[ORCHESTRATOR] Suppressed queued follower execution for ${trade.signature.slice(0, 12)}... `
+            + `because follower queueing only partially committed.`
+          );
+        }
+
+        if (sidecarDegraded) {
+          const sidecarParts = [
+            queueResult.status === 'rejected' ? 'follower queueing' : null,
+            pnlResult.status === 'rejected' ? 'leader position update' : null,
+          ].filter(Boolean).join(' + ');
+          console.warn(
+            `[ORCHESTRATOR] Canonical trade kept for ${trade.signature.slice(0, 12)}... `
+            + `while the demo sidecar degraded (${sidecarParts}).`
+          );
+        }
+
         // 7. BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
         enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => { });
 
       } catch (error: any) {
-        if (!leaderPositionUpdated) {
+        if (tradeClaimed) {
           const { error: queuedDeleteError } = await deleteQueuedTradesBySignature(trade.signature);
           if (queuedDeleteError) {
-            throw new Error(`Failed to delete queued follower trades for ${trade.signature}: ${queuedDeleteError.message}`);
-          }
-
-          const { error: tradeDeleteError } = await deleteClaimedTrade(trade.signature);
-          if (tradeDeleteError) {
-            throw new Error(`Failed to delete claimed trade for ${trade.signature}: ${tradeDeleteError.message}`);
+            console.warn(
+              `[ORCHESTRATOR] Failed to clean up queued follower trades after unexpected error for ${trade.signature.slice(0, 12)}...`,
+              queuedDeleteError.message,
+            );
           }
         }
         console.log(`Trade insert/process error for ${trade.signature}:`, error.message);
