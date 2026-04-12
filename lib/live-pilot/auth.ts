@@ -1,5 +1,3 @@
-import 'server-only';
-
 import { getSession } from '@/lib/session';
 import { getLivePilotConfig } from '@/lib/live-pilot/config';
 import type { LivePilotConfig } from '@/lib/live-pilot/config';
