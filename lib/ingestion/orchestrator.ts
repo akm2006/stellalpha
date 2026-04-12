@@ -4,6 +4,7 @@ import { claimTrade, deleteClaimedTrade, updateTradePnL } from '@/lib/repositori
 import { getPosition, upsertPosition } from '@/lib/repositories/positions.repo';
 import { queueCopyTrades, triggerQueuedTradeProcessors } from '@/lib/ingestion/follower-producer';
 import { deleteQueuedTradesBySignature } from '@/lib/repositories/demo-trades.repo';
+import { maybeCreatePilotIntent } from '@/lib/live-pilot/intent-producer';
 import { RawTrade } from '@/lib/trade-parser';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { extractInvolvedAddresses } from '@/lib/ingestion/utils';
@@ -227,7 +228,21 @@ export async function processBatch(transactions: IngestedTransaction[], received
         triggerQueuedTradeProcessors(queuedTraderStateIds);
         txTimer.checkpoint('Trigger queue processors');
 
-        // 6. BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
+        // 6. Create the live-pilot parent intent only after the leader trade and
+        // demo queue path have both committed successfully.
+        try {
+          const pilotIntent = await maybeCreatePilotIntent(trade, receivedAt);
+          if (pilotIntent.considered) {
+            txTimer.checkpoint('Create live-pilot intent');
+          }
+        } catch (pilotIntentError: any) {
+          console.warn(
+            `[ORCHESTRATOR] Live-pilot intent creation failed for ${trade.signature.slice(0, 12)}...`,
+            pilotIntentError.message,
+          );
+        }
+
+        // 7. BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
         enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => { });
 
       } catch (error: any) {

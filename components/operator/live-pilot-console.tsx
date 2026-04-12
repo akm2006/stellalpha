@@ -1,0 +1,551 @@
+'use client';
+
+import type { ReactNode } from 'react';
+import { useEffect, useState, useTransition } from 'react';
+import { AuthRequired } from '@/components/auth-required';
+import { useAuth } from '@/contexts/auth-context';
+import { COLORS } from '@/lib/theme';
+import type {
+  LivePilotStatusResponse,
+  PilotControlAction,
+  PilotTradeRow,
+  PilotWalletConfigSummary,
+} from '@/lib/live-pilot/types';
+import {
+  Activity,
+  AlertTriangle,
+  CirclePause,
+  KeyRound,
+  PlayCircle,
+  RefreshCw,
+  ShieldAlert,
+  Skull,
+  Wallet,
+} from 'lucide-react';
+
+function truncate(value: string | null | undefined, left = 4, right = 4) {
+  if (!value) return '—';
+  if (value.length <= left + right + 3) return value;
+  return `${value.slice(0, left)}...${value.slice(-right)}`;
+}
+
+function formatRelativeTime(value: string | null | undefined) {
+  if (!value) return '—';
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return '—';
+
+  const diffSeconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (diffSeconds < 60) return `${diffSeconds}s ago`;
+  if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)}m ago`;
+  if (diffSeconds < 86400) return `${Math.floor(diffSeconds / 3600)}h ago`;
+  return `${Math.floor(diffSeconds / 86400)}d ago`;
+}
+
+function statusChip(label: string, tone: 'neutral' | 'good' | 'warn' | 'danger') {
+  const palette = {
+    neutral: { background: 'rgba(163,163,163,0.10)', border: 'rgba(163,163,163,0.20)', color: '#D4D4D4' },
+    good: { background: 'rgba(16,185,129,0.10)', border: 'rgba(16,185,129,0.25)', color: '#34D399' },
+    warn: { background: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.25)', color: '#FBBF24' },
+    danger: { background: 'rgba(239,68,68,0.10)', border: 'rgba(239,68,68,0.25)', color: '#F87171' },
+  } as const;
+
+  return (
+    <span
+      className="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]"
+      style={palette[tone]}
+    >
+      {label}
+    </span>
+  );
+}
+
+function walletReadinessChip(config: PilotWalletConfigSummary) {
+  if (!config.isComplete) return statusChip('Config Incomplete', 'warn');
+  if (!config.hasSecret) return statusChip('No Secret', 'warn');
+  if (!config.isEnabled) return statusChip('Disabled', 'neutral');
+  return statusChip('Ready', 'good');
+}
+
+function tradePair(trade: PilotTradeRow) {
+  const input = trade.token_in_mint ? truncate(trade.token_in_mint, 4, 4) : '—';
+  const output = trade.token_out_mint ? truncate(trade.token_out_mint, 4, 4) : '—';
+  return `${input} → ${output}`;
+}
+
+function statCard(title: string, value: string, detail: string, icon: ReactNode) {
+  return (
+    <div
+      className="rounded-3xl border p-5"
+      style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
+    >
+      <div className="mb-4 flex items-center justify-between">
+        <span className="text-xs uppercase tracking-[0.16em]" style={{ color: COLORS.data }}>
+          {title}
+        </span>
+        {icon}
+      </div>
+      <div className="text-2xl font-semibold">{value}</div>
+      <p className="mt-2 text-sm leading-6" style={{ color: COLORS.data }}>
+        {detail}
+      </p>
+    </div>
+  );
+}
+
+export function LivePilotConsole() {
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const [status, setStatus] = useState<LivePilotStatusResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  async function loadStatus() {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/live-pilot/status', { cache: 'no-store' });
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setStatus(null);
+        setError(payload.error || 'Failed to load live-pilot status');
+        return;
+      }
+
+      setStatus(payload as LivePilotStatusResponse);
+    } catch (fetchError: any) {
+      setStatus(null);
+      setError(fetchError?.message || 'Failed to load live-pilot status');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function runAction(action: PilotControlAction, walletAlias?: string) {
+    const confirmMessage =
+      action === 'kill_switch_activate'
+        ? 'Activate the live-pilot kill switch? This pauses global automation and marks every configured wallet for liquidation.'
+        : action === 'global_resume'
+          ? 'Resume the live pilot globally? Wallet-level pauses and liquidation flags stay untouched.'
+          : action === 'wallet_liquidate'
+            ? `Request liquidation for ${walletAlias}? This pauses that wallet and sets liquidation_requested = true.`
+            : null;
+
+    if (confirmMessage && !window.confirm(confirmMessage)) {
+      return;
+    }
+
+    startTransition(async () => {
+      try {
+        const response = await fetch('/api/live-pilot/control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, walletAlias }),
+        });
+        const payload = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          setError(payload.error || 'Failed to update live-pilot control state');
+          return;
+        }
+
+        setStatus(payload.status as LivePilotStatusResponse);
+        setError(null);
+      } catch (actionError: any) {
+        setError(actionError?.message || 'Failed to update live-pilot control state');
+      }
+    });
+  }
+
+  useEffect(() => {
+    if (authLoading) {
+      return;
+    }
+
+    if (!isAuthenticated) {
+      setLoading(false);
+      setStatus(null);
+      setError(null);
+      return;
+    }
+
+    loadStatus();
+  }, [authLoading, isAuthenticated]);
+
+  return (
+    <AuthRequired
+      title="Operator Access Required"
+      description="Sign in with an allowlisted operator wallet to access the live-pilot control plane."
+    >
+      <div className="min-h-screen px-4 py-8 md:px-8">
+        <div className="mx-auto flex max-w-7xl flex-col gap-6">
+          <div
+            className="overflow-hidden rounded-3xl border"
+            style={{
+              background:
+                'radial-gradient(circle at top left, rgba(16,185,129,0.14), transparent 40%), radial-gradient(circle at top right, rgba(245,158,11,0.12), transparent 32%), #050505',
+              borderColor: 'rgba(255,255,255,0.10)',
+            }}
+          >
+            <div className="flex flex-col gap-5 p-6 md:flex-row md:items-end md:justify-between md:p-8">
+              <div className="max-w-3xl">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  {status?.summary.killSwitchActive
+                    ? statusChip('Kill Switch Active', 'danger')
+                    : status?.summary.globalPaused
+                      ? statusChip('Globally Paused', 'warn')
+                      : statusChip('Intent Feed Armed', 'good')}
+                  {(status?.controlPlaneOnly ?? true)
+                    ? statusChip('Control Plane Only', 'neutral')
+                    : statusChip('Intent Feed Wired', 'good')}
+                </div>
+                <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">Live Pilot Control</h1>
+                <p className="mt-3 max-w-2xl text-sm leading-6 md:text-base" style={{ color: COLORS.data }}>
+                  {(status?.controlPlaneOnly ?? true)
+                    ? 'This page manages operator auth, pause state, wallet mapping visibility, and live-pilot runtime placeholders. Intent production and the execution worker are still intentionally unwired in this slice.'
+                    : 'This page manages operator auth, pause state, wallet mapping visibility, runtime breadcrumbs, and the recent live-intent feed. The dedicated signer and execution worker are still intentionally unwired in this slice.'}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={loadStatus}
+                  disabled={loading || isPending}
+                  className="inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ borderColor: 'rgba(255,255,255,0.14)' }}
+                >
+                  <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runAction('global_pause')}
+                  disabled={!status || isPending}
+                  className="inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ backgroundColor: '#FBBF24' }}
+                >
+                  <CirclePause size={16} />
+                  Global Pause
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runAction('global_resume')}
+                  disabled={!status || isPending}
+                  className="inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ backgroundColor: '#34D399' }}
+                >
+                  <PlayCircle size={16} />
+                  Global Resume
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runAction('kill_switch_activate')}
+                  disabled={!status || isPending}
+                  className="inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ backgroundColor: '#991B1B' }}
+                >
+                  <Skull size={16} />
+                  Kill Switch
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {error ? (
+            <div
+              className="rounded-2xl border px-4 py-3 text-sm"
+              style={{ backgroundColor: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.20)', color: '#FCA5A5' }}
+            >
+              {error}
+            </div>
+          ) : null}
+
+          {loading ? (
+            <div
+              className="flex min-h-[320px] items-center justify-center rounded-3xl border"
+              style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
+            >
+              <div className="flex items-center gap-3 text-sm" style={{ color: COLORS.data }}>
+                <RefreshCw size={16} className="animate-spin" />
+                Loading live-pilot status…
+              </div>
+            </div>
+          ) : null}
+
+          {!loading && !status ? (
+            <div
+              className="rounded-3xl border p-8"
+              style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
+            >
+              <div className="flex items-start gap-3">
+                <ShieldAlert size={20} className="mt-0.5 text-amber-400" />
+                <div>
+                  <h2 className="text-lg font-semibold">
+                    {error && /allowlist|Authentication required/i.test(error) ? 'Operator access blocked' : 'Status unavailable'}
+                  </h2>
+                  <p className="mt-2 text-sm leading-6" style={{ color: COLORS.data }}>
+                    {error && /allowlist|Authentication required/i.test(error)
+                      ? (
+                        <>
+                          The signed-in wallet {truncate(user?.wallet)} is not in <code>PILOT_OPERATOR_WALLETS</code>, or the allowlist has
+                          not been configured yet.
+                        </>
+                      )
+                      : 'The live-pilot status route could not build a snapshot. Apply the migration and verify the pilot tables exist.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {status ? (
+            <>
+              <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                {statCard(
+                  'Automation',
+                  status.summary.killSwitchActive ? 'Kill switch' : status.summary.globalPaused ? 'Paused' : 'Armed',
+                  `Global row updated ${formatRelativeTime(status.control.global.updated_at)} by ${truncate(status.control.global.updated_by_wallet)}.`,
+                  <Activity size={16} style={{ color: COLORS.brand }} />
+                )}
+                {statCard(
+                  'Operator',
+                  truncate(status.operatorWallet, 6, 6),
+                  `Allowlist contains ${status.config.operatorWallets.length} wallet${status.config.operatorWallets.length === 1 ? '' : 's'}.`,
+                  <Wallet size={16} style={{ color: '#60A5FA' }} />
+                )}
+                {statCard(
+                  'Wallet Readiness',
+                  `${status.summary.healthyWalletCount}/${status.summary.configuredWalletCount}`,
+                  'Healthy means config complete and signer secret present. Everything still boots paused by default.',
+                  <KeyRound size={16} style={{ color: '#FBBF24' }} />
+                )}
+                {statCard(
+                  'Recent Intents',
+                  String(status.summary.recentTradeCount),
+                  status.controlPlaneOnly
+                    ? 'The parent table is ready so orchestrator intent creation can plug in without inventing a second operator read model.'
+                    : 'Leader trades now fan out into pilot intent rows after the core claim path commits, even while execution stays disabled.',
+                  <AlertTriangle size={16} style={{ color: '#F87171' }} />
+                )}
+              </section>
+
+              {status.config.errors.length > 0 ? (
+                <section
+                  className="rounded-3xl border p-5"
+                  style={{ backgroundColor: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.20)' }}
+                >
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle size={18} className="mt-0.5 text-amber-400" />
+                    <div>
+                      <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-amber-300">Config Warnings</h2>
+                      <div className="mt-3 flex flex-col gap-2 text-sm leading-6" style={{ color: '#FDE68A' }}>
+                        {status.config.errors.map((entry) => (
+                          <p key={entry}>{entry}</p>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              ) : null}
+
+              <section className="grid gap-6 xl:grid-cols-[1.65fr_1fr]">
+                <div
+                  className="rounded-3xl border p-5"
+                  style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
+                >
+                  <h2 className="text-lg font-semibold">Wallet Control Matrix</h2>
+                  <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
+                    Overview, diagnosis, and action stay side-by-side so we can spot incomplete config before wiring live submission.
+                  </p>
+
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="min-w-full text-left text-sm">
+                      <thead style={{ color: COLORS.data }}>
+                        <tr className="border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+                          <th className="px-3 py-3 font-medium">Wallet</th>
+                          <th className="px-3 py-3 font-medium">Mapped Trader</th>
+                          <th className="px-3 py-3 font-medium">Config</th>
+                          <th className="px-3 py-3 font-medium">Runtime</th>
+                          <th className="px-3 py-3 font-medium">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {status.walletStatuses.map((walletStatus) => (
+                          <tr key={walletStatus.config.alias} className="border-b align-top" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+                            <td className="px-3 py-4">
+                              <div className="font-medium">{walletStatus.config.alias}</div>
+                              <div className="mt-1 text-xs" style={{ color: COLORS.data }}>
+                                {truncate(walletStatus.config.publicKey, 6, 6)}
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {walletReadinessChip(walletStatus.config)}
+                                {walletStatus.control.is_paused ? statusChip('Paused', 'warn') : statusChip('Active', 'good')}
+                                {walletStatus.control.liquidation_requested ? statusChip('Liquidation Requested', 'danger') : null}
+                              </div>
+                            </td>
+                            <td className="px-3 py-4">
+                              <div className="font-medium">{truncate(walletStatus.config.starTrader, 6, 6)}</div>
+                              <div className="mt-2 text-xs leading-5" style={{ color: COLORS.data }}>
+                                <div>Mode: {walletStatus.config.mode}</div>
+                                <div>Cash: {walletStatus.config.cashMode.toUpperCase()}</div>
+                                <div>Secret: {walletStatus.config.hasSecret ? 'Present' : 'Missing'}</div>
+                              </div>
+                            </td>
+                            <td className="px-3 py-4">
+                              <div className="space-y-1 text-xs leading-5" style={{ color: COLORS.data }}>
+                                <div>Fee reserve: {(walletStatus.config.feeReservePct * 100).toFixed(1)}%</div>
+                                <div>Min reserve: {walletStatus.config.minFeeReserveSol.toFixed(2)} SOL</div>
+                                <div>Min trade: {walletStatus.config.minTradeSizeSol.toFixed(2)} SOL</div>
+                                <div>Buy cap: {(walletStatus.config.maxTradeBuypowerPct * 100).toFixed(0)}%</div>
+                                <div>Impact cap: {(walletStatus.config.buyMaxPriceImpactPct * 100).toFixed(1)}%</div>
+                              </div>
+                              {!walletStatus.config.isComplete && walletStatus.config.missingFields.length > 0 ? (
+                                <div className="mt-3 text-xs leading-5 text-amber-300">
+                                  Missing: {walletStatus.config.missingFields.join(', ')}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-4">
+                              <div className="space-y-2 text-xs leading-5" style={{ color: COLORS.data }}>
+                                <div>Last star trade: {truncate(walletStatus.runtime?.last_seen_star_trade_signature, 5, 5)}</div>
+                                <div>Last submit: {truncate(walletStatus.runtime?.last_submitted_tx_signature, 5, 5)}</div>
+                                <div>Last confirm: {truncate(walletStatus.runtime?.last_confirmed_tx_signature, 5, 5)}</div>
+                                <div>Reconcile: {formatRelativeTime(walletStatus.runtime?.last_reconcile_at)}</div>
+                                <div>Error: {walletStatus.runtime?.last_error || '—'}</div>
+                              </div>
+                            </td>
+                            <td className="px-3 py-4">
+                              <div className="flex flex-col gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => runAction(walletStatus.control.is_paused ? 'wallet_resume' : 'wallet_pause', walletStatus.config.alias)}
+                                  disabled={isPending}
+                                  className="inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition hover:bg-white/5 disabled:opacity-50"
+                                  style={{ borderColor: 'rgba(255,255,255,0.12)' }}
+                                >
+                                  {walletStatus.control.is_paused ? <PlayCircle size={14} /> : <CirclePause size={14} />}
+                                  {walletStatus.control.is_paused ? 'Resume Wallet' : 'Pause Wallet'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => runAction('wallet_liquidate', walletStatus.config.alias)}
+                                  disabled={isPending}
+                                  className="inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium text-red-200 transition hover:bg-red-500/10 disabled:opacity-50"
+                                  style={{ borderColor: 'rgba(239,68,68,0.20)' }}
+                                >
+                                  <Skull size={14} />
+                                  Request Liquidation
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div
+                  className="rounded-3xl border p-5"
+                  style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
+                >
+                  <h2 className="text-lg font-semibold">Control State</h2>
+                  <div className="mt-4 space-y-4 text-sm">
+                    <div className="rounded-2xl border p-4" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+                      <div className="flex items-center justify-between">
+                        <span style={{ color: COLORS.data }}>Global pause</span>
+                        {status.control.global.is_paused ? statusChip('On', 'warn') : statusChip('Off', 'good')}
+                      </div>
+                      <div className="mt-3 flex items-center justify-between">
+                        <span style={{ color: COLORS.data }}>Kill switch</span>
+                        {status.control.global.kill_switch_active ? statusChip('Armed', 'danger') : statusChip('Idle', 'neutral')}
+                      </div>
+                      <div className="mt-3 flex items-center justify-between">
+                        <span style={{ color: COLORS.data }}>Liquidation requested</span>
+                        {status.control.global.liquidation_requested ? statusChip('Pending', 'danger') : statusChip('No', 'neutral')}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border p-4" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <ShieldAlert size={16} className="text-emerald-400" />
+                        Why this slice matters
+                      </div>
+                      <p className="mt-3 text-sm leading-6" style={{ color: COLORS.data }}>
+                        {status.controlPlaneOnly
+                          ? 'We now have durable pause state, runtime placeholders, and an operator-only control page before any live signer or intent producer is introduced. That keeps the next execution PR additive instead of invasive.'
+                          : 'We now have a durable operator control plane plus real pilot intent rows sourced from the canonical leader claim path. That lets us validate mapping, pause semantics, and queue visibility before we introduce a signer.'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section
+                className="rounded-3xl border p-5"
+                style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
+              >
+                <h2 className="text-lg font-semibold">Recent Pilot Trades</h2>
+                <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
+                  {status.controlPlaneOnly
+                    ? 'This table is intentionally light right now. It becomes the operator’s recent-intent feed once orchestrator wiring lands.'
+                    : 'This is the operator-facing parent intent feed. It shows queued and skipped pilot rows before any signing or execution exists.'}
+                </p>
+
+                {status.recentTrades.length === 0 ? (
+                  <div
+                    className="mt-4 rounded-2xl border border-dashed px-4 py-10 text-center text-sm"
+                    style={{ borderColor: 'rgba(255,255,255,0.12)', color: COLORS.data }}
+                  >
+                    {status.controlPlaneOnly
+                      ? 'No live-pilot trades yet. The parent summary table is ready, but intent production is still paused behind the next PR.'
+                      : 'No live-pilot trades yet. Intent production is wired, but no mapped leader trade has created a pilot row since this slice was enabled.'}
+                  </div>
+                ) : (
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="min-w-full text-left text-sm">
+                      <thead style={{ color: COLORS.data }}>
+                        <tr className="border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+                          <th className="px-3 py-3 font-medium">Status</th>
+                          <th className="px-3 py-3 font-medium">Wallet</th>
+                          <th className="px-3 py-3 font-medium">Trader</th>
+                          <th className="px-3 py-3 font-medium">Pair</th>
+                          <th className="px-3 py-3 font-medium">Reason</th>
+                          <th className="px-3 py-3 font-medium">Tx</th>
+                          <th className="px-3 py-3 font-medium">Created</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {status.recentTrades.map((trade) => (
+                          <tr key={trade.id} className="border-b" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+                            <td className="px-3 py-4">
+                              {trade.status === 'confirmed'
+                                ? statusChip('Confirmed', 'good')
+                                : trade.status === 'failed'
+                                  ? statusChip('Failed', 'danger')
+                                  : trade.status === 'skipped'
+                                    ? statusChip('Skipped', 'warn')
+                                    : statusChip(trade.status, 'neutral')}
+                            </td>
+                            <td className="px-3 py-4">{trade.wallet_alias}</td>
+                            <td className="px-3 py-4">{truncate(trade.star_trader, 6, 6)}</td>
+                            <td className="px-3 py-4">{tradePair(trade)}</td>
+                            <td className="px-3 py-4">{trade.skip_reason || trade.error_message || trade.trigger_reason || '—'}</td>
+                            <td className="px-3 py-4">{truncate(trade.tx_signature, 5, 5)}</td>
+                            <td className="px-3 py-4">{formatRelativeTime(trade.created_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            </>
+          ) : null}
+        </div>
+      </div>
+    </AuthRequired>
+  );
+}

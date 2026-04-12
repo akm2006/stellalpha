@@ -6,6 +6,7 @@
     "build": "next build",
     "cron:test": "tsx scripts/test-crons.ts",
     "dev": "tsx lib/banner.ts && next dev",
+    "latency:hidden": "tsx scripts/analyze-hidden-copy-latency.ts",
     "lint": "eslint .",
     "start": "next start",
     "test": "vitest run",
