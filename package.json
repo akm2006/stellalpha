@@ -11,7 +11,8 @@
     "start": "next start",
     "test": "vitest run",
     "test:watch": "vitest",
-    "worker": "tsx --env-file=.env.local worker/index.ts"
+    "worker": "tsx --env-file=.env.local worker/index.ts",
+    "worker:live-pilot": "tsx --env-file=.env.local worker/live-pilot.ts"
   },
   "dependencies": {
     "@kdt-sol/solana-grpc-client": "^0.1.2",

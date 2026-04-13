@@ -9,6 +9,8 @@ export interface LivePilotConfig extends LivePilotConfigSummary {
   wallets: PilotWalletConfigInternal[];
 }
 
+export type LivePilotWalletConfig = LivePilotConfig['wallets'][number];
+
 function parseCsv(value: string | undefined) {
   return (value || '')
     .split(',')
@@ -141,4 +143,8 @@ export function toLivePilotConfigSummary(config: LivePilotConfig): LivePilotConf
 
 export function findPilotWalletForStarTrader(config: LivePilotConfig, starTrader: string) {
   return config.wallets.find((wallet) => wallet.starTrader === starTrader);
+}
+
+export function findPilotWalletByAlias(config: LivePilotConfig, alias: string) {
+  return config.wallets.find((wallet) => wallet.alias === alias);
 }
