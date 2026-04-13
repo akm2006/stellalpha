@@ -1,0 +1,285 @@
+import dotenv from 'dotenv';
+dotenv.config({ path: '.env.local' });
+
+import os from 'os';
+import { buildPilotControlSnapshot, ensurePilotControlState, listPilotControlStates } from '@/lib/live-pilot/repositories/pilot-control-state.repo';
+import { ensurePilotRuntimeState, clearPilotRuntimeLocks, releasePilotRuntimeLock, tryAcquirePilotRuntimeLock } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
+import { claimQueuedPilotTrade, listQueuedPilotTrades, updatePilotTradeIfStatus } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import { executePilotTrade, createLivePilotConnection } from '@/lib/live-pilot/executor';
+import { getLivePilotConfig, findPilotWalletByAlias } from '@/lib/live-pilot/config';
+import { recoverSubmittedPilotTrades } from '@/lib/live-pilot/recovery';
+
+const QUEUE_POLL_INTERVAL_MS = 1_000;
+const RECOVERY_INTERVAL_MS = 5_000;
+const LOCK_WAIT_TIMEOUT_MS = 2_000;
+const LOCK_WAIT_INTERVAL_MS = 250;
+const QUEUE_BATCH_SIZE = 10;
+
+let isShuttingDown = false;
+let isProcessingQueue = false;
+let isRunningRecovery = false;
+
+const lockOwner = `${os.hostname()}:${process.pid}:live-pilot`;
+const connection = createLivePilotConnection();
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function acquireExecutionLock(walletAlias: string) {
+  const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+
+  while (Date.now() < deadline && !isShuttingDown) {
+    const acquired = await tryAcquirePilotRuntimeLock(walletAlias, lockOwner);
+    if (acquired) {
+      return true;
+    }
+
+    await wait(LOCK_WAIT_INTERVAL_MS);
+  }
+
+  return false;
+}
+
+async function skipQueuedTrade(tradeId: string, reason: string, message: string) {
+  await updatePilotTradeIfStatus(tradeId, 'queued', {
+    status: 'skipped',
+    skip_reason: reason,
+    error_message: message,
+  });
+}
+
+async function processQueuedPilotTrades() {
+  if (isProcessingQueue || isShuttingDown) {
+    return;
+  }
+
+  isProcessingQueue = true;
+
+  try {
+    const config = getLivePilotConfig();
+    const enabledWallets = config.wallets.filter((wallet) => wallet.isEnabled);
+    const walletAliases = enabledWallets.map((wallet) => wallet.alias);
+
+    if (config.errors.length > 0) {
+      throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
+    }
+
+    const controlRows = await listPilotControlStates();
+    const controlSnapshot = buildPilotControlSnapshot(controlRows, walletAliases);
+    const walletControlMap = new Map(
+      controlSnapshot.wallets.map((row) => [row.scope_key, row])
+    );
+
+    const queuedTrades = await listQueuedPilotTrades(QUEUE_BATCH_SIZE);
+    if (queuedTrades.length === 0) {
+      return;
+    }
+
+    for (const trade of queuedTrades) {
+      const wallet = findPilotWalletByAlias(config, trade.wallet_alias);
+      if (!wallet || !wallet.isEnabled) {
+        await skipQueuedTrade(
+          trade.id,
+          'wallet_not_ready',
+          `Pilot wallet ${trade.wallet_alias} is not enabled in config`,
+        );
+        continue;
+      }
+
+      if (!wallet.isComplete) {
+        await skipQueuedTrade(
+          trade.id,
+          'wallet_not_ready',
+          `Pilot wallet ${trade.wallet_alias} is missing required config fields: ${wallet.missingFields.join(', ')}`,
+        );
+        continue;
+      }
+
+      const walletControl = walletControlMap.get(wallet.alias);
+      if (controlSnapshot.global.kill_switch_active || walletControl?.kill_switch_active) {
+        await skipQueuedTrade(
+          trade.id,
+          'kill_switch_active',
+          `Kill switch is active for wallet ${wallet.alias}`,
+        );
+        continue;
+      }
+
+      if (controlSnapshot.global.is_paused) {
+        await skipQueuedTrade(
+          trade.id,
+          'global_paused',
+          'Global pause is active for live-pilot execution',
+        );
+        continue;
+      }
+
+      if (walletControl?.is_paused) {
+        await skipQueuedTrade(
+          trade.id,
+          'wallet_paused',
+          `Wallet ${wallet.alias} is paused for live-pilot execution`,
+        );
+        continue;
+      }
+
+      const lockAcquired = await acquireExecutionLock(wallet.alias);
+      if (!lockAcquired) {
+        await skipQueuedTrade(
+          trade.id,
+          'wallet_busy',
+          `Wallet ${wallet.alias} was busy for more than ${LOCK_WAIT_TIMEOUT_MS}ms`,
+        );
+        continue;
+      }
+
+      let keepLock = false;
+
+      try {
+        const claimedTrade = await claimQueuedPilotTrade(trade.id, trade.attempt_count + 1);
+        if (!claimedTrade) {
+          continue;
+        }
+
+        const outcome = await executePilotTrade(claimedTrade, wallet, connection);
+        keepLock = outcome.outcome === 'submitted';
+
+        const summary =
+          outcome.outcome === 'skipped'
+            ? `${claimedTrade.id} skipped (${outcome.reason})`
+            : outcome.outcome === 'confirmed'
+              ? `${claimedTrade.id} confirmed (${outcome.signature})`
+              : outcome.outcome === 'submitted'
+                ? `${claimedTrade.id} submitted (${outcome.signature})`
+                : outcome.outcome === 'requeued'
+                  ? `${claimedTrade.id} requeued`
+                  : `${claimedTrade.id} failed`;
+
+        console.log(`[LIVE_PILOT] ${wallet.alias}: ${summary}`);
+      } catch (error) {
+        console.error(`[LIVE_PILOT] Failed to process queued trade ${trade.id}:`, error);
+        await updatePilotTradeIfStatus(trade.id, 'building', {
+          status: 'failed',
+          error_message: error instanceof Error ? error.message : String(error),
+        }).catch(() => undefined);
+      } finally {
+        if (!keepLock) {
+          await releasePilotRuntimeLock(wallet.alias, lockOwner).catch(() => undefined);
+        }
+      }
+    }
+  } finally {
+    isProcessingQueue = false;
+  }
+}
+
+async function runRecoveryLoop() {
+  if (isRunningRecovery || isShuttingDown) {
+    return;
+  }
+
+  isRunningRecovery = true;
+
+  try {
+    const config = getLivePilotConfig();
+    if (config.errors.length > 0) {
+      throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
+    }
+
+    const summary = await recoverSubmittedPilotTrades({
+      config,
+      connection,
+      lockOwner,
+    });
+
+    if (summary.scanned > 0) {
+      console.log(
+        '[LIVE_PILOT] Recovery summary:',
+        JSON.stringify(summary),
+      );
+    }
+  } finally {
+    isRunningRecovery = false;
+  }
+}
+
+async function startWorker() {
+  const config = getLivePilotConfig();
+  if (config.errors.length > 0) {
+    throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
+  }
+
+  const wallets = config.wallets.filter((wallet) => wallet.isEnabled);
+  const walletAliases = wallets.map((wallet) => wallet.alias);
+
+  if (walletAliases.length === 0) {
+    throw new Error('No enabled live-pilot wallets found in config');
+  }
+
+  await ensurePilotControlState(walletAliases);
+  await ensurePilotRuntimeState(
+    wallets.map((wallet) => ({
+      alias: wallet.alias,
+      starTrader: wallet.starTrader,
+      mode: wallet.mode,
+    }))
+  );
+  await clearPilotRuntimeLocks(walletAliases);
+
+  console.log(`[LIVE_PILOT] Worker starting with lock owner ${lockOwner}`);
+  console.log(`[LIVE_PILOT] Enabled wallets: ${walletAliases.join(', ')}`);
+
+  await runRecoveryLoop();
+  await processQueuedPilotTrades();
+
+  setInterval(() => {
+    processQueuedPilotTrades().catch((error) => {
+      console.error('[LIVE_PILOT] Queue loop error:', error);
+    });
+  }, QUEUE_POLL_INTERVAL_MS);
+
+  setInterval(() => {
+    runRecoveryLoop().catch((error) => {
+      console.error('[LIVE_PILOT] Recovery loop error:', error);
+    });
+  }, RECOVERY_INTERVAL_MS);
+}
+
+async function shutdown() {
+  if (isShuttingDown) {
+    return;
+  }
+
+  isShuttingDown = true;
+
+  try {
+    const config = getLivePilotConfig();
+    const walletAliases = config.wallets
+      .filter((wallet) => wallet.isEnabled)
+      .map((wallet) => wallet.alias);
+
+    await Promise.all(
+      walletAliases.map((walletAlias) =>
+        releasePilotRuntimeLock(walletAlias, lockOwner).catch(() => undefined)
+      )
+    );
+  } finally {
+    process.exit(0);
+  }
+}
+
+process.on('SIGINT', () => {
+  console.log('[LIVE_PILOT] Shutting down...');
+  void shutdown();
+});
+
+process.on('SIGTERM', () => {
+  console.log('[LIVE_PILOT] Shutting down...');
+  void shutdown();
+});
+
+startWorker().catch((error) => {
+  console.error('[LIVE_PILOT] Worker failed to start:', error);
+  process.exit(1);
+});

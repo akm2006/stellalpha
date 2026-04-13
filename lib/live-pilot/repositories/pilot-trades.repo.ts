@@ -53,3 +53,110 @@ export async function listRecentPilotTrades(limit: number = 25) {
 
   return (data || []) as PilotTradeRow[];
 }
+
+export type PilotTradePatch = Partial<Omit<PilotTradeRow, 'id' | 'wallet_alias' | 'wallet_public_key' | 'trigger_kind' | 'created_at' | 'updated_at'>>;
+
+export async function listQueuedPilotTrades(limit: number = 25) {
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .select('*')
+    .eq('status', 'queued')
+    .order('created_at', { ascending: true })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to list queued live-pilot trades: ${error.message}`);
+  }
+
+  return (data || []) as PilotTradeRow[];
+}
+
+export async function getPilotTradeById(tradeId: string) {
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .select('*')
+    .eq('id', tradeId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to fetch live-pilot trade ${tradeId}: ${error.message}`);
+  }
+
+  return (data || null) as PilotTradeRow | null;
+}
+
+export async function claimQueuedPilotTrade(tradeId: string, nextAttemptCount: number) {
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .update({
+      status: 'building',
+      attempt_count: nextAttemptCount,
+      skip_reason: null,
+      error_message: null,
+      winning_attempt_id: null,
+      quote_received_at: null,
+      tx_built_at: null,
+      tx_submitted_at: null,
+      tx_signature: null,
+      tx_confirmed_at: null,
+      confirmation_slot: null,
+      quoted_input_amount: null,
+      quoted_output_amount: null,
+      quoted_input_amount_raw: null,
+      actual_input_amount: null,
+      actual_output_amount: null,
+      price_impact_pct: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', tradeId)
+    .eq('status', 'queued')
+    .select('*')
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to claim queued live-pilot trade ${tradeId}: ${error.message}`);
+  }
+
+  return (data || null) as PilotTradeRow | null;
+}
+
+export async function updatePilotTrade(tradeId: string, patch: PilotTradePatch) {
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', tradeId)
+    .select('*')
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to update live-pilot trade ${tradeId}: ${error.message}`);
+  }
+
+  return data as PilotTradeRow;
+}
+
+export async function updatePilotTradeIfStatus(
+  tradeId: string,
+  expectedStatus: PilotTradeStatus,
+  patch: PilotTradePatch,
+) {
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', tradeId)
+    .eq('status', expectedStatus)
+    .select('*')
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to update live-pilot trade ${tradeId}: ${error.message}`);
+  }
+
+  return (data || null) as PilotTradeRow | null;
+}
