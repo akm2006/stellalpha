@@ -10,6 +10,7 @@ import {
   isAmbiguousExecuteError,
   isExecuteRetryWindowOpen,
   isRetryableExecutionCode,
+  isRetryableSellExecutionFailure,
 } from '@/lib/live-pilot/executor';
 import {
   listSubmittedPilotTradeAttempts,
@@ -282,7 +283,12 @@ async function maybeRecoverMissingExecuteSignature(args: {
     }
 
     const code = (error as { code?: string } | undefined)?.code || 'execute_recovery_error';
-    const classification = classifyJupiterFailure(message, code, isRetryableExecutionCode(code));
+    const retryable =
+      isRetryableExecutionCode(code)
+      || isRetryableSellExecutionFailure(trade, code, message);
+    const classification = classifyJupiterFailure(message, code, retryable, {
+      retryNoRoute: trade.leader_type === 'sell',
+    });
     await updatePilotTradeAttempt(attempt.id, {
       status: 'failed',
       error_code: code,
@@ -381,15 +387,41 @@ export async function recoverSubmittedPilotTrades(args: {
         const status = statuses.value[0];
 
         if (status?.err) {
-          const message = `Submitted transaction failed on chain: ${JSON.stringify(status.err)}`;
-          await failSubmittedAttempt(
-            wallet.alias,
-            trade.id,
-            attempt.id,
-            message,
-            'chain_failure',
-          );
-          outcome = 'failed';
+          const serializedErr = JSON.stringify(status.err);
+          const code = serializedErr.includes('15001') ? '15001' : 'chain_failure';
+          const message = `Submitted transaction failed on chain: ${serializedErr}`;
+          const retryable =
+            isRetryableExecutionCode(code)
+            || isRetryableSellExecutionFailure(trade, code, message);
+
+          if (retryable && trade.attempt_count < getPilotTradeMaxAttempts(wallet, trade)) {
+            await updatePilotTradeAttempt(attempt.id, {
+              status: 'failed',
+              error_code: code,
+              error_message: message,
+            });
+
+            const nextRetryAt = new Date(Date.now() + computeRetryDelayMs(trade.attempt_count)).toISOString();
+            await updatePilotTradeIfStatus(trade.id, 'submitted', {
+              status: 'queued',
+              next_retry_at: nextRetryAt,
+              error_message: message,
+            });
+            await updatePilotRuntimeState(wallet.alias, {
+              last_error: message,
+              last_reconcile_at: new Date().toISOString(),
+            });
+            outcome = 'requeued';
+          } else {
+            await failSubmittedAttempt(
+              wallet.alias,
+              trade.id,
+              attempt.id,
+              message,
+              code,
+            );
+            outcome = 'failed';
+          }
         } else if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
           const transaction = await connection.getTransaction(signature, {
             commitment: 'confirmed',

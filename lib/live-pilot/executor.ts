@@ -34,12 +34,14 @@ const EXECUTE_RETRY_WINDOW_MS = 120_000;
 const EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
 const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_MAX_MS = 8_000;
-const SELL_SLIPPAGE_LADDER_BPS = [1000, 3000, 5000];
+const SELL_SLIPPAGE_LADDER_BPS = [1000, 3000, 5000, 8000];
 
 type JupiterApiError = Error & {
   code?: string;
   stage?: 'order' | 'execute' | 'confirmation';
   httpStatus?: number;
+  derivedSignature?: string | null;
+  submittedAt?: string | null;
 };
 
 interface JupiterOrderResponse {
@@ -163,15 +165,41 @@ function uiToRaw(amount: number, decimals: number) {
 }
 
 export function getSellSlippageBps(wallet: LivePilotWalletConfig, attemptNumber: number) {
-  if (attemptNumber <= 1) {
-    return null;
+  const ladder = buildSellSlippageLadderBps(wallet);
+  const normalizedAttempt = Math.max(attemptNumber, 1);
+  return ladder[Math.min(normalizedAttempt - 1, ladder.length - 1)] ?? ladder[0] ?? null;
+}
+
+export function buildSellSlippageLadderBps(wallet: LivePilotWalletConfig) {
+  const firstAttemptBps = Math.max(wallet.sellSlippageRetryBps || 0, SELL_SLIPPAGE_LADDER_BPS[0]);
+  return [firstAttemptBps, ...SELL_SLIPPAGE_LADDER_BPS.filter((bps) => bps > firstAttemptBps)];
+}
+
+export function isRetryableSellExecutionFailure(
+  trade: Pick<PilotTradeRow, 'leader_type'>,
+  code: string | null,
+  message: string,
+) {
+  if (trade.leader_type !== 'sell') {
+    return false;
   }
 
-  if (attemptNumber === 2) {
-    return wallet.sellSlippageRetryBps || SELL_SLIPPAGE_LADDER_BPS[0];
-  }
-
-  return SELL_SLIPPAGE_LADDER_BPS[Math.min(attemptNumber - 2, SELL_SLIPPAGE_LADDER_BPS.length - 1)];
+  const lower = message.toLowerCase();
+  return (
+    code === '15001'
+    || code === '6001'
+    || code === '6017'
+    || lower.includes('15001')
+    || lower.includes('6001')
+    || lower.includes('6017')
+    || lower.includes('slippage tolerance exceeded')
+    || lower.includes('slippage limit exceeded')
+    || lower.includes('slippagelimitexceeded')
+    || lower.includes('exactoutamountnotmatched')
+    || lower.includes('moved out of range')
+    || lower.includes('tick array')
+    || lower.includes('bitmap extension')
+  );
 }
 
 export function getPilotTradeMaxAttempts(wallet: LivePilotWalletConfig, trade: PilotTradeRow) {
@@ -179,7 +207,7 @@ export function getPilotTradeMaxAttempts(wallet: LivePilotWalletConfig, trade: P
     return 1 + Math.max(wallet.buyMaxRequotes, 0);
   }
 
-  return 1 + SELL_SLIPPAGE_LADDER_BPS.length;
+  return buildSellSlippageLadderBps(wallet).length;
 }
 
 export function isExecuteRetryWindowOpen(attemptTimestamp: string | null | undefined) {
@@ -211,10 +239,21 @@ function createJupiterError(
   return error;
 }
 
-export function classifyJupiterFailure(message: string, code: string | null, retryable: boolean) {
+export function classifyJupiterFailure(
+  message: string,
+  code: string | null,
+  retryable: boolean,
+  options?: {
+    retryNoRoute?: boolean;
+  },
+) {
   const lower = message.toLowerCase();
   const noRoute = lower.includes('no route') || lower.includes('no quote') || lower.includes('route not found');
   if (noRoute) {
+    if (options?.retryNoRoute) {
+      return { terminalStatus: 'failed' as const, reason: 'retryable_no_route', retryable: true };
+    }
+
     return { terminalStatus: 'skipped' as const, reason: 'no_route', retryable: false };
   }
 
@@ -255,6 +294,10 @@ function isNotableSkipReason(reason: string) {
     'insufficient_sol_for_fees',
     'no_route',
   ].includes(reason);
+}
+
+function deriveTransactionSignature(transaction: VersionedTransaction) {
+  return transaction.signatures[0] ? bs58.encode(transaction.signatures[0]) : null;
 }
 
 async function requestSwapOrder(
@@ -583,7 +626,15 @@ async function maybeAlertTradeConfirmed(trade: PilotTradeRow, walletAlias: strin
   ]).catch(() => undefined);
 }
 
-async function queueTradeRetry(trade: PilotTradeRow, walletAlias: string, message: string) {
+async function queueTradeRetry(
+  trade: PilotTradeRow,
+  walletAlias: string,
+  message: string,
+  context?: {
+    txSignature?: string | null;
+    txSubmittedAt?: string | null;
+  },
+) {
   const delayMs = computeRetryDelayMs(trade.attempt_count);
   const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
 
@@ -592,6 +643,8 @@ async function queueTradeRetry(trade: PilotTradeRow, walletAlias: string, messag
     next_retry_at: nextRetryAt,
     error_message: message,
     skip_reason: null,
+    ...(context?.txSignature !== undefined ? { tx_signature: context.txSignature } : {}),
+    ...(context?.txSubmittedAt !== undefined ? { tx_submitted_at: context.txSubmittedAt } : {}),
   });
 
   await updatePilotRuntimeState(walletAlias, {
@@ -715,6 +768,7 @@ export async function executePilotTrade(
     const transaction = VersionedTransaction.deserialize(txBuffer);
     transaction.sign([keypair]);
     const signedTransaction = Buffer.from(transaction.serialize()).toString('base64');
+    const derivedTxSignature = deriveTransactionSignature(transaction);
     const txBuiltAt = new Date().toISOString();
 
     await updatePilotTrade(trade.id, {
@@ -723,6 +777,7 @@ export async function executePilotTrade(
 
     await updatePilotTradeAttempt(attempt.id, {
       signed_transaction: signedTransaction,
+      tx_signature: derivedTxSignature,
       execute_retry_count: 1,
       execute_last_attempt_at: new Date().toISOString(),
     });
@@ -740,6 +795,7 @@ export async function executePilotTrade(
 
       await updatePilotTradeAttempt(attempt.id, {
         status: 'submitted',
+        tx_signature: derivedTxSignature,
         tx_submitted_at: pendingAt,
         error_code: (error as JupiterApiError | undefined)?.code ?? 'execute_ambiguous',
         error_message: ambiguousMessage,
@@ -747,11 +803,12 @@ export async function executePilotTrade(
       await updatePilotTrade(trade.id, {
         status: 'submitted',
         tx_submitted_at: pendingAt,
-        tx_signature: null,
+        tx_signature: derivedTxSignature,
         error_message: ambiguousMessage,
         next_retry_at: null,
       });
       await updatePilotRuntimeState(wallet.alias, {
+        last_submitted_tx_signature: derivedTxSignature,
         last_error: ambiguousMessage,
       });
       await sendLivePilotAlert('Execute response ambiguous', [
@@ -778,7 +835,10 @@ export async function executePilotTrade(
     if (!txSignature || executeResponse.status === 'Failed') {
       const code = String(executeResponse.errorCode ?? executeResponse.code ?? 'execute_failed');
       const message = executeResponse.message || executeResponse.error || 'Jupiter execute did not return a transaction signature';
-      throw createJupiterError(code, message, 'execute');
+      const executeError = createJupiterError(code, message, 'execute');
+      executeError.derivedSignature = txSignature || derivedTxSignature;
+      executeError.submittedAt = txSubmittedAt;
+      throw executeError;
     }
 
     await updatePilotTradeAttempt(attempt.id, {
@@ -838,17 +898,29 @@ export async function executePilotTrade(
   } catch (error: any) {
     const code = String(error?.code ?? 'execution_error');
     const message = error?.message || 'Unknown live-pilot execution error';
-    const classification = classifyJupiterFailure(message, code, isRetryableExecutionCode(code));
+    const retryable =
+      isRetryableExecutionCode(code)
+      || isRetryableSellExecutionFailure(trade, code, message);
+    const classification = classifyJupiterFailure(message, code, retryable, {
+      retryNoRoute: trade.leader_type === 'sell',
+    });
+    const failedTxSignature = error?.derivedSignature ?? null;
+    const failedSubmittedAt = error?.submittedAt ?? null;
 
     await updatePilotTradeAttempt(attempt.id, {
       status: 'failed',
       error_code: classification.terminalStatus === 'skipped' ? classification.reason : code,
       error_message: message,
+      ...(failedTxSignature ? { tx_signature: failedTxSignature } : {}),
+      ...(failedSubmittedAt ? { tx_submitted_at: failedSubmittedAt } : {}),
     });
 
     const canRetry = classification.retryable && trade.attempt_count < plan.maxAttempts;
     if (canRetry) {
-      const nextRetryAt = await queueTradeRetry(trade, wallet.alias, message);
+      const nextRetryAt = await queueTradeRetry(trade, wallet.alias, message, {
+        txSignature: failedTxSignature,
+        txSubmittedAt: failedSubmittedAt,
+      });
       await sendLivePilotAlert('Trade requeued', [
         `wallet=${wallet.alias}`,
         `trade=${trade.id}`,
@@ -867,8 +939,11 @@ export async function executePilotTrade(
       skip_reason: terminalStatus === 'skipped' ? classification.reason : null,
       error_message: message,
       next_retry_at: null,
+      ...(failedTxSignature ? { tx_signature: failedTxSignature } : {}),
+      ...(failedSubmittedAt ? { tx_submitted_at: failedSubmittedAt } : {}),
     });
     await updatePilotRuntimeState(wallet.alias, {
+      ...(failedTxSignature ? { last_submitted_tx_signature: failedTxSignature } : {}),
       last_error: message,
     });
     if (terminalStatus === 'failed') {
