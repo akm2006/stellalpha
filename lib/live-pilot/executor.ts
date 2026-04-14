@@ -20,6 +20,7 @@ import {
 import { updatePilotRuntimeState } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import { updatePilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import { getTokenDecimals, getTokenSymbol, WSOL } from '@/lib/services/token-service';
+import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
@@ -377,6 +378,18 @@ async function buildExecutionPlan(
   }
 
   if (trade.leader_type === 'buy') {
+    const leaderTimestamp = trade.leader_block_timestamp ? new Date(trade.leader_block_timestamp).getTime() : null;
+    if (leaderTimestamp && Number.isFinite(leaderTimestamp)) {
+      const tradeAgeMs = Date.now() - leaderTimestamp;
+      if (tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
+        return {
+          kind: 'skip',
+          reason: 'stale_buy',
+          message: `Buy intent is ${Math.round(tradeAgeMs / 1000)}s old at execution time`,
+        };
+      }
+    }
+
     const outputMint = trade.token_out_mint || '';
     if (!outputMint) {
       return {

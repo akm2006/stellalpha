@@ -76,22 +76,40 @@ export async function updatePilotRuntimeState(walletAlias: string, patch: Partia
 
 export async function tryAcquirePilotRuntimeLock(walletAlias: string, lockOwner: string) {
   const staleBeforeIso = new Date(Date.now() - LOCK_STALE_AFTER_MS).toISOString();
-  const { data, error } = await supabase
+  const patch = {
+    lock_owner: lockOwner,
+    updated_at: new Date().toISOString(),
+  };
+
+  const unlockedAttempt = await supabase
     .from('pilot_runtime_state')
-    .update({
-      lock_owner: lockOwner,
-      updated_at: new Date().toISOString(),
-    })
+    .update(patch)
     .eq('wallet_alias', walletAlias)
-    .or(`lock_owner.is.null,updated_at.lt.${staleBeforeIso}`)
+    .is('lock_owner', null)
     .select('*')
     .maybeSingle();
 
-  if (error) {
-    throw new Error(`Failed to acquire live-pilot runtime lock for ${walletAlias}: ${error.message}`);
+  if (unlockedAttempt.error) {
+    throw new Error(`Failed to acquire live-pilot runtime lock for ${walletAlias}: ${unlockedAttempt.error.message}`);
   }
 
-  return (data || null) as PilotRuntimeStateRow | null;
+  if (unlockedAttempt.data) {
+    return unlockedAttempt.data as PilotRuntimeStateRow;
+  }
+
+  const staleAttempt = await supabase
+    .from('pilot_runtime_state')
+    .update(patch)
+    .eq('wallet_alias', walletAlias)
+    .lt('updated_at', staleBeforeIso)
+    .select('*')
+    .maybeSingle();
+
+  if (staleAttempt.error) {
+    throw new Error(`Failed to acquire stale live-pilot runtime lock for ${walletAlias}: ${staleAttempt.error.message}`);
+  }
+
+  return (staleAttempt.data || null) as PilotRuntimeStateRow | null;
 }
 
 export async function releasePilotRuntimeLock(walletAlias: string, lockOwner: string) {
