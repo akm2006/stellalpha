@@ -61,7 +61,6 @@ function statusChip(label: string, tone: 'neutral' | 'good' | 'warn' | 'danger')
 
 function walletReadinessChip(config: PilotWalletConfigSummary) {
   if (!config.isComplete) return statusChip('Config Incomplete', 'warn');
-  if (!config.hasSecret) return statusChip('No Secret', 'warn');
   if (!config.isEnabled) return statusChip('Disabled', 'neutral');
   return statusChip('Ready', 'good');
 }
@@ -203,8 +202,8 @@ export function LivePilotConsole() {
                 <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">Live Pilot Control</h1>
                 <p className="mt-3 max-w-2xl text-sm leading-6 md:text-base" style={{ color: COLORS.data }}>
                   {(status?.controlPlaneOnly ?? true)
-                    ? 'This page manages operator auth, pause state, wallet mapping visibility, and live-pilot runtime placeholders. Intent production and the execution worker are still intentionally unwired in this slice.'
-                    : 'This page manages operator auth, pause state, wallet mapping visibility, runtime breadcrumbs, and the recent live-intent feed. The dedicated signer and execution worker are still intentionally unwired in this slice.'}
+                    ? 'This page is currently serving a control-only snapshot. Treat automation as unavailable until the full live-pilot status feed returns and execution state is visible here.'
+                    : 'This page manages operator auth, pause state, wallet mapping visibility, runtime breadcrumbs, and the recent live-intent feed. The dedicated signer and execution worker are live, so unpausing can submit real swaps.'}
                 </p>
               </div>
 
@@ -318,7 +317,7 @@ export function LivePilotConsole() {
                 {statCard(
                   'Wallet Readiness',
                   `${status.summary.healthyWalletCount}/${status.summary.configuredWalletCount}`,
-                  'Healthy means config complete and signer secret present. Everything still boots paused by default.',
+                  'Healthy means config is complete. Signer availability is enforced by the live worker, not inspected from the web app.',
                   <KeyRound size={16} style={{ color: '#FBBF24' }} />
                 )}
                 {statCard(
@@ -326,7 +325,7 @@ export function LivePilotConsole() {
                   String(status.summary.recentTradeCount),
                   status.controlPlaneOnly
                     ? 'The parent table is ready so orchestrator intent creation can plug in without inventing a second operator read model.'
-                    : 'Leader trades now fan out into pilot intent rows after the core claim path commits, even while execution stays disabled.',
+                    : 'Leader trades now fan out into pilot intent rows after the core claim path commits, and queued rows can execute once the pilot is unpaused.',
                   <AlertTriangle size={16} style={{ color: '#F87171' }} />
                 )}
               </section>
@@ -390,7 +389,7 @@ export function LivePilotConsole() {
                               <div className="mt-2 text-xs leading-5" style={{ color: COLORS.data }}>
                                 <div>Mode: {walletStatus.config.mode}</div>
                                 <div>Cash: {walletStatus.config.cashMode.toUpperCase()}</div>
-                                <div>Secret: {walletStatus.config.hasSecret ? 'Present' : 'Missing'}</div>
+                                <div>Signer: Managed by worker</div>
                               </div>
                             </td>
                             <td className="px-3 py-4">
@@ -476,7 +475,7 @@ export function LivePilotConsole() {
                       <p className="mt-3 text-sm leading-6" style={{ color: COLORS.data }}>
                         {status.controlPlaneOnly
                           ? 'We now have durable pause state, runtime placeholders, and an operator-only control page before any live signer or intent producer is introduced. That keeps the next execution PR additive instead of invasive.'
-                          : 'We now have a durable operator control plane plus real pilot intent rows sourced from the canonical leader claim path. That lets us validate mapping, pause semantics, and queue visibility before we introduce a signer.'}
+                          : 'We now have a durable operator control plane, a live execution worker, and real pilot intent rows sourced from the canonical leader claim path. That lets us supervise pause state, queue visibility, and real-funds execution from one surface.'}
                       </p>
                     </div>
                   </div>
@@ -491,7 +490,7 @@ export function LivePilotConsole() {
                 <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
                   {status.controlPlaneOnly
                     ? 'This table is intentionally light right now. It becomes the operator’s recent-intent feed once orchestrator wiring lands.'
-                    : 'This is the operator-facing parent intent feed. It shows queued and skipped pilot rows before any signing or execution exists.'}
+                    : 'This is the operator-facing parent intent feed. It shows queued, skipped, submitted, and confirmed pilot rows while the live execution worker is active.'}
                 </p>
 
                 {status.recentTrades.length === 0 ? (

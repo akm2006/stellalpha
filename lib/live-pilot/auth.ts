@@ -1,6 +1,6 @@
 import { getSession } from '@/lib/session';
-import { getLivePilotConfig } from '@/lib/live-pilot/config';
-import type { LivePilotConfig } from '@/lib/live-pilot/config';
+import { getLivePilotPublicConfig } from '@/lib/live-pilot/config';
+import type { LivePilotPublicConfig } from '@/lib/live-pilot/config';
 
 export interface LivePilotAccessDenied {
   ok: false;
@@ -11,7 +11,7 @@ export interface LivePilotAccessDenied {
 export interface LivePilotOperatorAccess {
   ok: true;
   operatorWallet: string;
-  config: LivePilotConfig;
+  config: LivePilotPublicConfig;
 }
 
 export async function getLivePilotOperatorAccess(): Promise<LivePilotAccessDenied | LivePilotOperatorAccess> {
@@ -25,7 +25,7 @@ export async function getLivePilotOperatorAccess(): Promise<LivePilotAccessDenie
     };
   }
 
-  const config = getLivePilotConfig();
+  const config = getLivePilotPublicConfig();
   if (config.operatorWallets.length === 0) {
     return {
       ok: false,

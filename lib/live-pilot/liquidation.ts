@@ -119,7 +119,13 @@ export async function enqueueLiquidationIntentsForWallet(args: {
   });
 
   if (candidates.length === 0) {
-    return { created: 0, skippedDust: holdings.length - activeMints.size };
+    return {
+      created: 0,
+      skippedDust: holdings.length,
+      pendingWork: activeLiquidations.length > 0,
+      activeLiquidationCount: activeLiquidations.length,
+      meaningfulHoldingCount: 0,
+    };
   }
 
   const createdAt = new Date().toISOString();
@@ -164,5 +170,11 @@ export async function enqueueLiquidationIntentsForWallet(args: {
     ]).catch(() => undefined);
   }
 
-  return { created, skippedDust: holdings.length - candidates.length };
+  return {
+    created,
+    skippedDust: holdings.length - candidates.length,
+    pendingWork: true,
+    activeLiquidationCount: activeLiquidations.length,
+    meaningfulHoldingCount: candidates.length,
+  };
 }

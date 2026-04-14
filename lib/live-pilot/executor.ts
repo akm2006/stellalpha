@@ -829,7 +829,7 @@ export async function executePilotTrade(
 
     await updatePilotTradeAttempt(attempt.id, {
       status: 'failed',
-      error_code: code,
+      error_code: classification.terminalStatus === 'skipped' ? classification.reason : code,
       error_message: message,
     });
 

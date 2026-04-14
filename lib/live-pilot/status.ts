@@ -1,5 +1,5 @@
 import { toLivePilotConfigSummary } from '@/lib/live-pilot/config';
-import type { LivePilotConfig } from '@/lib/live-pilot/config';
+import type { LivePilotPublicConfig } from '@/lib/live-pilot/config';
 import type { LivePilotStatusResponse } from '@/lib/live-pilot/types';
 import {
   buildPilotControlSnapshot,
@@ -14,7 +14,7 @@ import { listRecentPilotTrades } from '@/lib/live-pilot/repositories/pilot-trade
 
 export async function getLivePilotStatus(
   operatorWallet: string,
-  config: LivePilotConfig,
+  config: LivePilotPublicConfig,
 ): Promise<LivePilotStatusResponse> {
   const walletAliases = config.wallets.map((wallet) => wallet.alias);
 
@@ -29,9 +29,8 @@ export async function getLivePilotStatus(
 
   const control = buildPilotControlSnapshot(controlRows, walletAliases);
   const walletStatuses = config.wallets.map((wallet) => {
-    const { secret: _secret, ...publicWallet } = wallet;
     return {
-      config: publicWallet,
+      config: wallet,
       control: control.wallets.find((row) => row.scope_key === wallet.alias)!,
       runtime: runtimeRows.find((row) => row.wallet_alias === wallet.alias) || null,
     };
@@ -46,7 +45,7 @@ export async function getLivePilotStatus(
       globalPaused: control.global.is_paused,
       killSwitchActive: control.global.kill_switch_active,
       configuredWalletCount: config.wallets.length,
-      healthyWalletCount: config.wallets.filter((wallet) => wallet.isComplete && wallet.hasSecret).length,
+      healthyWalletCount: config.wallets.filter((wallet) => wallet.isComplete && wallet.isEnabled).length,
       recentTradeCount: recentTrades.length,
     },
     control,
