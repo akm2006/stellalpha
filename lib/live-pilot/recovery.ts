@@ -391,7 +391,7 @@ export async function recoverSubmittedPilotTrades(args: {
           );
           outcome = 'failed';
         } else if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
-          const transaction = await connection.getTransaction(attempt.tx_signature, {
+          const transaction = await connection.getTransaction(signature, {
             commitment: 'confirmed',
             maxSupportedTransactionVersion: 0,
           }).catch(() => null);
