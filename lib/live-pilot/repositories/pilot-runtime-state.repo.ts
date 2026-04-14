@@ -1,6 +1,8 @@
 import { supabase } from '@/lib/supabase';
 import type { PilotRuntimeStateRow, PilotWalletConfigSummary } from '@/lib/live-pilot/types';
 
+const LOCK_STALE_AFTER_MS = 90_000;
+
 export async function ensurePilotRuntimeState(wallets: Pick<PilotWalletConfigSummary, 'alias' | 'starTrader' | 'mode'>[]) {
   if (wallets.length === 0) {
     return;
@@ -73,6 +75,7 @@ export async function updatePilotRuntimeState(walletAlias: string, patch: Partia
 }
 
 export async function tryAcquirePilotRuntimeLock(walletAlias: string, lockOwner: string) {
+  const staleBeforeIso = new Date(Date.now() - LOCK_STALE_AFTER_MS).toISOString();
   const { data, error } = await supabase
     .from('pilot_runtime_state')
     .update({
@@ -80,7 +83,7 @@ export async function tryAcquirePilotRuntimeLock(walletAlias: string, lockOwner:
       updated_at: new Date().toISOString(),
     })
     .eq('wallet_alias', walletAlias)
-    .is('lock_owner', null)
+    .or(`lock_owner.is.null,updated_at.lt.${staleBeforeIso}`)
     .select('*')
     .maybeSingle();
 

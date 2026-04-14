@@ -1,6 +1,16 @@
 import type { Connection } from '@solana/web3.js';
 import { findPilotWalletByAlias, type LivePilotConfig } from '@/lib/live-pilot/config';
-import { getPilotTradeMaxAttempts } from '@/lib/live-pilot/executor';
+import { formatSolscanTxUrl, sendLivePilotAlert } from '@/lib/live-pilot/alerts';
+import { evaluateWalletCircuitBreaker } from '@/lib/live-pilot/breaker';
+import {
+  classifyJupiterFailure,
+  computeRetryDelayMs,
+  executeSignedOrder,
+  getPilotTradeMaxAttempts,
+  isAmbiguousExecuteError,
+  isExecuteRetryWindowOpen,
+  isRetryableExecutionCode,
+} from '@/lib/live-pilot/executor';
 import {
   listSubmittedPilotTradeAttempts,
   updatePilotTradeAttempt,
@@ -18,6 +28,7 @@ import {
 } from '@/lib/live-pilot/repositories/pilot-trades.repo';
 
 const BLOCK_EXPIRY_SAFETY_BUFFER = 10;
+const PENDING_EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
 
 type RecoveryAttemptOutcome = 'confirmed' | 'requeued' | 'failed' | 'pending' | 'busy';
 
@@ -53,6 +64,14 @@ async function failSubmittedAttempt(
     last_error: message,
     last_reconcile_at: new Date().toISOString(),
   });
+
+  await evaluateWalletCircuitBreaker(walletAlias).catch(() => undefined);
+  await sendLivePilotAlert('Trade failed during recovery', [
+    `wallet=${walletAlias}`,
+    `trade=${tradeId}`,
+    `attempt=${attemptId}`,
+    message,
+  ]).catch(() => undefined);
 }
 
 async function maybeRequeueExpiredAttempt(args: {
@@ -79,8 +98,10 @@ async function maybeRequeueExpiredAttempt(args: {
   });
 
   if (tradeAttemptCount < maxAttempts) {
+    const nextRetryAt = new Date(Date.now() + computeRetryDelayMs(tradeAttemptCount)).toISOString();
     await updatePilotTradeIfStatus(tradeId, 'submitted', {
       status: 'queued',
+      next_retry_at: nextRetryAt,
       tx_signature: null,
       tx_submitted_at: null,
       tx_confirmed_at: null,
@@ -90,6 +111,7 @@ async function maybeRequeueExpiredAttempt(args: {
   } else {
     await updatePilotTradeIfStatus(tradeId, 'submitted', {
       status: 'failed',
+      next_retry_at: null,
       error_message: message,
     });
   }
@@ -98,6 +120,195 @@ async function maybeRequeueExpiredAttempt(args: {
     last_error: message,
     last_reconcile_at: new Date().toISOString(),
   });
+
+  await sendLivePilotAlert('Submitted trade expired before confirmation', [
+    `wallet=${walletAlias}`,
+    `trade=${tradeId}`,
+    message,
+  ]).catch(() => undefined);
+}
+
+async function maybeRecoverMissingExecuteSignature(args: {
+  walletAlias: string;
+  trade: NonNullable<Awaited<ReturnType<typeof getPilotTradeById>>>;
+  attempt: Awaited<ReturnType<typeof listSubmittedPilotTradeAttempts>>[number];
+  maxAttempts: number;
+}) {
+  const { walletAlias, trade, attempt, maxAttempts } = args;
+
+  if (!attempt.jupiter_request_id || !attempt.signed_transaction) {
+    await failSubmittedAttempt(
+      walletAlias,
+      trade.id,
+      attempt.id,
+      'Submitted attempt is missing Jupiter request metadata for execute recovery',
+      'missing_execute_context',
+    );
+    return { outcome: 'failed' as const, signature: null as string | null };
+  }
+
+  const submittedAt = attempt.tx_submitted_at || attempt.created_at;
+  if (!isExecuteRetryWindowOpen(submittedAt)) {
+    const message = 'Jupiter execute response stayed ambiguous for longer than 2 minutes';
+    await updatePilotTradeAttempt(attempt.id, {
+      status: 'failed',
+      error_code: 'execute_retry_window_expired',
+      error_message: message,
+    });
+
+    if (trade.attempt_count < maxAttempts) {
+      const nextRetryAt = new Date(Date.now() + computeRetryDelayMs(trade.attempt_count)).toISOString();
+      await updatePilotTradeIfStatus(trade.id, 'submitted', {
+        status: 'queued',
+        next_retry_at: nextRetryAt,
+        tx_submitted_at: null,
+        error_message: message,
+      });
+      await updatePilotRuntimeState(walletAlias, {
+        last_error: message,
+        last_reconcile_at: new Date().toISOString(),
+      });
+      await sendLivePilotAlert('Ambiguous execute requeued', [
+        `wallet=${walletAlias}`,
+        `trade=${trade.id}`,
+        `nextRetryAt=${nextRetryAt}`,
+        message,
+      ]).catch(() => undefined);
+      return { outcome: 'requeued' as const, signature: null as string | null };
+    }
+
+    await failSubmittedAttempt(
+      walletAlias,
+      trade.id,
+      attempt.id,
+      message,
+      'execute_retry_window_expired',
+    );
+    return { outcome: 'failed' as const, signature: null as string | null };
+  }
+
+  if (
+    attempt.execute_last_attempt_at
+    && Date.now() - new Date(attempt.execute_last_attempt_at).getTime() < PENDING_EXECUTE_RETRY_MIN_INTERVAL_MS
+  ) {
+    return { outcome: 'pending' as const, signature: null as string | null };
+  }
+
+  try {
+    const executeResponse = await executeSignedOrder(attempt.jupiter_request_id, attempt.signed_transaction);
+    const signature = executeResponse.signature || executeResponse.txid || executeResponse.transactionId || null;
+    const retriedAt = new Date().toISOString();
+
+    if (!signature && executeResponse.status !== 'Failed') {
+      await updatePilotTradeAttempt(attempt.id, {
+        execute_retry_count: (attempt.execute_retry_count || 0) + 1,
+        execute_last_attempt_at: retriedAt,
+      });
+      return { outcome: 'pending' as const, signature: null as string | null };
+    }
+
+    if (!signature || executeResponse.status === 'Failed') {
+      const code = String(executeResponse.errorCode ?? executeResponse.code ?? 'execute_failed');
+      const message = executeResponse.message || executeResponse.error || 'Jupiter execute did not return a transaction signature';
+      const classification = classifyJupiterFailure(message, code, isRetryableExecutionCode(code));
+
+      await updatePilotTradeAttempt(attempt.id, {
+        status: 'failed',
+        error_code: code,
+        error_message: message,
+        execute_retry_count: (attempt.execute_retry_count || 0) + 1,
+        execute_last_attempt_at: retriedAt,
+      });
+
+      if (classification.retryable && trade.attempt_count < maxAttempts) {
+        const nextRetryAt = new Date(Date.now() + computeRetryDelayMs(trade.attempt_count)).toISOString();
+        await updatePilotTradeIfStatus(trade.id, 'submitted', {
+          status: 'queued',
+          next_retry_at: nextRetryAt,
+          tx_submitted_at: null,
+          error_message: message,
+        });
+        await updatePilotRuntimeState(walletAlias, {
+          last_error: message,
+          last_reconcile_at: retriedAt,
+        });
+        return { outcome: 'requeued' as const, signature: null as string | null };
+      }
+
+      await failSubmittedAttempt(walletAlias, trade.id, attempt.id, message, code);
+      return { outcome: classification.terminalStatus === 'skipped' ? 'failed' as const : 'failed' as const, signature: null as string | null };
+    }
+
+    await updatePilotTradeAttempt(attempt.id, {
+      tx_signature: signature,
+      tx_submitted_at: attempt.tx_submitted_at || retriedAt,
+      execute_retry_count: (attempt.execute_retry_count || 0) + 1,
+      execute_last_attempt_at: retriedAt,
+      error_code: null,
+      error_message: null,
+    });
+    await updatePilotTradeIfStatus(trade.id, 'submitted', {
+      tx_signature: signature,
+      tx_submitted_at: attempt.tx_submitted_at || retriedAt,
+      error_message: null,
+    });
+    await updatePilotRuntimeState(walletAlias, {
+      last_submitted_tx_signature: signature,
+      last_error: null,
+      last_reconcile_at: retriedAt,
+    });
+    await sendLivePilotAlert('Recovered execute submission', [
+      `wallet=${walletAlias}`,
+      `trade=${trade.id}`,
+      `signature=${signature}`,
+      formatSolscanTxUrl(signature),
+    ]).catch(() => undefined);
+    return { outcome: 'pending' as const, signature };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const retriedAt = new Date().toISOString();
+
+    if (isAmbiguousExecuteError(error)) {
+      await updatePilotTradeAttempt(attempt.id, {
+        execute_retry_count: (attempt.execute_retry_count || 0) + 1,
+        execute_last_attempt_at: retriedAt,
+        error_message: message,
+      });
+      await updatePilotRuntimeState(walletAlias, {
+        last_error: message,
+        last_reconcile_at: retriedAt,
+      });
+      return { outcome: 'pending' as const, signature: null as string | null };
+    }
+
+    const code = (error as { code?: string } | undefined)?.code || 'execute_recovery_error';
+    const classification = classifyJupiterFailure(message, code, isRetryableExecutionCode(code));
+    await updatePilotTradeAttempt(attempt.id, {
+      status: 'failed',
+      error_code: code,
+      error_message: message,
+      execute_retry_count: (attempt.execute_retry_count || 0) + 1,
+      execute_last_attempt_at: retriedAt,
+    });
+
+    if (classification.retryable && trade.attempt_count < maxAttempts) {
+      const nextRetryAt = new Date(Date.now() + computeRetryDelayMs(trade.attempt_count)).toISOString();
+      await updatePilotTradeIfStatus(trade.id, 'submitted', {
+        status: 'queued',
+        next_retry_at: nextRetryAt,
+        tx_submitted_at: null,
+        error_message: message,
+      });
+      await updatePilotRuntimeState(walletAlias, {
+        last_error: message,
+        last_reconcile_at: retriedAt,
+      });
+      return { outcome: 'requeued' as const, signature: null as string | null };
+    }
+
+    await failSubmittedAttempt(walletAlias, trade.id, attempt.id, message, code);
+    return { outcome: 'failed' as const, signature: null as string | null };
+  }
 }
 
 export async function recoverSubmittedPilotTrades(args: {
@@ -151,17 +362,20 @@ export async function recoverSubmittedPilotTrades(args: {
         last_reconcile_at: new Date().toISOString(),
       });
 
-      if (!attempt.tx_signature) {
-        await failSubmittedAttempt(
-          wallet.alias,
-          trade.id,
-          attempt.id,
-          'Submitted attempt is missing a transaction signature',
-          'missing_signature',
-        );
-        outcome = 'failed';
-      } else {
-        const statuses = await connection.getSignatureStatuses([attempt.tx_signature], {
+      let signature = attempt.tx_signature;
+      if (!signature) {
+        const executeRecovery = await maybeRecoverMissingExecuteSignature({
+          walletAlias: wallet.alias,
+          trade,
+          attempt,
+          maxAttempts: getPilotTradeMaxAttempts(wallet, trade),
+        });
+        outcome = executeRecovery.outcome;
+        signature = executeRecovery.signature;
+      }
+
+      if (signature && outcome === 'pending') {
+        const statuses = await connection.getSignatureStatuses([signature], {
           searchTransactionHistory: true,
         });
         const status = statuses.value[0];
@@ -193,20 +407,27 @@ export async function recoverSubmittedPilotTrades(args: {
             tx_confirmed_at: confirmedAt,
             confirmation_slot: transaction?.slot ?? status.slot ?? null,
             winning_attempt_id: attempt.id,
+            next_retry_at: null,
             error_message: null,
           });
           await updatePilotRuntimeState(wallet.alias, {
-            last_confirmed_tx_signature: attempt.tx_signature,
+            last_confirmed_tx_signature: signature,
             last_error: null,
             last_reconcile_at: confirmedAt,
           });
+          await sendLivePilotAlert('Trade confirmed in recovery', [
+            `wallet=${wallet.alias}`,
+            `trade=${trade.id}`,
+            `signature=${signature}`,
+            formatSolscanTxUrl(signature),
+          ]).catch(() => undefined);
           outcome = 'confirmed';
         } else if (attempt.last_valid_block_height) {
           const currentBlockHeight = await connection.getBlockHeight('confirmed');
           const expiryThreshold = attempt.last_valid_block_height - BLOCK_EXPIRY_SAFETY_BUFFER;
           if (currentBlockHeight >= expiryThreshold) {
             const message =
-              `Submitted transaction ${attempt.tx_signature} expired before confirmation `
+              `Submitted transaction ${signature} expired before confirmation `
               + `(block height ${currentBlockHeight} >= ${expiryThreshold})`;
 
             await maybeRequeueExpiredAttempt({

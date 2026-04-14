@@ -17,6 +17,7 @@ export interface CreatePilotTradeInput {
   intent_created_at?: string | null;
   deployable_sol_at_intent?: number | null;
   sol_price_at_intent?: number | null;
+  next_retry_at?: string | null;
   status: PilotTradeStatus;
   skip_reason?: string | null;
   error_message?: string | null;
@@ -62,13 +63,16 @@ export async function listQueuedPilotTrades(limit: number = 25) {
     .select('*')
     .eq('status', 'queued')
     .order('created_at', { ascending: true })
-    .limit(limit);
+    .limit(Math.max(limit * 3, 50));
 
   if (error) {
     throw new Error(`Failed to list queued live-pilot trades: ${error.message}`);
   }
 
-  return (data || []) as PilotTradeRow[];
+  const nowMs = Date.now();
+  return ((data || []) as PilotTradeRow[])
+    .filter((trade) => !trade.next_retry_at || new Date(trade.next_retry_at).getTime() <= nowMs)
+    .slice(0, limit);
 }
 
 export async function getPilotTradeById(tradeId: string) {
@@ -91,6 +95,7 @@ export async function claimQueuedPilotTrade(tradeId: string, nextAttemptCount: n
     .update({
       status: 'building',
       attempt_count: nextAttemptCount,
+      next_retry_at: null,
       skip_reason: null,
       error_message: null,
       winning_attempt_id: null,
@@ -118,6 +123,22 @@ export async function claimQueuedPilotTrade(tradeId: string, nextAttemptCount: n
   }
 
   return (data || null) as PilotTradeRow | null;
+}
+
+export async function listActiveLiquidationTrades(walletAlias: string) {
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .select('*')
+    .eq('wallet_alias', walletAlias)
+    .eq('trigger_kind', 'liquidation')
+    .in('status', ['queued', 'building', 'submitted'])
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to list active live-pilot liquidation trades: ${error.message}`);
+  }
+
+  return (data || []) as PilotTradeRow[];
 }
 
 export async function updatePilotTrade(tradeId: string, patch: PilotTradePatch) {
