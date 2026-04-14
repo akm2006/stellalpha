@@ -15,6 +15,7 @@ import {
   Activity,
   AlertTriangle,
   CirclePause,
+  ExternalLink,
   KeyRound,
   PlayCircle,
   RefreshCw,
@@ -69,6 +70,37 @@ function tradePair(trade: PilotTradeRow) {
   const input = trade.token_in_mint ? truncate(trade.token_in_mint, 4, 4) : '—';
   const output = trade.token_out_mint ? truncate(trade.token_out_mint, 4, 4) : '—';
   return `${input} → ${output}`;
+}
+
+function getSolscanTxUrl(signature: string) {
+  return `https://solscan.io/tx/${signature}`;
+}
+
+function getGmgnWalletUrl(address: string) {
+  return `https://gmgn.ai/sol/address/${address}`;
+}
+
+function externalLink(href: string, label: string, compact = false) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 transition hover:opacity-80"
+      style={{ color: compact ? '#93C5FD' : '#60A5FA' }}
+    >
+      <span>{label}</span>
+      <ExternalLink size={compact ? 12 : 13} />
+    </a>
+  );
+}
+
+function txLink(signature: string | null | undefined, left = 5, right = 5) {
+  if (!signature) {
+    return '—';
+  }
+
+  return externalLink(getSolscanTxUrl(signature), truncate(signature, left, right), true);
 }
 
 function statCard(title: string, value: string, detail: string, icon: ReactNode) {
@@ -375,8 +407,9 @@ export function LivePilotConsole() {
                           <tr key={walletStatus.config.alias} className="border-b align-top" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
                             <td className="px-3 py-4">
                               <div className="font-medium">{walletStatus.config.alias}</div>
-                              <div className="mt-1 text-xs" style={{ color: COLORS.data }}>
-                                {truncate(walletStatus.config.publicKey, 6, 6)}
+                              <div className="mt-1 flex items-center gap-2 text-xs" style={{ color: COLORS.data }}>
+                                <span>{truncate(walletStatus.config.publicKey, 6, 6)}</span>
+                                {externalLink(getGmgnWalletUrl(walletStatus.config.publicKey), 'GMGN', true)}
                               </div>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {walletReadinessChip(walletStatus.config)}
@@ -408,9 +441,9 @@ export function LivePilotConsole() {
                             </td>
                             <td className="px-3 py-4">
                               <div className="space-y-2 text-xs leading-5" style={{ color: COLORS.data }}>
-                                <div>Last star trade: {truncate(walletStatus.runtime?.last_seen_star_trade_signature, 5, 5)}</div>
-                                <div>Last submit: {truncate(walletStatus.runtime?.last_submitted_tx_signature, 5, 5)}</div>
-                                <div>Last confirm: {truncate(walletStatus.runtime?.last_confirmed_tx_signature, 5, 5)}</div>
+                                <div>Last star trade: {txLink(walletStatus.runtime?.last_seen_star_trade_signature)}</div>
+                                <div>Last submit: {txLink(walletStatus.runtime?.last_submitted_tx_signature)}</div>
+                                <div>Last confirm: {txLink(walletStatus.runtime?.last_confirmed_tx_signature)}</div>
                                 <div>Reconcile: {formatRelativeTime(walletStatus.runtime?.last_reconcile_at)}</div>
                                 <div>Error: {walletStatus.runtime?.last_error || '—'}</div>
                               </div>
@@ -532,7 +565,7 @@ export function LivePilotConsole() {
                             <td className="px-3 py-4">{truncate(trade.star_trader, 6, 6)}</td>
                             <td className="px-3 py-4">{tradePair(trade)}</td>
                             <td className="px-3 py-4">{trade.skip_reason || trade.error_message || trade.trigger_reason || '—'}</td>
-                            <td className="px-3 py-4">{truncate(trade.tx_signature, 5, 5)}</td>
+                            <td className="px-3 py-4">{txLink(trade.tx_signature)}</td>
                             <td className="px-3 py-4">{formatRelativeTime(trade.created_at)}</td>
                           </tr>
                         ))}
