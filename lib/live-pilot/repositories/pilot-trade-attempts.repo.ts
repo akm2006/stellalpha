@@ -10,6 +10,7 @@ const NON_BREAKER_ERROR_CODES = new Set([
   'missing_output_mint',
   'no_route',
   'price_impact_too_high',
+  'stale_buy',
   'wallet_not_ready',
   'zero_copy_ratio',
 ]);
