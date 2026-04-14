@@ -15,7 +15,7 @@ import {
   computeCopyTradeSignal,
   createPrivateRpcConnection,
 } from '@/lib/ingestion/copy-signal';
-import { findPilotWalletForStarTrader, getLivePilotConfig } from '@/lib/live-pilot/config';
+import { findPilotWalletForStarTrader, getLivePilotPublicConfig } from '@/lib/live-pilot/config';
 
 export interface PilotIntentResult {
   considered: boolean;
@@ -34,7 +34,7 @@ function toBlockTimestampIso(timestampSeconds: number) {
 }
 
 export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number): Promise<PilotIntentResult> {
-  const config = getLivePilotConfig();
+  const config = getLivePilotPublicConfig();
   const pilotWallet = findPilotWalletForStarTrader(config, trade.wallet);
 
   if (!pilotWallet) {

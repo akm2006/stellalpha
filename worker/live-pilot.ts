@@ -3,9 +3,18 @@ dotenv.config({ path: '.env.local' });
 
 import os from 'os';
 import { sendLivePilotAlert } from '@/lib/live-pilot/alerts';
-import { buildPilotControlSnapshot, ensurePilotControlState, listPilotControlStates } from '@/lib/live-pilot/repositories/pilot-control-state.repo';
+import {
+  buildPilotControlSnapshot,
+  ensurePilotControlState,
+  listPilotControlStates,
+  updatePilotControlState,
+} from '@/lib/live-pilot/repositories/pilot-control-state.repo';
 import { ensurePilotRuntimeState, releasePilotRuntimeLock, tryAcquirePilotRuntimeLock } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
-import { claimQueuedPilotTrade, listQueuedPilotTrades, updatePilotTradeIfStatus } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import {
+  claimQueuedPilotTrade,
+  listQueuedPilotTrades,
+  updatePilotTradeIfStatus,
+} from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import { executePilotTrade, createLivePilotConnection } from '@/lib/live-pilot/executor';
 import { getLivePilotConfig, findPilotWalletByAlias } from '@/lib/live-pilot/config';
 import { enqueueLiquidationIntentsForWallet } from '@/lib/live-pilot/liquidation';
@@ -16,6 +25,7 @@ const RECOVERY_INTERVAL_MS = 5_000;
 const LOCK_WAIT_TIMEOUT_MS = 2_000;
 const LOCK_WAIT_INTERVAL_MS = 250;
 const QUEUE_BATCH_SIZE = 10;
+const WALLET_BUSY_RETRY_DELAY_MS = 2_500;
 
 let isShuttingDown = false;
 let isProcessingQueue = false;
@@ -48,6 +58,15 @@ async function skipQueuedTrade(tradeId: string, reason: string, message: string)
     status: 'skipped',
     skip_reason: reason,
     error_message: message,
+  });
+}
+
+async function deferQueuedTrade(tradeId: string, reason: string, message: string, delayMs: number) {
+  await updatePilotTradeIfStatus(tradeId, 'queued', {
+    status: 'queued',
+    skip_reason: null,
+    error_message: `${reason}: ${message}`,
+    next_retry_at: new Date(Date.now() + delayMs).toISOString(),
   });
 }
 
@@ -84,6 +103,13 @@ async function runLiquidationSweep(
 
       if (result.created > 0) {
         console.log(`[LIVE_PILOT] ${wallet.alias}: queued ${result.created} liquidation trade(s)`);
+      } else if (!result.pendingWork && walletControl?.liquidation_requested) {
+        await updatePilotControlState('wallet', wallet.alias, {
+          liquidation_requested: false,
+        });
+        console.log(
+          `[LIVE_PILOT] ${wallet.alias}: cleared liquidation request (no meaningful holdings or active liquidation trades)`,
+        );
       }
     } catch (error) {
       console.error(`[LIVE_PILOT] Failed liquidation sweep for ${wallet.alias}:`, error);
@@ -174,10 +200,11 @@ async function processQueuedPilotTrades() {
 
       const lockAcquired = await acquireExecutionLock(wallet.alias);
       if (!lockAcquired) {
-        await skipQueuedTrade(
+        await deferQueuedTrade(
           trade.id,
           'wallet_busy',
           `Wallet ${wallet.alias} was busy for more than ${LOCK_WAIT_TIMEOUT_MS}ms`,
+          WALLET_BUSY_RETRY_DELAY_MS,
         );
         continue;
       }

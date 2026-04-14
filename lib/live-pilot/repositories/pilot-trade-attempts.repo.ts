@@ -1,6 +1,19 @@
 import { supabase } from '@/lib/supabase';
 import type { PilotTradeAttemptRow } from '@/lib/live-pilot/types';
 
+const NON_BREAKER_ERROR_CODES = new Set([
+  'below_min_trade_size',
+  'insufficient_balance',
+  'insufficient_deployable_sol',
+  'insufficient_sol_for_fees',
+  'missing_input_mint',
+  'missing_output_mint',
+  'no_route',
+  'price_impact_too_high',
+  'wallet_not_ready',
+  'zero_copy_ratio',
+]);
+
 export interface CreatePilotTradeAttemptInput {
   pilot_trade_id: string;
   attempt_number: number;
@@ -106,9 +119,9 @@ export async function countRecentFailedPilotTradeAttempts(walletAlias: string, s
     return 0;
   }
 
-  const { count, error } = await supabase
+  const { data, error } = await supabase
     .from('pilot_trade_attempts')
-    .select('id', { count: 'exact', head: true })
+    .select('error_code')
     .eq('status', 'failed')
     .gte('created_at', sinceIso)
     .in('pilot_trade_id', tradeIds);
@@ -117,5 +130,5 @@ export async function countRecentFailedPilotTradeAttempts(walletAlias: string, s
     throw new Error(`Failed to count recent live-pilot failed attempts: ${error.message}`);
   }
 
-  return count || 0;
+  return (data || []).filter((row) => !NON_BREAKER_ERROR_CODES.has(row.error_code || '')).length;
 }
