@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { sendLivePilotAlert } from '@/lib/live-pilot/alerts';
 import { getLivePilotOperatorAccess } from '@/lib/live-pilot/auth';
 import {
   ensurePilotControlState,
@@ -102,6 +103,11 @@ export async function POST(request: NextRequest) {
             })
           )
         );
+        await sendLivePilotAlert('Kill switch activated', [
+          `operator=${access.operatorWallet}`,
+          `wallets=${access.config.wallets.map((wallet) => wallet.alias).join(', ')}`,
+          'New automated copy trades are paused and liquidation intents will be generated for non-SOL balances.',
+        ]).catch(() => undefined);
         break;
       case 'wallet_liquidate':
         await updatePilotControlState('wallet', walletAlias!, {
@@ -109,6 +115,10 @@ export async function POST(request: NextRequest) {
           liquidation_requested: true,
           updated_by_wallet: access.operatorWallet,
         });
+        await sendLivePilotAlert('Wallet liquidation requested', [
+          `operator=${access.operatorWallet}`,
+          `wallet=${walletAlias!}`,
+        ]).catch(() => undefined);
         break;
       default:
         return NextResponse.json({ error: 'Unsupported action' }, { status: 400 });

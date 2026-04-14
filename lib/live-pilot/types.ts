@@ -90,6 +90,7 @@ export interface PilotTradeRow {
   price_impact_pct: number | null;
   deployable_sol_at_intent: number | null;
   sol_price_at_intent: number | null;
+  next_retry_at: string | null;
   attempt_count: number;
   winning_attempt_id: string | null;
   status: PilotTradeStatus;
@@ -113,6 +114,9 @@ export interface PilotTradeAttemptRow {
   quoted_input_amount_raw: string | null;
   price_impact_pct: number | null;
   prioritization_fee_lamports: string | null;
+  signed_transaction: string | null;
+  execute_retry_count: number;
+  execute_last_attempt_at: string | null;
   tx_signature: string | null;
   tx_submitted_at: string | null;
   tx_confirmed_at: string | null;

@@ -14,6 +14,9 @@ export interface CreatePilotTradeAttemptInput {
   quoted_input_amount_raw?: string | null;
   price_impact_pct?: number | null;
   prioritization_fee_lamports?: string | null;
+  signed_transaction?: string | null;
+  execute_retry_count?: number;
+  execute_last_attempt_at?: string | null;
   tx_signature?: string | null;
   tx_submitted_at?: string | null;
   tx_confirmed_at?: string | null;
@@ -86,4 +89,33 @@ export async function listSubmittedPilotTradeAttempts(limit: number = 50) {
   }
 
   return (data || []) as PilotTradeAttemptRow[];
+}
+
+export async function countRecentFailedPilotTradeAttempts(walletAlias: string, sinceIso: string) {
+  const { data: trades, error: tradesError } = await supabase
+    .from('pilot_trades')
+    .select('id')
+    .eq('wallet_alias', walletAlias);
+
+  if (tradesError) {
+    throw new Error(`Failed to fetch live-pilot trades for breaker check: ${tradesError.message}`);
+  }
+
+  const tradeIds = (trades || []).map((row) => row.id);
+  if (tradeIds.length === 0) {
+    return 0;
+  }
+
+  const { count, error } = await supabase
+    .from('pilot_trade_attempts')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'failed')
+    .gte('created_at', sinceIso)
+    .in('pilot_trade_id', tradeIds);
+
+  if (error) {
+    throw new Error(`Failed to count recent live-pilot failed attempts: ${error.message}`);
+  }
+
+  return count || 0;
 }
