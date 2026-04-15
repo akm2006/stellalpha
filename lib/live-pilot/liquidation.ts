@@ -18,6 +18,16 @@ interface TokenHolding {
   decimals: number;
 }
 
+interface LiquidationCandidate extends TokenHolding {
+  estimatedSolValue: number | null;
+}
+
+interface WalletLiquidationStatusArgs {
+  walletAlias: string;
+  walletPublicKey: string;
+  connection: Connection;
+}
+
 function rawToUi(rawAmount: bigint, decimals: number) {
   return Number(rawAmount) / Math.pow(10, decimals);
 }
@@ -89,42 +99,91 @@ async function fetchUsdPrices(mints: string[]) {
   }
 }
 
+function selectMeaningfulLiquidationCandidates(args: {
+  holdings: TokenHolding[];
+  prices: Record<string, number>;
+  solPrice: number;
+}) {
+  const { holdings, prices, solPrice } = args;
+
+  return holdings
+    .map((holding) => {
+      const usdPrice = prices[holding.mint];
+      const estimatedSolValue = usdPrice
+        ? (usdPrice * holding.uiAmount) / solPrice
+        : null;
+
+      return {
+        ...holding,
+        estimatedSolValue,
+      } satisfies LiquidationCandidate;
+    })
+    .filter((holding) => {
+      if (holding.estimatedSolValue === null) {
+        return true;
+      }
+
+      return holding.estimatedSolValue >= DUST_SOL_VALUE_THRESHOLD;
+    });
+}
+
+export async function getWalletLiquidationStatus(args: WalletLiquidationStatusArgs) {
+  const { walletAlias, walletPublicKey, connection } = args;
+  const [holdings, activeLiquidations, solPrice] = await Promise.all([
+    getWalletTokenHoldings(connection, walletPublicKey),
+    listActiveLiquidationTrades(walletAlias),
+    getSolPrice(),
+  ]);
+
+  const prices = await fetchUsdPrices(holdings.map((holding) => holding.mint));
+  const meaningfulHoldings = selectMeaningfulLiquidationCandidates({
+    holdings,
+    prices,
+    solPrice,
+  });
+
+  return {
+    holdings,
+    meaningfulHoldings,
+    activeLiquidations,
+    activeLiquidationCount: activeLiquidations.length,
+    meaningfulHoldingCount: meaningfulHoldings.length,
+    isFlat: meaningfulHoldings.length === 0,
+    pendingWork: activeLiquidations.length > 0 || meaningfulHoldings.length > 0,
+    solPrice,
+  };
+}
+
 export async function enqueueLiquidationIntentsForWallet(args: {
   wallet: LivePilotWalletConfig;
   connection: Connection;
   reason: string;
 }) {
   const { wallet, connection, reason } = args;
-  const [holdings, activeLiquidations, solPrice] = await Promise.all([
-    getWalletTokenHoldings(connection, wallet.publicKey),
-    listActiveLiquidationTrades(wallet.alias),
-    getSolPrice(),
-  ]);
+  const {
+    holdings,
+    meaningfulHoldings,
+    activeLiquidations,
+    activeLiquidationCount,
+    meaningfulHoldingCount,
+    pendingWork,
+    solPrice,
+  } = await getWalletLiquidationStatus({
+    walletAlias: wallet.alias,
+    walletPublicKey: wallet.publicKey,
+    connection,
+  });
 
   const activeMints = new Set(activeLiquidations.map((trade) => trade.token_in_mint).filter(Boolean));
-  const prices = await fetchUsdPrices(holdings.map((holding) => holding.mint));
-
-  const candidates = holdings.filter((holding) => {
-    if (activeMints.has(holding.mint)) {
-      return false;
-    }
-
-    const usdPrice = prices[holding.mint];
-    if (!usdPrice) {
-      return true;
-    }
-
-    const estimatedSolValue = (usdPrice * holding.uiAmount) / solPrice;
-    return estimatedSolValue >= DUST_SOL_VALUE_THRESHOLD;
-  });
+  const candidates = meaningfulHoldings.filter((holding) => !activeMints.has(holding.mint));
 
   if (candidates.length === 0) {
     return {
       created: 0,
       skippedDust: holdings.length,
-      pendingWork: activeLiquidations.length > 0,
-      activeLiquidationCount: activeLiquidations.length,
-      meaningfulHoldingCount: 0,
+      pendingWork,
+      activeLiquidationCount,
+      meaningfulHoldingCount,
     };
   }
 
@@ -174,7 +233,7 @@ export async function enqueueLiquidationIntentsForWallet(args: {
     created,
     skippedDust: holdings.length - candidates.length,
     pendingWork: true,
-    activeLiquidationCount: activeLiquidations.length,
-    meaningfulHoldingCount: candidates.length,
+    activeLiquidationCount,
+    meaningfulHoldingCount,
   };
 }

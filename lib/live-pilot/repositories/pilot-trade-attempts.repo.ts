@@ -105,17 +105,25 @@ export async function listSubmittedPilotTradeAttempts(limit: number = 50) {
   return (data || []) as PilotTradeAttemptRow[];
 }
 
-export async function countRecentFailedPilotTradeAttempts(walletAlias: string, sinceIso: string) {
+export async function countRecentFailedPilotTradeAttempts(
+  walletAlias: string,
+  sinceIso: string,
+  options?: {
+    leaderType?: string;
+  },
+) {
   const { data: trades, error: tradesError } = await supabase
     .from('pilot_trades')
-    .select('id')
+    .select('id, leader_type')
     .eq('wallet_alias', walletAlias);
 
   if (tradesError) {
     throw new Error(`Failed to fetch live-pilot trades for breaker check: ${tradesError.message}`);
   }
 
-  const tradeIds = (trades || []).map((row) => row.id);
+  const tradeIds = (trades || [])
+    .filter((row: any) => !options?.leaderType || row.leader_type === options.leaderType)
+    .map((row: any) => row.id);
   if (tradeIds.length === 0) {
     return 0;
   }

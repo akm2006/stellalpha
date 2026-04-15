@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sendLivePilotAlert } from '@/lib/live-pilot/alerts';
 import { getLivePilotOperatorAccess } from '@/lib/live-pilot/auth';
+import { findPilotWalletByAlias } from '@/lib/live-pilot/config';
+import { createLivePilotConnection } from '@/lib/live-pilot/executor';
+import { getWalletLiquidationStatus } from '@/lib/live-pilot/liquidation';
 import {
+  buildPilotControlSnapshot,
   ensurePilotControlState,
+  listPilotControlStates,
   updatePilotControlState,
 } from '@/lib/live-pilot/repositories/pilot-control-state.repo';
 import { getLivePilotStatus } from '@/lib/live-pilot/status';
@@ -56,6 +61,7 @@ export async function POST(request: NextRequest) {
 
   try {
     await ensurePilotControlState(Array.from(configuredAliases));
+    const controlSnapshot = buildPilotControlSnapshot(await listPilotControlStates(), Array.from(configuredAliases));
 
     switch (action) {
       case 'global_pause':
@@ -79,6 +85,36 @@ export async function POST(request: NextRequest) {
         });
         break;
       case 'wallet_resume':
+        const walletConfig = findPilotWalletByAlias(access.config, walletAlias!);
+        if (!walletConfig) {
+          return NextResponse.json({ error: 'walletAlias is not configured for the live pilot' }, { status: 400 });
+        }
+
+        const walletControl = controlSnapshot.wallets.find((row) => row.scope_key === walletAlias!);
+        const isProtectedWallet = Boolean(walletControl?.kill_switch_active || walletControl?.liquidation_requested);
+        if (isProtectedWallet) {
+          const connection = createLivePilotConnection();
+          const liquidationStatus = await getWalletLiquidationStatus({
+            walletAlias: walletAlias!,
+            walletPublicKey: walletConfig.publicKey,
+            connection,
+          });
+
+          if (!liquidationStatus.isFlat || liquidationStatus.activeLiquidationCount > 0) {
+            return NextResponse.json(
+              {
+                error: 'Wallet cannot resume until it is flat and all liquidation work has settled',
+                details: {
+                  walletAlias,
+                  meaningfulHoldingCount: liquidationStatus.meaningfulHoldingCount,
+                  activeLiquidationCount: liquidationStatus.activeLiquidationCount,
+                },
+              },
+              { status: 409 },
+            );
+          }
+        }
+
         await updatePilotControlState('wallet', walletAlias!, {
           is_paused: false,
           kill_switch_active: false,

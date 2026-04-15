@@ -1,7 +1,7 @@
 import type { Connection } from '@solana/web3.js';
 import { findPilotWalletByAlias, type LivePilotConfig } from '@/lib/live-pilot/config';
 import { formatSolscanTxUrl, sendLivePilotAlert } from '@/lib/live-pilot/alerts';
-import { evaluateWalletCircuitBreaker } from '@/lib/live-pilot/breaker';
+import { evaluateSellExitProtection, evaluateWalletCircuitBreaker } from '@/lib/live-pilot/breaker';
 import {
   classifyJupiterFailure,
   computeRetryDelayMs,
@@ -12,6 +12,7 @@ import {
   isRetryableExecutionCode,
   isRetryableSellExecutionFailure,
 } from '@/lib/live-pilot/executor';
+import { broadcastLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
 import {
   listSubmittedPilotTradeAttempts,
   updatePilotTradeAttempt,
@@ -109,6 +110,11 @@ async function maybeRequeueExpiredAttempt(args: {
       confirmation_slot: null,
       error_message: message,
     });
+    await broadcastLivePilotQueueWake({
+      source: 'recovery_requeue',
+      walletAlias,
+      tradeId,
+    });
   } else {
     await updatePilotTradeIfStatus(tradeId, 'submitted', {
       status: 'failed',
@@ -168,6 +174,11 @@ async function maybeRecoverMissingExecuteSignature(args: {
       await updatePilotRuntimeState(walletAlias, {
         last_error: message,
         last_reconcile_at: new Date().toISOString(),
+      });
+      await broadcastLivePilotQueueWake({
+        source: 'recovery_requeue',
+        walletAlias,
+        tradeId: trade.id,
       });
       await sendLivePilotAlert('Ambiguous execute requeued', [
         `wallet=${walletAlias}`,
@@ -233,10 +244,18 @@ async function maybeRecoverMissingExecuteSignature(args: {
           last_error: message,
           last_reconcile_at: retriedAt,
         });
+        await broadcastLivePilotQueueWake({
+          source: 'recovery_requeue',
+          walletAlias,
+          tradeId: trade.id,
+        });
         return { outcome: 'requeued' as const, signature: null as string | null };
       }
 
       await failSubmittedAttempt(walletAlias, trade.id, attempt.id, message, code);
+      if (trade.leader_type === 'sell') {
+        await evaluateSellExitProtection(walletAlias).catch(() => undefined);
+      }
       return { outcome: classification.terminalStatus === 'skipped' ? 'failed' as const : 'failed' as const, signature: null as string | null };
     }
 
@@ -309,10 +328,18 @@ async function maybeRecoverMissingExecuteSignature(args: {
         last_error: message,
         last_reconcile_at: retriedAt,
       });
+      await broadcastLivePilotQueueWake({
+        source: 'recovery_requeue',
+        walletAlias,
+        tradeId: trade.id,
+      });
       return { outcome: 'requeued' as const, signature: null as string | null };
     }
 
     await failSubmittedAttempt(walletAlias, trade.id, attempt.id, message, code);
+    if (trade.leader_type === 'sell') {
+      await evaluateSellExitProtection(walletAlias).catch(() => undefined);
+    }
     return { outcome: 'failed' as const, signature: null as string | null };
   }
 }
@@ -411,6 +438,11 @@ export async function recoverSubmittedPilotTrades(args: {
               last_error: message,
               last_reconcile_at: new Date().toISOString(),
             });
+            await broadcastLivePilotQueueWake({
+              source: 'recovery_requeue',
+              walletAlias: wallet.alias,
+              tradeId: trade.id,
+            });
             outcome = 'requeued';
           } else {
             await failSubmittedAttempt(
@@ -420,24 +452,22 @@ export async function recoverSubmittedPilotTrades(args: {
               message,
               code,
             );
+            if (trade.leader_type === 'sell') {
+              await evaluateSellExitProtection(wallet.alias).catch(() => undefined);
+            }
             outcome = 'failed';
           }
         } else if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
-          const transaction = await connection.getTransaction(signature, {
-            commitment: 'confirmed',
-            maxSupportedTransactionVersion: 0,
-          }).catch(() => null);
-
           const confirmedAt = new Date().toISOString();
           await updatePilotTradeAttempt(attempt.id, {
             status: 'confirmed',
             tx_confirmed_at: confirmedAt,
-            confirmation_slot: transaction?.slot ?? status.slot ?? null,
+            confirmation_slot: status.slot ?? null,
           });
           await updatePilotTradeIfStatus(trade.id, 'submitted', {
             status: 'confirmed',
             tx_confirmed_at: confirmedAt,
-            confirmation_slot: transaction?.slot ?? status.slot ?? null,
+            confirmation_slot: status.slot ?? null,
             winning_attempt_id: attempt.id,
             next_retry_at: null,
             error_message: null,

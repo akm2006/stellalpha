@@ -7,6 +7,7 @@ import { useAuth } from '@/contexts/auth-context';
 import { COLORS } from '@/lib/theme';
 import type {
   LivePilotStatusResponse,
+  LivePilotLatencyMetric,
   PilotControlAction,
   PilotTradeRow,
   PilotWalletConfigSummary,
@@ -70,6 +71,32 @@ function tradePair(trade: PilotTradeRow) {
   const input = trade.token_in_mint ? truncate(trade.token_in_mint, 4, 4) : '—';
   const output = trade.token_out_mint ? truncate(trade.token_out_mint, 4, 4) : '—';
   return `${input} → ${output}`;
+}
+
+function formatLatency(metric: LivePilotLatencyMetric) {
+  if (metric.avgMs === null) {
+    return '—';
+  }
+
+  if (metric.avgMs < 1000) {
+    return `${metric.avgMs}ms`;
+  }
+
+  return `${(metric.avgMs / 1000).toFixed(2)}s`;
+}
+
+function formatLatencyDetail(metric: LivePilotLatencyMetric) {
+  if (metric.avgMs === null) {
+    return 'No samples yet';
+  }
+
+  const latest = metric.latestMs === null
+    ? '—'
+    : metric.latestMs < 1000
+      ? `${metric.latestMs}ms`
+      : `${(metric.latestMs / 1000).toFixed(2)}s`;
+
+  return `${metric.samples} sample${metric.samples === 1 ? '' : 's'} · latest ${latest}`;
 }
 
 function getSolscanTxUrl(signature: string) {
@@ -362,6 +389,28 @@ export function LivePilotConsole() {
                 )}
               </section>
 
+              <section
+                className="rounded-3xl border p-5"
+                style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
+              >
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-lg font-semibold">Latency Snapshot</h2>
+                  <p className="text-sm" style={{ color: COLORS.data }}>
+                    Recent confirmed/submitted pilot trades, averaged over the latest {status.latency.recentWindowCount} execution rows.
+                  </p>
+                </div>
+
+                <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  {statCard('Leader → Receive', formatLatency(status.latency.leaderToReceive), formatLatencyDetail(status.latency.leaderToReceive), <Activity size={16} style={{ color: '#60A5FA' }} />)}
+                  {statCard('Receive → Intent', formatLatency(status.latency.receiveToIntent), formatLatencyDetail(status.latency.receiveToIntent), <Activity size={16} style={{ color: '#93C5FD' }} />)}
+                  {statCard('Intent → Quote', formatLatency(status.latency.intentToQuote), formatLatencyDetail(status.latency.intentToQuote), <Activity size={16} style={{ color: '#FBBF24' }} />)}
+                  {statCard('Quote → Submit', formatLatency(status.latency.quoteToSubmit), formatLatencyDetail(status.latency.quoteToSubmit), <Activity size={16} style={{ color: '#F87171' }} />)}
+                  {statCard('Submit → Confirm', formatLatency(status.latency.submitToConfirm), formatLatencyDetail(status.latency.submitToConfirm), <Activity size={16} style={{ color: '#34D399' }} />)}
+                  {statCard('Leader → Submit', formatLatency(status.latency.leaderToSubmit), formatLatencyDetail(status.latency.leaderToSubmit), <Activity size={16} style={{ color: COLORS.brand }} />)}
+                  {statCard('Leader → Confirm', formatLatency(status.latency.leaderToConfirm), formatLatencyDetail(status.latency.leaderToConfirm), <Activity size={16} style={{ color: '#C084FC' }} />)}
+                </div>
+              </section>
+
               {status.config.errors.length > 0 ? (
                 <section
                   className="rounded-3xl border p-5"
@@ -413,6 +462,12 @@ export function LivePilotConsole() {
                               </div>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {walletReadinessChip(walletStatus.config)}
+                                {walletStatus.control.kill_switch_active
+                                  ? statusChip(
+                                      walletStatus.control.updated_by_wallet === 'system:exit-protection' ? 'Exit Only' : 'Kill Switch',
+                                      'danger',
+                                    )
+                                  : null}
                                 {walletStatus.control.is_paused ? statusChip('Paused', 'warn') : statusChip('Active', 'good')}
                                 {walletStatus.control.liquidation_requested ? statusChip('Liquidation Requested', 'danger') : null}
                               </div>
@@ -446,6 +501,9 @@ export function LivePilotConsole() {
                                 <div>Last confirm: {txLink(walletStatus.runtime?.last_confirmed_tx_signature)}</div>
                                 <div>Reconcile: {formatRelativeTime(walletStatus.runtime?.last_reconcile_at)}</div>
                                 <div>Error: {walletStatus.runtime?.last_error || '—'}</div>
+                                {walletStatus.control.updated_by_wallet === 'system:exit-protection' ? (
+                                  <div className="text-amber-300">Exit protection is active until the wallet is flat.</div>
+                                ) : null}
                               </div>
                             </td>
                             <td className="px-3 py-4">

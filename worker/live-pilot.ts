@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
 
 import os from 'os';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 import { sendLivePilotAlert } from '@/lib/live-pilot/alerts';
 import {
   buildPilotControlSnapshot,
@@ -18,9 +19,10 @@ import {
 import { executePilotTrade, createLivePilotConnection } from '@/lib/live-pilot/executor';
 import { getLivePilotConfig, findPilotWalletByAlias } from '@/lib/live-pilot/config';
 import { enqueueLiquidationIntentsForWallet } from '@/lib/live-pilot/liquidation';
+import { subscribeToLivePilotQueueWake, unsubscribeFromLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
 import { recoverSubmittedPilotTrades } from '@/lib/live-pilot/recovery';
 
-const QUEUE_POLL_INTERVAL_MS = 1_000;
+const QUEUE_POLL_INTERVAL_MS = 250;
 const RECOVERY_INTERVAL_MS = 5_000;
 const LOCK_WAIT_TIMEOUT_MS = 2_000;
 const LOCK_WAIT_INTERVAL_MS = 250;
@@ -30,12 +32,28 @@ const WALLET_BUSY_RETRY_DELAY_MS = 2_500;
 let isShuttingDown = false;
 let isProcessingQueue = false;
 let isRunningRecovery = false;
+let isQueueDrainScheduled = false;
+let queueWakeChannel: RealtimeChannel | null = null;
 
 const lockOwner = `${os.hostname()}:${process.pid}:live-pilot`;
 const connection = createLivePilotConnection();
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function scheduleQueueDrain() {
+  if (isShuttingDown || isQueueDrainScheduled) {
+    return;
+  }
+
+  isQueueDrainScheduled = true;
+  setTimeout(() => {
+    isQueueDrainScheduled = false;
+    processQueuedPilotTrades().catch((error) => {
+      console.error('[LIVE_PILOT] Scheduled queue drain error:', error);
+    });
+  }, 0);
 }
 
 async function acquireExecutionLock(walletAlias: string) {
@@ -244,6 +262,8 @@ async function processQueuedPilotTrades() {
         }
       }
     }
+
+    scheduleQueueDrain();
   } finally {
     isProcessingQueue = false;
   }
@@ -273,6 +293,10 @@ async function runRecoveryLoop() {
         '[LIVE_PILOT] Recovery summary:',
         JSON.stringify(summary),
       );
+    }
+
+    if (summary.requeued > 0) {
+      scheduleQueueDrain();
     }
   } finally {
     isRunningRecovery = false;
@@ -308,6 +332,15 @@ async function startWorker() {
     `wallets=${walletAliases.join(', ')}`,
   ]).catch(() => undefined);
 
+  try {
+    queueWakeChannel = await subscribeToLivePilotQueueWake((payload) => {
+      console.log('[LIVE_PILOT] Received queue wake:', JSON.stringify(payload));
+      scheduleQueueDrain();
+    });
+  } catch (error) {
+    console.warn('[LIVE_PILOT] Failed to subscribe to queue wake channel, falling back to polling only:', error);
+  }
+
   await runRecoveryLoop();
   await processQueuedPilotTrades();
 
@@ -342,6 +375,8 @@ async function shutdown() {
         releasePilotRuntimeLock(walletAlias, lockOwner).catch(() => undefined)
       )
     );
+    await unsubscribeFromLivePilotQueueWake(queueWakeChannel).catch(() => undefined);
+    queueWakeChannel = null;
     await sendLivePilotAlert('Worker shutdown', [
       `lockOwner=${lockOwner}`,
       `wallets=${walletAliases.join(', ')}`,

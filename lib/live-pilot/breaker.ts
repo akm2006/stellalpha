@@ -9,6 +9,9 @@ import { countRecentFailedPilotTradeAttempts } from '@/lib/live-pilot/repositori
 const CIRCUIT_BREAKER_WINDOW_MINUTES = 10;
 const CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3;
 const CIRCUIT_BREAKER_ACTOR = 'system:circuit-breaker';
+const EXIT_PROTECTION_WINDOW_MINUTES = Number(process.env.PILOT_EXIT_PROTECTION_WINDOW_MINUTES || 10);
+const EXIT_PROTECTION_FAILURE_THRESHOLD = Number(process.env.PILOT_EXIT_PROTECTION_FAILURE_THRESHOLD || 2);
+const EXIT_PROTECTION_ACTOR = 'system:exit-protection';
 
 export async function evaluateWalletCircuitBreaker(walletAlias: string) {
   const sinceIso = new Date(Date.now() - CIRCUIT_BREAKER_WINDOW_MINUTES * 60_000).toISOString();
@@ -38,4 +41,40 @@ export async function evaluateWalletCircuitBreaker(walletAlias: string) {
   }
 
   return { tripped: true, failureCount };
+}
+
+export async function evaluateSellExitProtection(walletAlias: string) {
+  const sinceIso = new Date(Date.now() - EXIT_PROTECTION_WINDOW_MINUTES * 60_000).toISOString();
+  const failureCount = await countRecentFailedPilotTradeAttempts(walletAlias, sinceIso, {
+    leaderType: 'sell',
+  });
+
+  if (failureCount < EXIT_PROTECTION_FAILURE_THRESHOLD) {
+    return { activated: false, failureCount };
+  }
+
+  const snapshot = buildPilotControlSnapshot(await listPilotControlStates(), [walletAlias]);
+  const walletControl = snapshot.wallets[0];
+  const alreadyProtected =
+    walletControl.is_paused
+    && walletControl.kill_switch_active
+    && walletControl.liquidation_requested
+    && walletControl.updated_by_wallet === EXIT_PROTECTION_ACTOR;
+
+  if (!alreadyProtected) {
+    await updatePilotControlState('wallet', walletAlias, {
+      is_paused: true,
+      kill_switch_active: true,
+      liquidation_requested: true,
+      updated_by_wallet: EXIT_PROTECTION_ACTOR,
+    });
+
+    await sendLivePilotAlert('Sell exit protection activated', [
+      `wallet=${walletAlias}`,
+      `failed_sell_attempts_last_${EXIT_PROTECTION_WINDOW_MINUTES}m=${failureCount}`,
+      'New buys are blocked for this wallet and liquidation mode has been requested until the wallet is flat.',
+    ]).catch(() => undefined);
+  }
+
+  return { activated: true, failureCount };
 }
