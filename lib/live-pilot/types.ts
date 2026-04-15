@@ -61,6 +61,23 @@ export interface PilotRuntimeStateRow {
   updated_at: string;
 }
 
+export interface LivePilotLatencyMetric {
+  avgMs: number | null;
+  latestMs: number | null;
+  samples: number;
+}
+
+export interface LivePilotLatencySummary {
+  recentWindowCount: number;
+  leaderToReceive: LivePilotLatencyMetric;
+  receiveToIntent: LivePilotLatencyMetric;
+  intentToQuote: LivePilotLatencyMetric;
+  quoteToSubmit: LivePilotLatencyMetric;
+  submitToConfirm: LivePilotLatencyMetric;
+  leaderToSubmit: LivePilotLatencyMetric;
+  leaderToConfirm: LivePilotLatencyMetric;
+}
+
 export interface PilotTradeRow {
   id: string;
   wallet_alias: string;
@@ -152,6 +169,7 @@ export interface LivePilotStatusResponse {
     global: PilotControlStateRow;
     wallets: PilotControlStateRow[];
   };
+  latency: LivePilotLatencySummary;
   runtime: PilotRuntimeStateRow[];
   walletStatuses: LivePilotWalletStatus[];
   recentTrades: PilotTradeRow[];

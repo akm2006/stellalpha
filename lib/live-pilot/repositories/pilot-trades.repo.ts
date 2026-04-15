@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import { broadcastLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
 import type { PilotTradeRow, PilotTradeStatus, PilotTradeTriggerKind } from '@/lib/live-pilot/types';
 
 export interface CreatePilotTradeInput {
@@ -38,6 +39,14 @@ export async function createPilotTrade(trade: CreatePilotTradeInput) {
     throw new Error(`Failed to create live-pilot trade: ${error.message}`);
   }
 
+  if (trade.status === 'queued') {
+    void broadcastLivePilotQueueWake({
+      source: 'trade_created',
+      walletAlias: trade.wallet_alias,
+      tradeId: data.id,
+    });
+  }
+
   return { created: true as const, duplicate: false as const, trade: data as PilotTradeRow };
 }
 
@@ -58,21 +67,20 @@ export async function listRecentPilotTrades(limit: number = 25) {
 export type PilotTradePatch = Partial<Omit<PilotTradeRow, 'id' | 'wallet_alias' | 'wallet_public_key' | 'trigger_kind' | 'created_at' | 'updated_at'>>;
 
 export async function listQueuedPilotTrades(limit: number = 25) {
+  const nowIso = new Date().toISOString();
   const { data, error } = await supabase
     .from('pilot_trades')
     .select('*')
     .eq('status', 'queued')
+    .or(`next_retry_at.is.null,next_retry_at.lte.${nowIso}`)
     .order('created_at', { ascending: true })
-    .limit(Math.max(limit * 3, 50));
+    .limit(limit);
 
   if (error) {
     throw new Error(`Failed to list queued live-pilot trades: ${error.message}`);
   }
 
-  const nowMs = Date.now();
-  return ((data || []) as PilotTradeRow[])
-    .filter((trade) => !trade.next_retry_at || new Date(trade.next_retry_at).getTime() <= nowMs)
-    .slice(0, limit);
+  return (data || []) as PilotTradeRow[];
 }
 
 export async function getPilotTradeById(tradeId: string) {

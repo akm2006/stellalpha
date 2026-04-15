@@ -12,7 +12,8 @@ import {
 import type { LivePilotWalletConfig } from '@/lib/live-pilot/config';
 import type { PilotTradeRow } from '@/lib/live-pilot/types';
 import { formatSolscanTxUrl, sendLivePilotAlert } from '@/lib/live-pilot/alerts';
-import { evaluateWalletCircuitBreaker } from '@/lib/live-pilot/breaker';
+import { evaluateSellExitProtection, evaluateWalletCircuitBreaker } from '@/lib/live-pilot/breaker';
+import { broadcastLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
 import {
   createPilotTradeAttempt,
   updatePilotTradeAttempt,
@@ -24,11 +25,17 @@ import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
-const HELIUS_RPC_URL = process.env.HELIUS_API_RPC_URL
-  || (HELIUS_API_KEY ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}` : '');
+const HELIUS_GATEKEEPER_ENABLED = ['1', 'true', 'yes', 'on']
+  .includes((process.env.HELIUS_GATEKEEPER_ENABLED || '').trim().toLowerCase());
+const HELIUS_RPC_URL =
+  process.env.HELIUS_GATEKEEPER_RPC_URL
+  || process.env.HELIUS_API_RPC_URL
+  || (HELIUS_API_KEY
+    ? `${HELIUS_GATEKEEPER_ENABLED ? 'https://beta.helius-rpc.com' : 'https://mainnet.helius-rpc.com'}/?api-key=${HELIUS_API_KEY}`
+    : '');
 const JUPITER_SWAP_BASE_URL = process.env.JUPITER_SWAP_BASE_URL || 'https://api.jup.ag/swap/v2';
 const SOL_MINT = WSOL;
-const CONFIRM_POLL_INTERVAL_MS = 2_000;
+const CONFIRM_POLL_INTERVAL_MS = 500;
 const CONFIRM_TIMEOUT_MS = 8_000;
 const EXECUTE_RETRY_WINDOW_MS = 120_000;
 const EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
@@ -491,7 +498,10 @@ async function buildExecutionPlan(
     };
   }
 
-  const tokenBalance = await getTokenBalance(connection, wallet.publicKey, inputMint);
+  const [tokenBalance, lamports] = await Promise.all([
+    getTokenBalance(connection, wallet.publicKey, inputMint),
+    connection.getBalance(new PublicKey(wallet.publicKey), 'confirmed'),
+  ]);
   if (tokenBalance.uiAmount <= 0) {
     return {
       kind: 'skip',
@@ -500,7 +510,6 @@ async function buildExecutionPlan(
       };
   }
 
-  const lamports = await connection.getBalance(new PublicKey(wallet.publicKey), 'confirmed');
   const walletBalanceSol = lamports / 1e9;
   if (walletBalanceSol < wallet.minFeeReserveSol) {
     return {
@@ -551,36 +560,105 @@ export async function waitForPilotConfirmation(
   timeoutMs: number = CONFIRM_TIMEOUT_MS,
 ): Promise<ConfirmationResult> {
   const deadline = Date.now() + timeoutMs;
+  let settled = false;
+  let timeoutHandle: NodeJS.Timeout | null = null;
+  let pollHandle: NodeJS.Timeout | null = null;
+  let subscriptionId: number | null = null;
 
-  while (Date.now() < deadline) {
-    const statuses = await connection.getSignatureStatuses([signature], {
-      searchTransactionHistory: true,
-    });
-    const status = statuses.value[0];
+  return new Promise<ConfirmationResult>((resolve) => {
+    const cleanup = () => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
 
-    if (status?.err) {
-      return {
-        state: 'failed',
-        message: JSON.stringify(status.err),
-      };
+      if (pollHandle) {
+        clearTimeout(pollHandle);
+        pollHandle = null;
+      }
+
+      if (subscriptionId !== null) {
+        void connection.removeSignatureListener(subscriptionId).catch(() => undefined);
+        subscriptionId = null;
+      }
+    };
+
+    const settle = (result: ConfirmationResult) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const pollOnce = async () => {
+      if (settled) {
+        return;
+      }
+
+      try {
+        const statuses = await connection.getSignatureStatuses([signature], {
+          searchTransactionHistory: true,
+        });
+        const status = statuses.value[0];
+
+        if (status?.err) {
+          settle({
+            state: 'failed',
+            message: JSON.stringify(status.err),
+          });
+          return;
+        }
+
+        if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+          settle({
+            state: 'confirmed',
+            slot: status.slot ?? null,
+          });
+          return;
+        }
+      } catch {
+        // Keep the websocket listener active and retry via polling until timeout.
+      }
+
+      if (!settled && Date.now() < deadline) {
+        pollHandle = setTimeout(() => {
+          void pollOnce();
+        }, CONFIRM_POLL_INTERVAL_MS);
+      }
+    };
+
+    timeoutHandle = setTimeout(() => {
+      settle({ state: 'pending' });
+    }, timeoutMs);
+
+    try {
+      subscriptionId = connection.onSignature(
+        signature,
+        (result, context) => {
+          if (result.err) {
+            settle({
+              state: 'failed',
+              message: JSON.stringify(result.err),
+            });
+            return;
+          }
+
+          settle({
+            state: 'confirmed',
+            slot: context.slot ?? null,
+          });
+        },
+        'confirmed',
+      );
+    } catch {
+      subscriptionId = null;
     }
 
-    if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
-      const transaction = await connection.getTransaction(signature, {
-        commitment: 'confirmed',
-        maxSupportedTransactionVersion: 0,
-      }).catch(() => null);
-
-      return {
-        state: 'confirmed',
-        slot: transaction?.slot ?? null,
-      };
-    }
-
-    await wait(CONFIRM_POLL_INTERVAL_MS);
-  }
-
-  return { state: 'pending' };
+    void pollOnce();
+  });
 }
 
 async function maybeAlertSkippedTrade(trade: PilotTradeRow, walletAlias: string, reason: string, message: string) {
@@ -638,17 +716,23 @@ async function queueTradeRetry(
   const delayMs = computeRetryDelayMs(trade.attempt_count);
   const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
 
-  await updatePilotTrade(trade.id, {
-    status: 'queued',
-    next_retry_at: nextRetryAt,
-    error_message: message,
-    skip_reason: null,
-    ...(context?.txSignature !== undefined ? { tx_signature: context.txSignature } : {}),
-    ...(context?.txSubmittedAt !== undefined ? { tx_submitted_at: context.txSubmittedAt } : {}),
-  });
-
-  await updatePilotRuntimeState(walletAlias, {
-    last_error: message,
+  await Promise.all([
+    updatePilotTrade(trade.id, {
+      status: 'queued',
+      next_retry_at: nextRetryAt,
+      error_message: message,
+      skip_reason: null,
+      ...(context?.txSignature !== undefined ? { tx_signature: context.txSignature } : {}),
+      ...(context?.txSubmittedAt !== undefined ? { tx_submitted_at: context.txSubmittedAt } : {}),
+    }),
+    updatePilotRuntimeState(walletAlias, {
+      last_error: message,
+    }),
+  ]);
+  await broadcastLivePilotQueueWake({
+    source: 'trade_requeued',
+    walletAlias,
+    tradeId: trade.id,
   });
 
   return nextRetryAt;
@@ -713,27 +797,6 @@ export async function executePilotTrade(
     const quotedInputAmount = rawToUi(quotedInputRaw, plan.quotedInputDecimals);
     const quoteReceivedAt = new Date().toISOString();
 
-    await updatePilotTradeAttempt(attempt.id, {
-      jupiter_request_id: orderResponse.requestId || null,
-      jupiter_router: orderResponse.router || orderResponse.routerName || null,
-      last_valid_block_height: orderResponse.lastValidBlockHeight ?? null,
-      quoted_input_amount: quotedInputAmount,
-      quoted_output_amount: quotedOutputAmount,
-      quoted_input_amount_raw: quotedInputRaw,
-      price_impact_pct: priceImpactPct,
-      prioritization_fee_lamports: normalizeRawAmount(orderResponse.prioritizationFeeLamports),
-    });
-
-    await updatePilotTrade(trade.id, {
-      quote_received_at: quoteReceivedAt,
-      quoted_input_amount: quotedInputAmount,
-      quoted_output_amount: quotedOutputAmount,
-      quoted_input_amount_raw: quotedInputRaw,
-      price_impact_pct: priceImpactPct,
-      next_retry_at: null,
-      error_message: null,
-    });
-
     if (trade.leader_type === 'buy' && Math.abs(priceImpactPct) > wallet.buyMaxPriceImpactPct) {
       const message = `Price impact ${priceImpactPct.toFixed(4)} exceeded ${wallet.buyMaxPriceImpactPct.toFixed(4)}`;
       await updatePilotTradeAttempt(attempt.id, {
@@ -771,16 +834,32 @@ export async function executePilotTrade(
     const derivedTxSignature = deriveTransactionSignature(transaction);
     const txBuiltAt = new Date().toISOString();
 
-    await updatePilotTrade(trade.id, {
-      tx_built_at: txBuiltAt,
-    });
-
-    await updatePilotTradeAttempt(attempt.id, {
-      signed_transaction: signedTransaction,
-      tx_signature: derivedTxSignature,
-      execute_retry_count: 1,
-      execute_last_attempt_at: new Date().toISOString(),
-    });
+    await Promise.all([
+      updatePilotTradeAttempt(attempt.id, {
+        jupiter_request_id: orderResponse.requestId || null,
+        jupiter_router: orderResponse.router || orderResponse.routerName || null,
+        last_valid_block_height: orderResponse.lastValidBlockHeight ?? null,
+        quoted_input_amount: quotedInputAmount,
+        quoted_output_amount: quotedOutputAmount,
+        quoted_input_amount_raw: quotedInputRaw,
+        price_impact_pct: priceImpactPct,
+        prioritization_fee_lamports: normalizeRawAmount(orderResponse.prioritizationFeeLamports),
+        signed_transaction: signedTransaction,
+        tx_signature: derivedTxSignature,
+        execute_retry_count: 1,
+        execute_last_attempt_at: new Date().toISOString(),
+      }),
+      updatePilotTrade(trade.id, {
+        quote_received_at: quoteReceivedAt,
+        quoted_input_amount: quotedInputAmount,
+        quoted_output_amount: quotedOutputAmount,
+        quoted_input_amount_raw: quotedInputRaw,
+        price_impact_pct: priceImpactPct,
+        tx_built_at: txBuiltAt,
+        next_retry_at: null,
+        error_message: null,
+      }),
+    ]);
 
     let executeResponse: JupiterExecuteResponse;
     try {
@@ -793,24 +872,26 @@ export async function executePilotTrade(
       const ambiguousMessage = error instanceof Error ? error.message : 'Jupiter execute response was ambiguous';
       const pendingAt = new Date().toISOString();
 
-      await updatePilotTradeAttempt(attempt.id, {
-        status: 'submitted',
-        tx_signature: derivedTxSignature,
-        tx_submitted_at: pendingAt,
-        error_code: (error as JupiterApiError | undefined)?.code ?? 'execute_ambiguous',
-        error_message: ambiguousMessage,
-      });
-      await updatePilotTrade(trade.id, {
-        status: 'submitted',
-        tx_submitted_at: pendingAt,
-        tx_signature: derivedTxSignature,
-        error_message: ambiguousMessage,
-        next_retry_at: null,
-      });
-      await updatePilotRuntimeState(wallet.alias, {
-        last_submitted_tx_signature: derivedTxSignature,
-        last_error: ambiguousMessage,
-      });
+      await Promise.all([
+        updatePilotTradeAttempt(attempt.id, {
+          status: 'submitted',
+          tx_signature: derivedTxSignature,
+          tx_submitted_at: pendingAt,
+          error_code: (error as JupiterApiError | undefined)?.code ?? 'execute_ambiguous',
+          error_message: ambiguousMessage,
+        }),
+        updatePilotTrade(trade.id, {
+          status: 'submitted',
+          tx_submitted_at: pendingAt,
+          tx_signature: derivedTxSignature,
+          error_message: ambiguousMessage,
+          next_retry_at: null,
+        }),
+        updatePilotRuntimeState(wallet.alias, {
+          last_submitted_tx_signature: derivedTxSignature,
+          last_error: ambiguousMessage,
+        }),
+      ]);
       await sendLivePilotAlert('Execute response ambiguous', [
         `wallet=${wallet.alias}`,
         `trade=${trade.id}`,
@@ -841,51 +922,53 @@ export async function executePilotTrade(
       throw executeError;
     }
 
-    await updatePilotTradeAttempt(attempt.id, {
-      status: 'submitted',
-      tx_signature: txSignature,
-      tx_submitted_at: txSubmittedAt,
-      actual_input_amount: actualInputAmount,
-      actual_output_amount: actualOutputAmount,
-      error_code: null,
-      error_message: null,
-    });
-
-    await updatePilotTrade(trade.id, {
-      status: 'submitted',
-      tx_submitted_at: txSubmittedAt,
-      tx_signature: txSignature,
-      actual_input_amount: actualInputAmount,
-      actual_output_amount: actualOutputAmount,
-      next_retry_at: null,
-      error_message: null,
-    });
-
-    await updatePilotRuntimeState(wallet.alias, {
-      last_submitted_tx_signature: txSignature,
-      last_error: null,
-    });
+    await Promise.all([
+      updatePilotTradeAttempt(attempt.id, {
+        status: 'submitted',
+        tx_signature: txSignature,
+        tx_submitted_at: txSubmittedAt,
+        actual_input_amount: actualInputAmount,
+        actual_output_amount: actualOutputAmount,
+        error_code: null,
+        error_message: null,
+      }),
+      updatePilotTrade(trade.id, {
+        status: 'submitted',
+        tx_submitted_at: txSubmittedAt,
+        tx_signature: txSignature,
+        actual_input_amount: actualInputAmount,
+        actual_output_amount: actualOutputAmount,
+        next_retry_at: null,
+        error_message: null,
+      }),
+      updatePilotRuntimeState(wallet.alias, {
+        last_submitted_tx_signature: txSignature,
+        last_error: null,
+      }),
+    ]);
     await maybeAlertTradeSubmitted(trade, wallet.alias, txSignature);
 
     const confirmation = await waitForPilotConfirmation(connection, txSignature);
     if (confirmation.state === 'confirmed') {
       const confirmedAt = new Date().toISOString();
-      await updatePilotTradeAttempt(attempt.id, {
-        status: 'confirmed',
-        tx_confirmed_at: confirmedAt,
-        confirmation_slot: confirmation.slot,
-      });
-      await updatePilotTrade(trade.id, {
-        status: 'confirmed',
-        tx_confirmed_at: confirmedAt,
-        confirmation_slot: confirmation.slot,
-        winning_attempt_id: attempt.id,
-        next_retry_at: null,
-      });
-      await updatePilotRuntimeState(wallet.alias, {
-        last_confirmed_tx_signature: txSignature,
-        last_error: null,
-      });
+      await Promise.all([
+        updatePilotTradeAttempt(attempt.id, {
+          status: 'confirmed',
+          tx_confirmed_at: confirmedAt,
+          confirmation_slot: confirmation.slot,
+        }),
+        updatePilotTrade(trade.id, {
+          status: 'confirmed',
+          tx_confirmed_at: confirmedAt,
+          confirmation_slot: confirmation.slot,
+          winning_attempt_id: attempt.id,
+          next_retry_at: null,
+        }),
+        updatePilotRuntimeState(wallet.alias, {
+          last_confirmed_tx_signature: txSignature,
+          last_error: null,
+        }),
+      ]);
       await maybeAlertTradeConfirmed(trade, wallet.alias, txSignature);
       return { outcome: 'confirmed', signature: txSignature };
     }
@@ -947,6 +1030,9 @@ export async function executePilotTrade(
       last_error: message,
     });
     if (terminalStatus === 'failed') {
+      if (trade.leader_type === 'sell') {
+        await evaluateSellExitProtection(wallet.alias).catch(() => undefined);
+      }
       await evaluateWalletCircuitBreaker(wallet.alias).catch(() => undefined);
       await maybeAlertTradeFailure(trade, wallet.alias, message);
     } else {
