@@ -42,6 +42,7 @@ const EXECUTE_RETRY_WINDOW_MS = 120_000;
 const EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
 const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_MAX_MS = 8_000;
+const FAST_BUY_REQUOTE_DELAY_MS = 250;
 export const LIVE_PILOT_TECHNICAL_MIN_SOL = 0.005;
 const SELL_SLIPPAGE_LADDER_BPS = [1000, 3000, 5000, 8000];
 const SELL_EXIT_CHUNK_LADDER = [
@@ -235,6 +236,38 @@ export function isRetryableSellExecutionFailure(
     || lower.includes('tick array')
     || lower.includes('bitmap extension')
   );
+}
+
+export function isRetryableBuyExecutionFailure(
+  trade: Pick<PilotTradeRow, 'leader_type'>,
+  code: string | null,
+  message: string,
+) {
+  if (trade.leader_type !== 'buy') {
+    return false;
+  }
+
+  const lower = message.toLowerCase();
+  return (
+    code === '6001'
+    || lower.includes('6001')
+    || lower.includes('slippage tolerance exceeded')
+    || lower.includes('slippage limit exceeded')
+    || lower.includes('slippagelimitexceeded')
+  );
+}
+
+export function getTradeRetryDelayMs(
+  trade: Pick<PilotTradeRow, 'leader_type'>,
+  attemptCount: number,
+  code: string | null,
+  message: string,
+) {
+  if (isRetryableBuyExecutionFailure(trade, code, message)) {
+    return FAST_BUY_REQUOTE_DELAY_MS;
+  }
+
+  return computeRetryDelayMs(attemptCount);
 }
 
 export function getPilotTradeMaxAttempts(wallet: LivePilotWalletConfig, trade: PilotTradeRow) {
@@ -876,9 +909,10 @@ async function queueTradeRetry(
   context?: {
     txSignature?: string | null;
     txSubmittedAt?: string | null;
+    delayMs?: number;
   },
 ) {
-  const delayMs = computeRetryDelayMs(trade.attempt_count);
+  const delayMs = context?.delayMs ?? computeRetryDelayMs(trade.attempt_count);
   const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
 
   await Promise.all([
@@ -1163,7 +1197,8 @@ export async function executePilotTrade(
     const message = error?.message || 'Unknown live-pilot execution error';
     const retryable =
       isRetryableExecutionCode(code)
-      || isRetryableSellExecutionFailure(trade, code, message);
+      || isRetryableSellExecutionFailure(trade, code, message)
+      || isRetryableBuyExecutionFailure(trade, code, message);
     const classification = classifyJupiterFailure(message, code, retryable, {
       retryNoRoute: trade.leader_type === 'sell',
     });
@@ -1185,9 +1220,11 @@ export async function executePilotTrade(
 
     const canRetry = classification.retryable && trade.attempt_count < plan.maxAttempts;
     if (canRetry) {
+      const retryDelayMs = getTradeRetryDelayMs(trade, trade.attempt_count, code, message);
       const nextRetryAt = await queueTradeRetry(trade, wallet.alias, message, {
         txSignature: failedTxSignature,
         txSubmittedAt: failedSubmittedAt,
+        delayMs: retryDelayMs,
       });
       await sendLivePilotAlert('Trade requeued', [
         `wallet=${wallet.alias}`,

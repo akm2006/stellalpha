@@ -5,7 +5,7 @@ const LIVE_PILOT_QUEUE_CHANNEL = 'live-pilot-queue';
 const LIVE_PILOT_QUEUE_EVENT = 'queue-wake';
 const SUBSCRIBE_TIMEOUT_MS = 5_000;
 
-let broadcastSenderPromise: Promise<RealtimeChannel> | null = null;
+let broadcastSenderChannel: RealtimeChannel | null = null;
 
 function waitForSubscription(channel: RealtimeChannel) {
   return new Promise<RealtimeChannel>((resolve, reject) => {
@@ -27,9 +27,10 @@ function waitForSubscription(channel: RealtimeChannel) {
   });
 }
 
-async function getBroadcastSenderChannel() {
-  if (!broadcastSenderPromise) {
-    const channel = supabase.channel(LIVE_PILOT_QUEUE_CHANNEL, {
+function getBroadcastSenderChannel() {
+  if (!broadcastSenderChannel) {
+    // Supabase broadcast can send over HTTP without first subscribing.
+    broadcastSenderChannel = supabase.channel(LIVE_PILOT_QUEUE_CHANNEL, {
       config: {
         broadcast: {
           ack: false,
@@ -37,14 +38,9 @@ async function getBroadcastSenderChannel() {
         },
       },
     });
-
-    broadcastSenderPromise = waitForSubscription(channel).catch((error) => {
-      broadcastSenderPromise = null;
-      throw error;
-    });
   }
 
-  return broadcastSenderPromise;
+  return broadcastSenderChannel;
 }
 
 export async function broadcastLivePilotQueueWake(payload: {
@@ -53,7 +49,7 @@ export async function broadcastLivePilotQueueWake(payload: {
   tradeId?: string;
 }) {
   try {
-    const channel = await getBroadcastSenderChannel();
+    const channel = getBroadcastSenderChannel();
     await channel.send({
       type: 'broadcast',
       event: LIVE_PILOT_QUEUE_EVENT,
@@ -63,6 +59,7 @@ export async function broadcastLivePilotQueueWake(payload: {
       },
     });
   } catch (error) {
+    broadcastSenderChannel = null;
     console.warn('[LIVE_PILOT] Failed to broadcast queue wake:', error);
   }
 }

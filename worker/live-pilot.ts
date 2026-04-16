@@ -28,12 +28,21 @@ const LOCK_WAIT_TIMEOUT_MS = 2_000;
 const LOCK_WAIT_INTERVAL_MS = 250;
 const QUEUE_BATCH_SIZE = 10;
 const WALLET_BUSY_RETRY_DELAY_MS = 2_500;
+const CONTROL_CACHE_TTL_MS = 1_000;
 
 let isShuttingDown = false;
 let isProcessingQueue = false;
 let isRunningRecovery = false;
 let isQueueDrainScheduled = false;
 let queueWakeChannel: RealtimeChannel | null = null;
+
+type PilotControlSnapshot = ReturnType<typeof buildPilotControlSnapshot>;
+
+let controlSnapshotCache: {
+  walletAliasesKey: string;
+  expiresAt: number;
+  snapshot: PilotControlSnapshot;
+} | null = null;
 
 const lockOwner = `${os.hostname()}:${process.pid}:live-pilot`;
 const connection = createLivePilotConnection();
@@ -54,6 +63,37 @@ function scheduleQueueDrain() {
       console.error('[LIVE_PILOT] Scheduled queue drain error:', error);
     });
   }, 0);
+}
+
+async function getPilotControlSnapshot(walletAliases: string[]) {
+  const walletAliasesKey = [...walletAliases].sort().join('|');
+  const now = Date.now();
+
+  if (
+    controlSnapshotCache
+    && controlSnapshotCache.walletAliasesKey === walletAliasesKey
+    && controlSnapshotCache.expiresAt > now
+  ) {
+    return controlSnapshotCache.snapshot;
+  }
+
+  try {
+    const controlRows = await listPilotControlStates();
+    const snapshot = buildPilotControlSnapshot(controlRows, walletAliases);
+    controlSnapshotCache = {
+      walletAliasesKey,
+      expiresAt: now + CONTROL_CACHE_TTL_MS,
+      snapshot,
+    };
+    return snapshot;
+  } catch (error) {
+    if (controlSnapshotCache && controlSnapshotCache.walletAliasesKey === walletAliasesKey) {
+      console.warn('[LIVE_PILOT] Failed to refresh control snapshot, using cached value:', error);
+      return controlSnapshotCache.snapshot;
+    }
+
+    throw error;
+  }
 }
 
 async function acquireExecutionLock(walletAlias: string) {
@@ -153,8 +193,7 @@ async function processQueuedPilotTrades() {
       throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
     }
 
-    const controlRows = await listPilotControlStates();
-    const controlSnapshot = buildPilotControlSnapshot(controlRows, walletAliases);
+    const controlSnapshot = await getPilotControlSnapshot(walletAliases);
     const walletControlMap = new Map(
       controlSnapshot.wallets.map((row) => [row.scope_key, row])
     );
