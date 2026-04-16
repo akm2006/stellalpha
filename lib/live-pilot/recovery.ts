@@ -6,12 +6,14 @@ import {
   classifyJupiterFailure,
   computeRetryDelayMs,
   executeSignedOrder,
+  getTradeRetryDelayMs,
   getPilotTradeMaxAttempts,
   isAmbiguousExecuteError,
   isExecuteRetryWindowOpen,
   isNoRouteFailure,
   maybeQueueResidualExitTrade,
   quarantineFailedMint,
+  isRetryableBuyExecutionFailure,
   isRetryableExecutionCode,
   isRetryableSellExecutionFailure,
 } from '@/lib/live-pilot/executor';
@@ -168,7 +170,9 @@ async function maybeRecoverMissingExecuteSignature(args: {
     });
 
     if (trade.attempt_count < maxAttempts) {
-      const nextRetryAt = new Date(Date.now() + computeRetryDelayMs(trade.attempt_count)).toISOString();
+      const nextRetryAt = new Date(
+        Date.now() + getTradeRetryDelayMs(trade, trade.attempt_count, 'execute_retry_window_expired', message),
+      ).toISOString();
       await updatePilotTradeIfStatus(trade.id, 'submitted', {
         status: 'queued',
         next_retry_at: nextRetryAt,
@@ -329,9 +333,10 @@ async function maybeRecoverMissingExecuteSignature(args: {
     }
 
     const code = (error as { code?: string } | undefined)?.code || 'execute_recovery_error';
-    const retryable =
-      isRetryableExecutionCode(code)
-      || isRetryableSellExecutionFailure(trade, code, message);
+      const retryable =
+        isRetryableExecutionCode(code)
+        || isRetryableSellExecutionFailure(trade, code, message)
+        || isRetryableBuyExecutionFailure(trade, code, message);
     const classification = classifyJupiterFailure(message, code, retryable, {
       retryNoRoute: trade.leader_type === 'sell',
     });
@@ -348,10 +353,10 @@ async function maybeRecoverMissingExecuteSignature(args: {
     });
 
     if (classification.retryable && trade.attempt_count < maxAttempts) {
-      const nextRetryAt = new Date(Date.now() + computeRetryDelayMs(trade.attempt_count)).toISOString();
-      await updatePilotTradeIfStatus(trade.id, 'submitted', {
-        status: 'queued',
-        next_retry_at: nextRetryAt,
+        const nextRetryAt = new Date(Date.now() + getTradeRetryDelayMs(trade, trade.attempt_count, code, message)).toISOString();
+        await updatePilotTradeIfStatus(trade.id, 'submitted', {
+          status: 'queued',
+          next_retry_at: nextRetryAt,
         tx_submitted_at: null,
         error_message: message,
       });
@@ -468,9 +473,10 @@ export async function recoverSubmittedPilotTrades(args: {
           const serializedErr = JSON.stringify(status.err);
           const code = serializedErr.includes('15001') ? '15001' : 'chain_failure';
           const message = `Submitted transaction failed on chain: ${serializedErr}`;
-          const retryable =
-            isRetryableExecutionCode(code)
-            || isRetryableSellExecutionFailure(trade, code, message);
+    const retryable =
+      isRetryableExecutionCode(code)
+      || isRetryableSellExecutionFailure(trade, code, message)
+      || isRetryableBuyExecutionFailure(trade, code, message);
 
           if (retryable && trade.attempt_count < getPilotTradeMaxAttempts(wallet, trade)) {
             await updatePilotTradeAttempt(attempt.id, {
@@ -479,10 +485,10 @@ export async function recoverSubmittedPilotTrades(args: {
               error_message: message,
             });
 
-            const nextRetryAt = new Date(Date.now() + computeRetryDelayMs(trade.attempt_count)).toISOString();
-            await updatePilotTradeIfStatus(trade.id, 'submitted', {
-              status: 'queued',
-              next_retry_at: nextRetryAt,
+      const nextRetryAt = new Date(Date.now() + getTradeRetryDelayMs(trade, trade.attempt_count, code, message)).toISOString();
+      await updatePilotTradeIfStatus(trade.id, 'submitted', {
+        status: 'queued',
+        next_retry_at: nextRetryAt,
               error_message: message,
             });
             await updatePilotRuntimeState(wallet.alias, {
