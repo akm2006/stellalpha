@@ -4,13 +4,15 @@ export type PilotAttemptStatus = 'building' | 'submitted' | 'confirmed' | 'faile
 export type PilotControlScopeType = 'global' | 'wallet';
 export type PilotWalletMode = 'copy';
 export type PilotCashMode = 'sol';
+export type PilotMintQuarantineStatus = 'active' | 'cleared';
 export type PilotControlAction =
   | 'global_pause'
   | 'global_resume'
   | 'wallet_pause'
   | 'wallet_resume'
   | 'kill_switch_activate'
-  | 'wallet_liquidate';
+  | 'wallet_liquidate'
+  | 'mint_quarantine_clear';
 
 export interface PilotWalletConfigSummary {
   slot: 'A' | 'B';
@@ -58,6 +60,22 @@ export interface PilotRuntimeStateRow {
   last_confirmed_tx_signature: string | null;
   last_error: string | null;
   last_reconcile_at: string | null;
+  updated_at: string;
+}
+
+export interface PilotMintQuarantineRow {
+  mint: string;
+  status: PilotMintQuarantineStatus;
+  reason: string;
+  first_wallet_alias: string | null;
+  first_star_trader: string | null;
+  first_pilot_trade_id: string | null;
+  first_detected_at: string;
+  last_detected_at: string;
+  cleared_at: string | null;
+  cleared_by_wallet: string | null;
+  note: string | null;
+  created_at: string;
   updated_at: string;
 }
 
@@ -153,6 +171,16 @@ export interface LivePilotWalletStatus {
   runtime: PilotRuntimeStateRow | null;
 }
 
+export interface LivePilotDeadInventoryItem {
+  walletAlias: string;
+  walletPublicKey: string;
+  mint: string;
+  symbol: string;
+  uiAmount: number;
+  estimatedSolValue: number | null;
+  quarantineReason: string | null;
+}
+
 export interface LivePilotStatusResponse {
   generatedAt: string;
   operatorWallet: string;
@@ -172,5 +200,7 @@ export interface LivePilotStatusResponse {
   latency: LivePilotLatencySummary;
   runtime: PilotRuntimeStateRow[];
   walletStatuses: LivePilotWalletStatus[];
+  quarantinedMints: PilotMintQuarantineRow[];
+  walletDeadInventory: LivePilotDeadInventoryItem[];
   recentTrades: PilotTradeRow[];
 }

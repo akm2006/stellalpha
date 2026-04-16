@@ -3,6 +3,7 @@ import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import type { Connection } from '@solana/web3.js';
 import type { LivePilotWalletConfig } from '@/lib/live-pilot/config';
 import { sendLivePilotAlert } from '@/lib/live-pilot/alerts';
+import { listActivePilotMintQuarantines } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
 import { listActiveLiquidationTrades, createPilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import { updatePilotRuntimeState } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import { getSolPrice, getTokenSymbol } from '@/lib/services/token-service';
@@ -129,10 +130,11 @@ function selectMeaningfulLiquidationCandidates(args: {
 
 export async function getWalletLiquidationStatus(args: WalletLiquidationStatusArgs) {
   const { walletAlias, walletPublicKey, connection } = args;
-  const [holdings, activeLiquidations, solPrice] = await Promise.all([
+  const [holdings, activeLiquidations, solPrice, quarantines] = await Promise.all([
     getWalletTokenHoldings(connection, walletPublicKey),
     listActiveLiquidationTrades(walletAlias),
     getSolPrice(),
+    listActivePilotMintQuarantines(),
   ]);
 
   const prices = await fetchUsdPrices(holdings.map((holding) => holding.mint));
@@ -141,15 +143,21 @@ export async function getWalletLiquidationStatus(args: WalletLiquidationStatusAr
     prices,
     solPrice,
   });
+  const quarantinedMintSet = new Set(quarantines.map((entry) => entry.mint));
+  const deadInventoryHoldings = meaningfulHoldings.filter((holding) => quarantinedMintSet.has(holding.mint));
+  const liquidatableHoldings = meaningfulHoldings.filter((holding) => !quarantinedMintSet.has(holding.mint));
 
   return {
     holdings,
     meaningfulHoldings,
+    deadInventoryHoldings,
+    liquidatableHoldings,
     activeLiquidations,
     activeLiquidationCount: activeLiquidations.length,
     meaningfulHoldingCount: meaningfulHoldings.length,
-    isFlat: meaningfulHoldings.length === 0,
-    pendingWork: activeLiquidations.length > 0 || meaningfulHoldings.length > 0,
+    deadInventoryCount: deadInventoryHoldings.length,
+    isFlat: liquidatableHoldings.length === 0,
+    pendingWork: activeLiquidations.length > 0 || liquidatableHoldings.length > 0,
     solPrice,
   };
 }
@@ -162,10 +170,11 @@ export async function enqueueLiquidationIntentsForWallet(args: {
   const { wallet, connection, reason } = args;
   const {
     holdings,
-    meaningfulHoldings,
+    liquidatableHoldings,
     activeLiquidations,
     activeLiquidationCount,
     meaningfulHoldingCount,
+    deadInventoryCount,
     pendingWork,
     solPrice,
   } = await getWalletLiquidationStatus({
@@ -175,7 +184,7 @@ export async function enqueueLiquidationIntentsForWallet(args: {
   });
 
   const activeMints = new Set(activeLiquidations.map((trade) => trade.token_in_mint).filter(Boolean));
-  const candidates = meaningfulHoldings.filter((holding) => !activeMints.has(holding.mint));
+  const candidates = liquidatableHoldings.filter((holding) => !activeMints.has(holding.mint));
 
   if (candidates.length === 0) {
     return {
@@ -184,6 +193,7 @@ export async function enqueueLiquidationIntentsForWallet(args: {
       pendingWork,
       activeLiquidationCount,
       meaningfulHoldingCount,
+      deadInventoryCount,
     };
   }
 
@@ -229,11 +239,12 @@ export async function enqueueLiquidationIntentsForWallet(args: {
     ]).catch(() => undefined);
   }
 
-  return {
-    created,
-    skippedDust: holdings.length - candidates.length,
-    pendingWork: true,
-    activeLiquidationCount,
-    meaningfulHoldingCount,
-  };
+    return {
+      created,
+      skippedDust: holdings.length - candidates.length,
+      pendingWork: true,
+      activeLiquidationCount,
+      meaningfulHoldingCount,
+      deadInventoryCount,
+    };
 }

@@ -99,6 +99,14 @@ function formatLatencyDetail(metric: LivePilotLatencyMetric) {
   return `${metric.samples} sample${metric.samples === 1 ? '' : 's'} · latest ${latest}`;
 }
 
+function formatEstimatedSol(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—';
+  }
+
+  return `${value.toFixed(value >= 0.1 ? 3 : 5)} SOL`;
+}
+
 function getSolscanTxUrl(signature: string) {
   return `https://solscan.io/tx/${signature}`;
 }
@@ -180,7 +188,7 @@ export function LivePilotConsole() {
     }
   }
 
-  function runAction(action: PilotControlAction, walletAlias?: string) {
+  function runAction(action: PilotControlAction, walletAlias?: string, extras?: { mint?: string; note?: string }) {
     const confirmMessage =
       action === 'kill_switch_activate'
         ? 'Activate the live-pilot kill switch? This pauses global automation and marks every configured wallet for liquidation.'
@@ -188,6 +196,8 @@ export function LivePilotConsole() {
           ? 'Resume the live pilot globally? Wallet-level pauses and liquidation flags stay untouched.'
           : action === 'wallet_liquidate'
             ? `Request liquidation for ${walletAlias}? This pauses that wallet and sets liquidation_requested = true.`
+            : action === 'mint_quarantine_clear'
+              ? `Clear the quarantine for ${extras?.mint}? This will allow future buys of that mint again.`
             : null;
 
     if (confirmMessage && !window.confirm(confirmMessage)) {
@@ -199,7 +209,7 @@ export function LivePilotConsole() {
         const response = await fetch('/api/live-pilot/control', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, walletAlias }),
+          body: JSON.stringify({ action, walletAlias, ...extras }),
         });
         const payload = await response.json().catch(() => ({}));
 
@@ -262,7 +272,7 @@ export function LivePilotConsole() {
                 <p className="mt-3 max-w-2xl text-sm leading-6 md:text-base" style={{ color: COLORS.data }}>
                   {(status?.controlPlaneOnly ?? true)
                     ? 'This page is currently serving a control-only snapshot. Treat automation as unavailable until the full live-pilot status feed returns and execution state is visible here.'
-                    : 'This page manages operator auth, pause state, wallet mapping visibility, runtime breadcrumbs, and the recent live-intent feed. The dedicated signer and execution worker are live, so unpausing can submit real swaps.'}
+                    : 'This page manages operator auth, pause state, wallet mapping visibility, latency telemetry, quarantined mints, dead inventory, and the recent live-intent feed. The dedicated signer and execution worker are live, so unpausing can submit real swaps.'}
                 </p>
               </div>
 
@@ -384,7 +394,7 @@ export function LivePilotConsole() {
                   String(status.summary.recentTradeCount),
                   status.controlPlaneOnly
                     ? 'The parent table is ready so orchestrator intent creation can plug in without inventing a second operator read model.'
-                    : 'Leader trades now fan out into pilot intent rows after the core claim path commits, and queued rows can execute once the pilot is unpaused.',
+                    : 'Leader trades now fan out into pilot intent rows after the core claim path commits, with demo-parity sizing plus a tiny technical floor on live buys.',
                   <AlertTriangle size={16} style={{ color: '#F87171' }} />
                 )}
               </section>
@@ -437,7 +447,7 @@ export function LivePilotConsole() {
                 >
                   <h2 className="text-lg font-semibold">Wallet Control Matrix</h2>
                   <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
-                    Overview, diagnosis, and action stay side-by-side so we can spot incomplete config before wiring live submission.
+                    Overview, diagnosis, and action stay side-by-side so we can supervise two live pilot wallets, spot trapped inventory, and control execution safely.
                   </p>
 
                   <div className="mt-4 overflow-x-auto">
@@ -484,8 +494,8 @@ export function LivePilotConsole() {
                               <div className="space-y-1 text-xs leading-5" style={{ color: COLORS.data }}>
                                 <div>Fee reserve: {(walletStatus.config.feeReservePct * 100).toFixed(1)}%</div>
                                 <div>Min reserve: {walletStatus.config.minFeeReserveSol.toFixed(2)} SOL</div>
-                                <div>Min trade: {walletStatus.config.minTradeSizeSol.toFixed(2)} SOL</div>
-                                <div>Buy cap: {(walletStatus.config.maxTradeBuypowerPct * 100).toFixed(0)}%</div>
+                                <div>Sizing: Demo parity ratio</div>
+                                <div>Live floor: 0.005 SOL</div>
                                 <div>Impact cap: {(walletStatus.config.buyMaxPriceImpactPct * 100).toFixed(1)}%</div>
                               </div>
                               {!walletStatus.config.isComplete && walletStatus.config.missingFields.length > 0 ? (
@@ -566,10 +576,119 @@ export function LivePilotConsole() {
                       <p className="mt-3 text-sm leading-6" style={{ color: COLORS.data }}>
                         {status.controlPlaneOnly
                           ? 'We now have durable pause state, runtime placeholders, and an operator-only control page before any live signer or intent producer is introduced. That keeps the next execution PR additive instead of invasive.'
-                          : 'We now have a durable operator control plane, a live execution worker, and real pilot intent rows sourced from the canonical leader claim path. That lets us supervise pause state, queue visibility, and real-funds execution from one surface.'}
+                          : 'We now have a durable operator control plane, a live execution worker, and real pilot intent rows sourced from the canonical leader claim path. Quarantined mints and dead inventory stay visible here so a hopeless rug does not stall the rest of the pilot.'}
                       </p>
                     </div>
                   </div>
+                </div>
+              </section>
+
+              <section className="grid gap-6 xl:grid-cols-2">
+                <div
+                  className="rounded-3xl border p-5"
+                  style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
+                >
+                  <h2 className="text-lg font-semibold">Trapped / Quarantined Mints</h2>
+                  <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
+                    Once a sell or liquidation exhausts the chunk ladder with only no-route failures, the mint is quarantined globally and future buys are skipped until an operator clears it.
+                  </p>
+
+                  {status.quarantinedMints.length === 0 ? (
+                    <div
+                      className="mt-4 rounded-2xl border border-dashed px-4 py-8 text-center text-sm"
+                      style={{ borderColor: 'rgba(255,255,255,0.12)', color: COLORS.data }}
+                    >
+                      No quarantined mints right now.
+                    </div>
+                  ) : (
+                    <div className="mt-4 overflow-x-auto">
+                      <table className="min-w-full text-left text-sm">
+                        <thead style={{ color: COLORS.data }}>
+                          <tr className="border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+                            <th className="px-3 py-3 font-medium">Mint</th>
+                            <th className="px-3 py-3 font-medium">First Wallet</th>
+                            <th className="px-3 py-3 font-medium">Trader</th>
+                            <th className="px-3 py-3 font-medium">Reason</th>
+                            <th className="px-3 py-3 font-medium">Detected</th>
+                            <th className="px-3 py-3 font-medium">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {status.quarantinedMints.map((entry) => (
+                            <tr key={entry.mint} className="border-b" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+                              <td className="px-3 py-4">
+                                <div className="font-medium">{truncate(entry.mint, 6, 6)}</div>
+                              </td>
+                              <td className="px-3 py-4">{entry.first_wallet_alias || '—'}</td>
+                              <td className="px-3 py-4">{entry.first_star_trader ? truncate(entry.first_star_trader, 6, 6) : '—'}</td>
+                              <td className="px-3 py-4">{entry.reason}</td>
+                              <td className="px-3 py-4">{formatRelativeTime(entry.last_detected_at)}</td>
+                              <td className="px-3 py-4">
+                                <button
+                                  type="button"
+                                  onClick={() => runAction('mint_quarantine_clear', undefined, { mint: entry.mint })}
+                                  disabled={isPending}
+                                  className="inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition hover:bg-white/5 disabled:opacity-50"
+                                  style={{ borderColor: 'rgba(255,255,255,0.12)' }}
+                                >
+                                  Clear Quarantine
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  className="rounded-3xl border p-5"
+                  style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
+                >
+                  <h2 className="text-lg font-semibold">Active Dead Inventory</h2>
+                  <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
+                    Quarantined holdings that stay in the wallet as dead inventory. They are not treated as active liquidation work and should not block the rest of the pilot.
+                  </p>
+
+                  {status.walletDeadInventory.length === 0 ? (
+                    <div
+                      className="mt-4 rounded-2xl border border-dashed px-4 py-8 text-center text-sm"
+                      style={{ borderColor: 'rgba(255,255,255,0.12)', color: COLORS.data }}
+                    >
+                      No quarantined wallet inventory detected.
+                    </div>
+                  ) : (
+                    <div className="mt-4 overflow-x-auto">
+                      <table className="min-w-full text-left text-sm">
+                        <thead style={{ color: COLORS.data }}>
+                          <tr className="border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+                            <th className="px-3 py-3 font-medium">Wallet</th>
+                            <th className="px-3 py-3 font-medium">Mint</th>
+                            <th className="px-3 py-3 font-medium">Amount</th>
+                            <th className="px-3 py-3 font-medium">Est. SOL</th>
+                            <th className="px-3 py-3 font-medium">State</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {status.walletDeadInventory.map((entry) => (
+                            <tr key={`${entry.walletAlias}:${entry.mint}`} className="border-b" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+                              <td className="px-3 py-4">{entry.walletAlias}</td>
+                              <td className="px-3 py-4">
+                                <div className="font-medium">{entry.symbol}</div>
+                                <div className="mt-1 text-xs" style={{ color: COLORS.data }}>
+                                  {truncate(entry.mint, 6, 6)}
+                                </div>
+                              </td>
+                              <td className="px-3 py-4">{entry.uiAmount.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+                              <td className="px-3 py-4">{formatEstimatedSol(entry.estimatedSolValue)}</td>
+                              <td className="px-3 py-4">{entry.quarantineReason || 'quarantined'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </section>
 
@@ -581,7 +700,7 @@ export function LivePilotConsole() {
                 <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
                   {status.controlPlaneOnly
                     ? 'This table is intentionally light right now. It becomes the operator’s recent-intent feed once orchestrator wiring lands.'
-                    : 'This is the operator-facing parent intent feed. It shows queued, skipped, submitted, and confirmed pilot rows while the live execution worker is active.'}
+                    : 'This is the operator-facing parent intent feed. It shows queued, skipped, submitted, and confirmed pilot rows while the live execution worker is active. Demo-parity live buys use ratio sizing plus a 0.005 SOL technical floor.'}
                 </p>
 
                 {status.recentTrades.length === 0 ? (

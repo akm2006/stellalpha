@@ -4,6 +4,7 @@ import { getLivePilotOperatorAccess } from '@/lib/live-pilot/auth';
 import { findPilotWalletByAlias } from '@/lib/live-pilot/config';
 import { createLivePilotConnection } from '@/lib/live-pilot/executor';
 import { getWalletLiquidationStatus } from '@/lib/live-pilot/liquidation';
+import { clearPilotMintQuarantine } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
 import {
   buildPilotControlSnapshot,
   ensurePilotControlState,
@@ -22,6 +23,7 @@ const VALID_ACTIONS: PilotControlAction[] = [
   'wallet_resume',
   'kill_switch_activate',
   'wallet_liquidate',
+  'mint_quarantine_clear',
 ];
 
 function isWalletScopedAction(action: PilotControlAction) {
@@ -34,7 +36,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: access.error }, { status: access.status });
   }
 
-  let body: { action?: PilotControlAction; walletAlias?: string } = {};
+  let body: { action?: PilotControlAction; walletAlias?: string; mint?: string; note?: string } = {};
   try {
     body = await request.json();
   } catch {
@@ -47,6 +49,8 @@ export async function POST(request: NextRequest) {
   }
 
   const walletAlias = body.walletAlias?.trim();
+  const mint = body.mint?.trim();
+  const note = body.note?.trim();
   const configuredAliases = new Set(access.config.wallets.map((wallet) => wallet.alias));
 
   if (isWalletScopedAction(action)) {
@@ -154,6 +158,21 @@ export async function POST(request: NextRequest) {
         await sendLivePilotAlert('Wallet liquidation requested', [
           `operator=${access.operatorWallet}`,
           `wallet=${walletAlias!}`,
+        ]).catch(() => undefined);
+        break;
+      case 'mint_quarantine_clear':
+        if (!mint) {
+          return NextResponse.json({ error: 'mint is required for mint_quarantine_clear' }, { status: 400 });
+        }
+        await clearPilotMintQuarantine({
+          mint,
+          clearedByWallet: access.operatorWallet,
+          note: note || null,
+        });
+        await sendLivePilotAlert('Mint quarantine cleared', [
+          `operator=${access.operatorWallet}`,
+          `mint=${mint}`,
+          ...(note ? [`note=${note}`] : []),
         ]).catch(() => undefined);
         break;
       default:

@@ -1,11 +1,15 @@
 import { toLivePilotConfigSummary } from '@/lib/live-pilot/config';
 import type { LivePilotPublicConfig } from '@/lib/live-pilot/config';
 import type {
+  LivePilotDeadInventoryItem,
   LivePilotLatencyMetric,
   LivePilotLatencySummary,
   LivePilotStatusResponse,
   PilotTradeRow,
 } from '@/lib/live-pilot/types';
+import { createLivePilotConnection } from '@/lib/live-pilot/executor';
+import { getWalletLiquidationStatus } from '@/lib/live-pilot/liquidation';
+import { listActivePilotMintQuarantines } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
 import {
   buildPilotControlSnapshot,
   ensurePilotControlState,
@@ -16,6 +20,7 @@ import {
   listPilotRuntimeStates,
 } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import { listRecentPilotTrades } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import { getTokenSymbol } from '@/lib/services/token-service';
 
 function toMs(value: string | null | undefined) {
   if (!value) {
@@ -83,11 +88,37 @@ export async function getLivePilotStatus(
   await ensurePilotControlState(walletAliases);
   await ensurePilotRuntimeState(config.wallets);
 
-  const [controlRows, runtimeRows, recentTrades] = await Promise.all([
+  const [controlRows, runtimeRows, recentTrades, quarantinedMints] = await Promise.all([
     listPilotControlStates(),
     listPilotRuntimeStates(walletAliases),
     listRecentPilotTrades(15),
+    listActivePilotMintQuarantines(),
   ]);
+  const connection = createLivePilotConnection();
+  const walletLiquidationStatuses = await Promise.all(
+    config.wallets.map(async (wallet) => ({
+      wallet,
+      status: await getWalletLiquidationStatus({
+        walletAlias: wallet.alias,
+        walletPublicKey: wallet.publicKey,
+        connection,
+      }),
+    })),
+  );
+  const walletDeadInventory: LivePilotDeadInventoryItem[] = walletLiquidationStatuses.flatMap(({ wallet, status }) =>
+    status.deadInventoryHoldings.map((holding) => {
+      const quarantine = quarantinedMints.find((entry) => entry.mint === holding.mint);
+      return {
+        walletAlias: wallet.alias,
+        walletPublicKey: wallet.publicKey,
+        mint: holding.mint,
+        symbol: getTokenSymbol(holding.mint),
+        uiAmount: holding.uiAmount,
+        estimatedSolValue: holding.estimatedSolValue,
+        quarantineReason: quarantine?.reason || null,
+      };
+    }),
+  );
 
   const control = buildPilotControlSnapshot(controlRows, walletAliases);
   const walletStatuses = config.wallets.map((wallet) => {
@@ -114,6 +145,8 @@ export async function getLivePilotStatus(
     latency: summarizeLivePilotLatency(recentTrades),
     runtime: runtimeRows,
     walletStatuses,
+    quarantinedMints,
+    walletDeadInventory,
     recentTrades,
   };
 }
