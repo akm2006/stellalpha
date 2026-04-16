@@ -43,7 +43,7 @@ const EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
 const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_MAX_MS = 8_000;
 const FAST_BUY_REQUOTE_DELAY_MS = 250;
-export const LIVE_PILOT_TECHNICAL_MIN_SOL = 0.005;
+export const LIVE_PILOT_TECHNICAL_MIN_SOL = 0;
 const SELL_SLIPPAGE_LADDER_BPS = [1000, 3000, 5000, 8000];
 const SELL_EXIT_CHUNK_LADDER = [
   { numerator: 1n, denominator: 1n, label: '100%' },
@@ -996,7 +996,11 @@ export async function executePilotTrade(
     const quotedInputAmount = rawToUi(quotedInputRaw, plan.quotedInputDecimals);
     const quoteReceivedAt = new Date().toISOString();
 
-    if (trade.leader_type === 'buy' && Math.abs(priceImpactPct) > wallet.buyMaxPriceImpactPct) {
+    const shouldEnforcePriceImpact =
+      trade.leader_type === 'buy'
+      && wallet.buyMaxPriceImpactPct > 0;
+
+    if (shouldEnforcePriceImpact && Math.abs(priceImpactPct) > wallet.buyMaxPriceImpactPct) {
       const message = `Price impact ${priceImpactPct.toFixed(4)} exceeded ${wallet.buyMaxPriceImpactPct.toFixed(4)}`;
       await updatePilotTradeAttempt(attempt.id, {
         status: 'failed',

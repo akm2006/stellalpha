@@ -18,7 +18,7 @@ import {
 } from '@/lib/ingestion/copy-signal';
 import { findPilotWalletForStarTrader, getLivePilotPublicConfig } from '@/lib/live-pilot/config';
 
-const LIVE_PILOT_TECHNICAL_MIN_SOL = 0.005;
+const LIVE_PILOT_TECHNICAL_MIN_SOL = 0;
 
 export interface PilotIntentResult {
   considered: boolean;

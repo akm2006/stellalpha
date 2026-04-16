@@ -394,7 +394,7 @@ export function LivePilotConsole() {
                   String(status.summary.recentTradeCount),
                   status.controlPlaneOnly
                     ? 'The parent table is ready so orchestrator intent creation can plug in without inventing a second operator read model.'
-                    : 'Leader trades now fan out into pilot intent rows after the core claim path commits, with demo-parity sizing plus a tiny technical floor on live buys.',
+                    : 'Leader trades now fan out into pilot intent rows after the core claim path commits, with demo-parity sizing and the buy-side technical floor temporarily disabled.',
                   <AlertTriangle size={16} style={{ color: '#F87171' }} />
                 )}
               </section>
@@ -495,8 +495,12 @@ export function LivePilotConsole() {
                                 <div>Fee reserve: {(walletStatus.config.feeReservePct * 100).toFixed(1)}%</div>
                                 <div>Min reserve: {walletStatus.config.minFeeReserveSol.toFixed(2)} SOL</div>
                                 <div>Sizing: Demo parity ratio</div>
-                                <div>Live floor: 0.005 SOL</div>
-                                <div>Impact cap: {(walletStatus.config.buyMaxPriceImpactPct * 100).toFixed(1)}%</div>
+                                <div>Live floor: disabled</div>
+                                <div>
+                                  Impact cap: {walletStatus.config.buyMaxPriceImpactPct > 0
+                                    ? `${(walletStatus.config.buyMaxPriceImpactPct * 100).toFixed(1)}%`
+                                    : 'disabled'}
+                                </div>
                               </div>
                               {!walletStatus.config.isComplete && walletStatus.config.missingFields.length > 0 ? (
                                 <div className="mt-3 text-xs leading-5 text-amber-300">
@@ -700,7 +704,7 @@ export function LivePilotConsole() {
                 <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
                   {status.controlPlaneOnly
                     ? 'This table is intentionally light right now. It becomes the operator’s recent-intent feed once orchestrator wiring lands.'
-                    : 'This is the operator-facing parent intent feed. It shows queued, skipped, submitted, and confirmed pilot rows while the live execution worker is active. Demo-parity live buys use ratio sizing plus a 0.005 SOL technical floor.'}
+                    : 'This is the operator-facing parent intent feed. It shows queued, skipped, submitted, and confirmed pilot rows while the live execution worker is active. Demo-parity live buys use ratio sizing with the technical floor temporarily disabled.'}
                 </p>
 
                 {status.recentTrades.length === 0 ? (
