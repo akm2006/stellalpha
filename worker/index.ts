@@ -1,8 +1,8 @@
 // Run with: npx tsx worker/index.ts
 import dotenv from 'dotenv';
-// MUST load env BEFORE any module-level side effects (supabase, etc.)
 dotenv.config({ path: '.env.local' });
 
+import bs58 from 'bs58';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { supabase } from '../lib/supabase';
 import { processBatch } from '../lib/ingestion/orchestrator';
@@ -17,55 +17,133 @@ import {
 } from '../lib/ingestion/parsed-tx-queue';
 import { fetchParsedTransactionsForQueue } from '../lib/ingestion/parsed-tx-client';
 import { detectIngestedTrade } from '../lib/ingestion/detect-ingested-trade';
+import {
+  buildYellowstoneSubscribeRequest,
+  pickTrackedWalletFromFilters,
+  YELLOWSTONE_DEFAULT_ENDPOINT,
+  YELLOWSTONE_RECEIVE_COMMITMENT,
+  YellowstoneRawBlockMetaCapture,
+} from '../lib/ingestion/yellowstone-stream';
 import { cacheNonTradeSignatures, getCachedNonTradeSignatures } from '../lib/repositories/non-trade-signatures.repo';
-import { getSolPrice } from '../lib/services/token-service';
+import {
+  initCarbonBridge,
+  stopCarbonBridge,
+  getCarbonBridge,
+  getCarbonParserEnabled,
+  type CarbonCaptureInput,
+  type CarbonBlockMetaInput,
+  type CarbonParseResult,
+} from '../lib/ingestion/carbon-bridge';
+import { IngestedTransaction } from '../lib/ingestion/types';
 
-// Env config
-// Connection() first arg = HTTP/HTTPS endpoint (for RPC calls)
-// wsEndpoint = WSS endpoint (for subscriptions)
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HTTP_RPC_URL = process.env.HELIUS_API_RPC_URL
   || `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
-const WS_RPC_URL = process.env.CHAINSTACK_WSS_URL
-  || 'wss://api.mainnet-beta.solana.com';
+const YELLOWSTONE_GRPC_URL = process.env.YELLOWSTONE_GRPC_URL
+  || process.env.PUBLICNODE_YELLOWSTONE_ENDPOINT
+  || YELLOWSTONE_DEFAULT_ENDPOINT;
+const YELLOWSTONE_X_TOKEN = process.env.YELLOWSTONE_X_TOKEN
+  || process.env.PUBLICNODE_YELLOWSTONE_TOKEN
+  || process.env.PUBLICNODE_TOKEN
+  || '';
 
 if (!HELIUS_API_KEY) {
-  console.error("[WORKER] Missing HELIUS_API_KEY environment variable");
+  console.error('[WORKER] Missing HELIUS_API_KEY environment variable');
   process.exit(1);
 }
-if (!process.env.CHAINSTACK_WSS_URL) {
-  console.warn("[WORKER] WARNING: CHAINSTACK_WSS_URL not set, falling back to public RPC");
+
+if (!YELLOWSTONE_X_TOKEN) {
+  console.error('[WORKER] Missing Yellowstone token. Set YELLOWSTONE_X_TOKEN or PUBLICNODE_YELLOWSTONE_TOKEN.');
+  process.exit(1);
 }
 
 function createConnection() {
   return new Connection(HTTP_RPC_URL, {
     commitment: 'confirmed',
-    wsEndpoint: WS_RPC_URL,
   });
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sameWalletSet(nextWallets: string[], currentWallets: string[]) {
+  if (nextWallets.length !== currentWallets.length) {
+    return false;
+  }
+
+  const currentSet = new Set(currentWallets);
+  return nextWallets.every((wallet) => currentSet.has(wallet));
+}
+
+function isAbortLikeError(message: string) {
+  return (
+    message.includes('Cancelled on client')
+    || message.includes('aborted')
+    || message.includes('AbortError')
+    || message.includes('1 CANCELLED')
+  );
+}
+
+type CachedBlockMeta = {
+  capture: YellowstoneRawBlockMetaCapture;
+  seenAtMs: number;
+};
+
 let connection = createConnection();
-
-// Cache to deduplicate websocket signature notifications before durable enqueue.
-const signatureCache = new Set<string>();
-
-// Tracked wallets
 let trackedWallets: string[] = [];
-const activeSubscriptions = new Map<string, number>();
-
-// Reconnection / Health state
-let lastSlotTime = Date.now();
-let slotSubId: number | null = null;
+let lastYellowstoneMessageTime = Date.now();
 let isReconnecting = false;
 let isDrainingParsedQueue = false;
+let isShuttingDown = false;
 let backoffMs = 1000;
+let yellowstoneAbortController: AbortController | null = null;
+let yellowstoneStreamTask: Promise<void> | null = null;
+
+const signatureCache = new Set<string>();
+const recentBlockMetaBySlot = new Map<number, CachedBlockMeta>();
+const observedTransactionSlots = new Map<number, number>();
+
 const MAX_BACKOFF = 30000;
 const STARTUP_RECONCILE_LIMIT = 25;
+const YELLOWSTONE_STALE_THRESHOLD_MS = 60 * 1000;
+const BLOCK_META_CACHE_TTL_MS = 10 * 60 * 1000;
+const OBSERVED_SLOT_TTL_MS = 10 * 60 * 1000;
+const YELLOWSTONE_METADATA_TIMEOUT_MS = 30 * 1000;
+const YELLOWSTONE_RECEIVE_TIMEOUT_MS = 5 * 60 * 1000;
+const YELLOWSTONE_KEEPALIVE_TIME_MS = 30 * 1000;
+const YELLOWSTONE_KEEPALIVE_TIMEOUT_MS = 10 * 1000;
 
-// Helper to clean up cache periodically to prevent memory leaks
+type YellowstoneModule = typeof import('@kdt-sol/solana-grpc-client');
+let yellowstoneModulePromise: Promise<YellowstoneModule> | null = null;
+
 setInterval(() => {
   signatureCache.clear();
-}, 60 * 60 * 1000); // 1 hour 
+}, 60 * 60 * 1000);
+
+async function loadYellowstoneModule() {
+  if (!yellowstoneModulePromise) {
+    yellowstoneModulePromise = import('@kdt-sol/solana-grpc-client');
+  }
+
+  return yellowstoneModulePromise;
+}
+
+function pruneYellowstoneCaches() {
+  const cutoffMs = Date.now();
+
+  for (const [slot, cached] of recentBlockMetaBySlot.entries()) {
+    if (cutoffMs - cached.seenAtMs > BLOCK_META_CACHE_TTL_MS) {
+      recentBlockMetaBySlot.delete(slot);
+    }
+  }
+
+  for (const [slot, seenAtMs] of observedTransactionSlots.entries()) {
+    if (cutoffMs - seenAtMs > OBSERVED_SLOT_TTL_MS) {
+      observedTransactionSlots.delete(slot);
+    }
+  }
+}
 
 async function fetchTrackedWallets() {
   const { data, error } = await supabase.from('star_traders').select('address');
@@ -73,7 +151,7 @@ async function fetchTrackedWallets() {
     console.error('[WORKER] Failed to fetch star traders:', error);
     return [];
   }
-  return data.map(d => d.address);
+  return data.map((row) => row.address);
 }
 
 async function getClaimedSignatures(signatures: string[]): Promise<Set<string>> {
@@ -94,7 +172,6 @@ async function cacheConfirmedNonTrades(
   recordsBySignature: Map<string, ParsedTxQueueRecord[]>,
   transactionsBySignature: Map<string, any>
 ) {
-  const solPrice = await getSolPrice();
   const archiveIds: number[] = [];
 
   for (const [signature, records] of recordsBySignature.entries()) {
@@ -111,7 +188,7 @@ async function cacheConfirmedNonTrades(
     const detectionResults = await Promise.all(
       wallets.map(async (wallet) => ({
         wallet,
-        trade: await detectIngestedTrade(transaction.raw, wallet, { solPrice }),
+        trade: await detectIngestedTrade(transaction.raw, wallet),
       }))
     );
 
@@ -200,26 +277,64 @@ async function drainParsedTxQueue() {
     try {
       const { processed, inserted } = await processBatch(processableTransactions, Date.now());
       console.log(
-        `[WORKER] Orchestrator completed in ${Date.now() - orchestratorStart}ms | ` +
-        `Batch size: ${processableTransactions.length} | Processed: ${processed}, Inserted: ${inserted}`
+        `[WORKER] Orchestrator completed in ${Date.now() - orchestratorStart}ms | `
+        + `Batch size: ${processableTransactions.length} | Processed: ${processed}, Inserted: ${inserted}`
       );
       await archiveParsedTxMessages(
         fetchResult.archivedMessageIds.filter((msgId) => !nonTradeArchiveIds.includes(msgId))
       );
     } catch (error) {
-      console.error(`[WORKER] Orchestrator error on parsed batch:`, error);
+      console.error('[WORKER] Orchestrator error on parsed batch:', error);
     }
   } finally {
     isDrainingParsedQueue = false;
   }
 }
 
-function handleNewSignature(signature: string, wallet: string) {
-  if (signatureCache.has(signature)) return;
-  signatureCache.add(signature);
+// ── Carbon parser counters (logged periodically) ─────────────────────────────
+const carbonCounters = { trade: 0, no_trade: 0, unknown: 0, error: 0 };
 
-  const receiveTimestamp = Date.now();
-  console.log(`[WORKER] New log for ${wallet.slice(0, 8)}... | SIG: ${signature}`);
+async function processCarbonSignature(
+  signature: string,
+  wallet: string,
+  transactionUpdate: unknown,
+  slot: number,
+  createdAt: Date | undefined,
+  receiveTimestamp: number,
+): Promise<CarbonParseResult | 'error'> {
+  const bridge = getCarbonBridge();
+  if (!bridge?.isRunning) return 'error';
+
+  const capture: CarbonCaptureInput = {
+    signature,
+    wallet,
+    slot,
+    receiveCommitment: YELLOWSTONE_RECEIVE_COMMITMENT,
+    sourceReceivedAt: new Date(receiveTimestamp).toISOString(),
+    yellowstoneCreatedAt: createdAt ? createdAt.toISOString() : null,
+    transactionUpdate,
+  };
+
+  const cachedMeta = recentBlockMetaBySlot.get(slot);
+  const blockMeta: CarbonBlockMetaInput | null = cachedMeta
+    ? {
+        slot: cachedMeta.capture.slot,
+        blockTime: cachedMeta.capture.blockTime,
+        blockMetaUpdate: cachedMeta.capture.blockMetaUpdate,
+      }
+    : null;
+
+  try {
+    return await bridge.parse(capture, blockMeta);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[CARBON] Parse error for ${signature.slice(0, 12)}...: ${msg}`);
+    carbonCounters.error++;
+    return 'error';
+  }
+}
+
+function enqueueSHYFTPath(signature: string, wallet: string, receiveTimestamp: number) {
   void enqueueParsedTxMessages([
     {
       signature,
@@ -232,149 +347,285 @@ function handleNewSignature(signature: string, wallet: string) {
   });
 }
 
-// ----------------------------------------------------------------------------
-// SUBSCRIPTION & RECONNECTION LOGIC
-// ----------------------------------------------------------------------------
-function subscribeToWallet(wallet: string) {
-  try {
-    const pubkey = new PublicKey(wallet);
-    const subId = connection.onLogs(
-      pubkey,
-      (logs, ctx) => {
-        if (logs.err) return; // Skip failed txs early
-        handleNewSignature(logs.signature, wallet);
-      },
-      'confirmed'
-    );
-    activeSubscriptions.set(wallet, subId);
-    console.log(`[WORKER] Subscribed to logs for ${wallet.slice(0, 8)}... (Sub ID: ${subId})`);
-  } catch (e) {
-    console.error(`[WORKER] Failed to subscribe to ${wallet}`, e);
+function handleNewSignature(signature: string, wallet: string, transactionUpdate: unknown, slot: number, createdAt: Date | undefined) {
+  if (signatureCache.has(signature)) {
+    return;
   }
+  signatureCache.add(signature);
+
+  const receiveTimestamp = Date.now();
+  observedTransactionSlots.set(slot, receiveTimestamp);
+
+  console.log(`[WORKER] New Yellowstone tx for ${wallet.slice(0, 8)}... | SIG: ${signature}`);
+
+  // ── Carbon parser integration ──────────────────────────────────────────────
+  const bridge = getCarbonBridge();
+
+  if (!bridge?.isRunning) {
+    // Carbon not available — fall back to SHYFT queue
+    enqueueSHYFTPath(signature, wallet, receiveTimestamp);
+    return;
+  }
+
+  void (async () => {
+    const result = await processCarbonSignature(signature, wallet, transactionUpdate, slot, createdAt, receiveTimestamp);
+
+    if (result === 'error') {
+      enqueueSHYFTPath(signature, wallet, receiveTimestamp);
+      return;
+    }
+
+    carbonCounters[result.status]++;
+
+    if (result.status === 'trade' && result.trade) {
+      const tx: IngestedTransaction = {
+        signature: result.trade.signature,
+        timestamp: result.trade.timestamp,
+        feePayer: wallet,
+        source: 'websocket',
+        raw: { __carbonParsed: result.trade, feePayer: wallet },
+      };
+
+      try {
+        const { processed, inserted } = await processBatch([tx], receiveTimestamp);
+        console.log(
+          `[CARBON] Trade: ${result.trade.type} ${result.trade.tokenMint.slice(0, 8)}... `
+          + `| processed=${processed} inserted=${inserted} | Latency: ${Date.now() - receiveTimestamp}ms`
+        );
+      } catch (error) {
+        console.error(`[CARBON] Orchestrator error for ${signature.slice(0, 12)}...:`, error);
+      }
+      return;
+    }
+
+    if (result.status === 'no_trade') {
+      const expiresAtIso = new Date(Date.now() + PARSED_TX_NON_TRADE_CACHE_TTL_MS).toISOString();
+      await cacheNonTradeSignatures(wallet, [signature], expiresAtIso).catch(() => {});
+      return;
+    }
+
+    // unknown — fall through to SHYFT
+    console.log(`[CARBON] Unknown for ${signature.slice(0, 12)}... — queuing SHYFT fallback`);
+    enqueueSHYFTPath(signature, wallet, receiveTimestamp);
+  })().catch((error) => {
+    console.error(`[CARBON] Unhandled error for ${signature.slice(0, 12)}...:`, error);
+    enqueueSHYFTPath(signature, wallet, receiveTimestamp);
+  });
 }
 
-async function unsubscribeFromWallet(wallet: string) {
-  const subId = activeSubscriptions.get(wallet);
-  if (subId !== undefined) {
-    try {
-      await connection.removeOnLogsListener(subId);
-      activeSubscriptions.delete(wallet);
-      console.log(`[WORKER] Unsubscribed from logs for ${wallet.slice(0, 8)}...`);
-    } catch (e) {
-      console.error(`[WORKER] Failed to unsubscribe from ${wallet}`, e);
+function cacheBlockMeta(capture: YellowstoneRawBlockMetaCapture) {
+  recentBlockMetaBySlot.set(capture.slot, {
+    capture,
+    seenAtMs: Date.now(),
+  });
+}
+
+async function consumeYellowstoneStream(stream: any, controller: AbortController, walletsSnapshot: string[]) {
+  const trackedWalletSet = new Set(walletsSnapshot);
+
+  try {
+    for await (const update of stream) {
+      lastYellowstoneMessageTime = Date.now();
+
+      if (update.blockMeta?.slot) {
+        const slot = Number(update.blockMeta.slot);
+        if (Number.isFinite(slot)) {
+          cacheBlockMeta({
+            slot,
+            blockTime: update.blockMeta.blockTime?.timestamp
+              ? Number(update.blockMeta.blockTime.timestamp)
+              : null,
+            blockMetaUpdate: update.blockMeta,
+          });
+        }
+        continue;
+      }
+
+      if (!update.transaction?.transaction?.signature || !update.transaction?.slot) {
+        continue;
+      }
+
+      const wallet = pickTrackedWalletFromFilters(update.filters, trackedWalletSet);
+      if (!wallet) {
+        continue;
+      }
+
+      const signature = bs58.encode(update.transaction.transaction.signature);
+      const slot = Number(update.transaction.slot);
+      if (!Number.isFinite(slot)) {
+        continue;
+      }
+
+      handleNewSignature(signature, wallet, update.transaction, slot, update.createdAt);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isAbortLikeError(message)) {
+      console.error('[WORKER] Yellowstone stream error:', message);
+    }
+  } finally {
+    await stream.close().catch(() => undefined);
+
+    if (!isShuttingDown && !controller.signal.aborted) {
+      console.warn('[WORKER] Yellowstone stream ended unexpectedly. Triggering reconnect...');
+      void performReconnection();
     }
   }
 }
 
-function setupHeartbeat() {
-  if (slotSubId !== null) {
-    connection.removeSlotChangeListener(slotSubId).catch(console.error);
+async function stopYellowstoneSubscription() {
+  const controller = yellowstoneAbortController;
+  const task = yellowstoneStreamTask;
+
+  yellowstoneAbortController = null;
+  yellowstoneStreamTask = null;
+
+  if (controller && !controller.signal.aborted) {
+    controller.abort('Yellowstone subscription stopped');
   }
-  try {
-    slotSubId = connection.onSlotChange(slot => {
-      lastSlotTime = Date.now();
-    });
-    console.log(`[WORKER] Slot heartbeat listener established.`);
-  } catch (e) {
-    console.error(`[WORKER] Failed to setup heartbeat:`, e);
+
+  if (task) {
+    await task.catch(() => undefined);
+  }
+}
+
+async function startYellowstoneSubscription(reason: string) {
+  await stopYellowstoneSubscription();
+
+  if (trackedWallets.length === 0) {
+    console.log(`[WORKER] Yellowstone subscription skipped (${reason}) because there are no tracked wallets.`);
+    return;
+  }
+
+  const controller = new AbortController();
+  const { yellowstone } = await loadYellowstoneModule();
+  const client = new yellowstone.YellowstoneGeyserClient(YELLOWSTONE_GRPC_URL, {
+    token: YELLOWSTONE_X_TOKEN,
+    signal: controller.signal,
+    metadataTimeout: YELLOWSTONE_METADATA_TIMEOUT_MS,
+    receiveTimeout: YELLOWSTONE_RECEIVE_TIMEOUT_MS,
+    'grpc.max_receive_message_length': 64 * 1024 * 1024,
+    'grpc.keepalive_time_ms': YELLOWSTONE_KEEPALIVE_TIME_MS,
+    'grpc.keepalive_timeout_ms': YELLOWSTONE_KEEPALIVE_TIMEOUT_MS,
+    'grpc.keepalive_permit_without_calls': true,
+  });
+
+  const stream = await client.subscribe();
+  const rawStream = stream.duplexStream ?? stream.stream ?? null;
+  rawStream?.on?.('error', (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!controller.signal.aborted && !isAbortLikeError(message)) {
+      console.error('[WORKER] Yellowstone stream transport error:', message);
+    }
+  });
+
+  await stream.write(buildYellowstoneSubscribeRequest(trackedWallets));
+  lastYellowstoneMessageTime = Date.now();
+  yellowstoneAbortController = controller;
+  yellowstoneStreamTask = consumeYellowstoneStream(stream, controller, trackedWallets);
+
+  console.log(
+    `[WORKER] Yellowstone subscription established (${reason}) | `
+    + `Wallet filters: ${trackedWallets.length} | Commitment: ${YELLOWSTONE_RECEIVE_COMMITMENT} | `
+    + `Metadata timeout: ${YELLOWSTONE_METADATA_TIMEOUT_MS}ms`
+  );
+}
+
+async function startYellowstoneSubscriptionWithRetry(reason: string) {
+  while (!isShuttingDown) {
+    try {
+      await startYellowstoneSubscription(reason);
+      backoffMs = 1000;
+      return;
+    } catch (error) {
+      console.error(
+        `[WORKER] Yellowstone subscription failed during ${reason}. Retrying in ${backoffMs}ms:`,
+        error
+      );
+      await wait(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
+    }
   }
 }
 
 async function performReconnection() {
-  if (isReconnecting) return;
-  isReconnecting = true;
-  console.log(`[WS_DISCONNECT] Connection stale/dropped. Attempting reconnect in ${backoffMs}ms... (backoff: ${backoffMs}ms)`);
-  console.log(`[WS_DISCONNECT] Active subs lost: ${activeSubscriptions.size} | Tracked wallets: ${trackedWallets.length}`);
-  
-  await new Promise(r => setTimeout(r, backoffMs));
-  
-  try {
-     // Cleanup old
-     for (const [wallet, subId] of activeSubscriptions.entries()) {
-       try { await connection.removeOnLogsListener(subId); } catch(e) {}
-     }
-     if (slotSubId !== null) {
-       try { await connection.removeSlotChangeListener(slotSubId); } catch(e) {}
-     }
-     activeSubscriptions.clear();
-     
-     // Rebuild connection
-     connection = createConnection();
-
-     setupHeartbeat();
-     
-     // Resubscribe everyone
-     for (const wallet of trackedWallets) {
-       subscribeToWallet(wallet);
-     }
-     
-     // Success! Reset backoff
-     backoffMs = 1000;
-     isReconnecting = false;
-     console.log(`[WS_RECONNECT] Reconnection successful! Active subs: ${activeSubscriptions.size} | Backoff reset to ${backoffMs}ms`);
-  } catch (error) {
-     console.error(`[WS_RECONNECT] Reconnection attempt failed (backoff will increase to ${Math.min(backoffMs * 2, MAX_BACKOFF)}ms):`, error);
-     backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
-     isReconnecting = false;
-     // Trigger another attempt
-     performReconnection();
+  if (isReconnecting || isShuttingDown) {
+    return;
   }
+
+  isReconnecting = true;
+  console.log(
+    `[WS_DISCONNECT] Yellowstone stream stale/dropped. Attempting reconnect in ${backoffMs}ms... `
+    + `(backoff: ${backoffMs}ms)`
+  );
+  console.log(`[WS_DISCONNECT] Tracked wallets: ${trackedWallets.length}`);
+
+  await wait(backoffMs);
+
+  try {
+    connection = createConnection();
+    await startYellowstoneSubscription('reconnect');
+    backoffMs = 1000;
+    console.log(
+      `[WS_RECONNECT] Yellowstone reconnect successful | Wallet filters: ${trackedWallets.length} | `
+      + `Backoff reset to ${backoffMs}ms`
+    );
+  } catch (error) {
+    console.error(
+      `[WS_RECONNECT] Yellowstone reconnect failed (backoff will increase to ${Math.min(backoffMs * 2, MAX_BACKOFF)}ms):`,
+      error
+    );
+    backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
+    isReconnecting = false;
+    if (!isShuttingDown) {
+      void performReconnection();
+    }
+    return;
+  }
+
+  isReconnecting = false;
 }
 
-// ----------------------------------------------------------------------------
-// PERIODIC TASKS
-// ----------------------------------------------------------------------------
 function monitorConnectionHealth() {
   setInterval(() => {
-    const timeSinceLastSlot = Date.now() - lastSlotTime;
-    
-    // Log basic health stats
+    const timeSinceLastMessage = Date.now() - lastYellowstoneMessageTime;
     console.log(
-      `[HEALTH] Active Subs: ${activeSubscriptions.size} | Last Slot: ${timeSinceLastSlot}ms ago | ` +
-      `Cache Size: ${signatureCache.size} | Parsed Queue Drain Active: ${isDrainingParsedQueue}`
+      `[HEALTH] Tracked Wallets: ${trackedWallets.length} | Last Yellowstone Msg: ${timeSinceLastMessage}ms ago | `
+      + `Cache Size: ${signatureCache.size} | Parsed Queue Drain Active: ${isDrainingParsedQueue}`
     );
 
-    // Idle timeout detection (Chainstack drops idle over 1h, but 60s without slot is anomalous)
-    if (timeSinceLastSlot > 60 * 1000) {
-      console.warn(`[WARNING] No slot change for ${timeSinceLastSlot}ms. Triggering reconnect...`);
-      performReconnection();
+    if (trackedWallets.length > 0 && timeSinceLastMessage > YELLOWSTONE_STALE_THRESHOLD_MS) {
+      console.warn(`[WARNING] No Yellowstone updates for ${timeSinceLastMessage}ms. Triggering reconnect...`);
+      void performReconnection();
     }
-  }, 10 * 1000); // Check every 10s
+  }, 10 * 1000);
 }
 
 async function syncTrackedWallets() {
-  if (isReconnecting) return;
+  if (isReconnecting) {
+    return;
+  }
 
   const currentWallets = await fetchTrackedWallets();
-  const newSet = new Set(currentWallets);
-  const oldSet = new Set(trackedWallets);
-
-  // Subscribe to new wallets
-  for (const wallet of currentWallets) {
-    if (!oldSet.has(wallet)) {
-      subscribeToWallet(wallet);
-    }
-  }
-
-  // Unsubscribe from removed wallets
-  for (const wallet of trackedWallets) {
-    if (!newSet.has(wallet)) {
-      await unsubscribeFromWallet(wallet);
-    }
-  }
-
+  const changed = !sameWalletSet(currentWallets, trackedWallets);
   trackedWallets = currentWallets;
+
+  if (changed) {
+    console.log('[WORKER] Tracked wallet set changed. Restarting Yellowstone subscription...');
+    try {
+      await startYellowstoneSubscription('wallet sync');
+    } catch (error) {
+      console.error('[WORKER] Yellowstone wallet sync restart failed. Falling back to reconnect loop:', error);
+      void performReconnection();
+    }
+  }
 }
 
-// ----------------------------------------------------------------------------
-// STARTUP RECONCILIATION
-// ----------------------------------------------------------------------------
 async function reconcileStartup() {
   console.log(`[WORKER] Starting startup reconciliation (lookback: last ${STARTUP_RECONCILE_LIMIT} confirmed signatures per wallet)...`);
-  
+
   for (const wallet of trackedWallets) {
     try {
-      // 1. Fetch a modestly deeper confirmed-signature window for startup recovery.
       const sigs = await connection.getSignaturesForAddress(
         new PublicKey(wallet),
         { limit: STARTUP_RECONCILE_LIMIT },
@@ -384,10 +635,9 @@ async function reconcileStartup() {
         signature: entry.signature,
         blockTime: entry.blockTime ?? null,
       }));
-      
+
       if (signatureList.length === 0) continue;
 
-      // 2. Check which ones are already in our DB
       const { data: existingTrades, error } = await supabase
         .from('trades')
         .select('signature')
@@ -398,7 +648,7 @@ async function reconcileStartup() {
         continue;
       }
 
-      const existingSet = new Set((existingTrades || []).map(t => t.signature));
+      const existingSet = new Set((existingTrades || []).map((trade) => trade.signature));
       const cachedNonTrades = await getCachedNonTradeSignatures(
         wallet,
         signatureList.map((entry) => entry.signature),
@@ -407,7 +657,7 @@ async function reconcileStartup() {
       const missingSigs = signatureList.filter(
         (entry) => !existingSet.has(entry.signature) && !cachedNonTrades.has(entry.signature)
       );
-      
+
       if (missingSigs.length > 0) {
         console.log(`[WORKER] Reconciliation: Found ${missingSigs.length} missing txs for ${wallet.slice(0, 8)}... Queueing...`);
         await enqueueParsedTxMessages(
@@ -423,57 +673,61 @@ async function reconcileStartup() {
             }))
         );
       }
-    } catch (e) {
-      console.error(`[WORKER] Recon error for ${wallet}:`, e);
+    } catch (error) {
+      console.error(`[WORKER] Recon error for ${wallet}:`, error);
     }
   }
-  
-  console.log(`[WORKER] Startup reconciliation complete.`);
+
+  console.log('[WORKER] Startup reconciliation complete.');
 }
 
-// ----------------------------------------------------------------------------
-// ENTRYPOINT
-// ----------------------------------------------------------------------------
 async function startWorker() {
-  console.log(`[WORKER] Starting WebSocket Ingestion Worker...`);
-  console.log(`[WORKER] Target RPC: ${WS_RPC_URL}`);
-  
+  console.log('[WORKER] Starting Yellowstone Ingestion Worker...');
+  console.log(`[WORKER] Target Yellowstone: ${YELLOWSTONE_GRPC_URL}`);
+
   trackedWallets = await fetchTrackedWallets();
   console.log(`[WORKER] Loaded ${trackedWallets.length} tracked wallets from DB.`);
 
-  setupHeartbeat();
-
-  // Stagger subscriptions to avoid Chainstack RPS limit on startup
-  // (all-at-once fires N requests simultaneously, hitting the per-second limit)
-  for (const wallet of trackedWallets) {
-    subscribeToWallet(wallet);
-    await new Promise(r => setTimeout(r, 500)); // 500ms between each sub — stays within Chainstack RPS limit
+  // ── Carbon parser init ─────────────────────────────────────────────────────
+  if (getCarbonParserEnabled()) {
+    const bridge = await initCarbonBridge();
+    if (bridge) {
+      console.log('[WORKER] Carbon parser active');
+    }
   }
 
-  // Periodic polling for wallet updates (every 60s)
+  await startYellowstoneSubscriptionWithRetry('startup');
+
   setInterval(syncTrackedWallets, 60 * 1000);
   setInterval(() => {
     drainParsedTxQueue().catch(console.error);
   }, PARSED_TX_REQUEST_INTERVAL_MS);
+  setInterval(pruneYellowstoneCaches, 60 * 1000);
 
-  // Monitor connection health continually
+  // Carbon parser observability: log counters every 60s
+  setInterval(() => {
+    const bridge = getCarbonBridge();
+    if (!bridge?.isRunning) return;
+    const { trade, no_trade, unknown, error } = carbonCounters;
+    if (trade + no_trade + unknown + error === 0) return;
+    console.log(
+      `[CARBON] Stats — trade=${trade} no_trade=${no_trade} unknown=${unknown} error=${error} `
+      + `| pending=${bridge.pendingCount}`
+    );
+  }, 60 * 1000);
+
   monitorConnectionHealth();
 
-  // Run startup reconciliation once subscriptions are active
-  // Small delay to let initial websocket burst settle
   setTimeout(() => {
     reconcileStartup().catch(console.error);
   }, 5000);
 }
 
 process.on('SIGINT', async () => {
-  console.log(`\n[WORKER] Shutting down... cleaning up ${activeSubscriptions.size} subscriptions`);
-  for (const [wallet, subId] of activeSubscriptions.entries()) {
-    try { await connection.removeOnLogsListener(subId); } catch(e) {}
-  }
-  if (slotSubId !== null) {
-    try { await connection.removeSlotChangeListener(slotSubId); } catch(e) {}
-  }
+  isShuttingDown = true;
+  console.log(`\n[WORKER] Shutting down... tracked wallets: ${trackedWallets.length}`);
+  await stopYellowstoneSubscription();
+  await stopCarbonBridge().catch(console.error);
   process.exit(0);
 });
 

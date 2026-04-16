@@ -7,14 +7,16 @@
     "build": "next build",
     "cron:test": "tsx scripts/test-crons.ts",
     "dev": "tsx lib/banner.ts && next dev",
+    "latency:hidden": "tsx scripts/analyze-hidden-copy-latency.ts",
     "lint": "eslint .",
     "start": "next start",
     "test": "vitest run",
     "test:watch": "vitest",
-    "worker": "tsx --env-file=.env.local worker/index.ts"
+    "worker": "tsx worker/index.ts",
+    "worker:live-pilot": "tsx worker/live-pilot.ts"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "^0.32.1",
+    "@kdt-sol/solana-grpc-client": "^0.1.2",
     "@reown/appkit": "^1.8.17",
     "@reown/appkit-adapter-solana": "^1.8.17",
     "@solana/spl-token": "^0.4.14",

@@ -75,7 +75,9 @@ function deriveBaseAmount(mint: string, amount: number) {
   if (STABLECOIN_MINTS.has(mint)) {
     return amount;
   }
-
+  if (isSolLikeMint(mint)) {
+    return amount;
+  }
   return null;
 }
 

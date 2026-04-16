@@ -32,7 +32,7 @@ export function WelcomeStep() {
           </div>
 
           <button
-            onClick={close}
+            onClick={dismiss}
             className="absolute top-4 right-4 p-2 text-white/40 hover:text-white transition-colors z-20"
           >
             <X size={20} />

@@ -1,9 +1,10 @@
-import { getSolPrice, getTokenSymbol, enrichTradeSymbols } from '@/lib/services/token-service';
+import { getTokenSymbol, enrichTradeSymbols, getUsdValue } from '@/lib/services/token-service';
 import { getStarTradersByAddresses } from '@/lib/repositories/star-traders.repo';
-import { claimTrade, deleteClaimedTrade, updateTradePnL } from '@/lib/repositories/trades.repo';
+import { claimTrade, updateTradePnL } from '@/lib/repositories/trades.repo';
 import { getPosition, upsertPosition } from '@/lib/repositories/positions.repo';
 import { queueCopyTrades, triggerQueuedTradeProcessors } from '@/lib/ingestion/follower-producer';
 import { deleteQueuedTradesBySignature } from '@/lib/repositories/demo-trades.repo';
+import { maybeCreatePilotIntent } from '@/lib/live-pilot/intent-producer';
 import { RawTrade } from '@/lib/trade-parser';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { extractInvolvedAddresses } from '@/lib/ingestion/utils';
@@ -28,8 +29,8 @@ async function detectTrade(tx: any, wallet: string): Promise<RawTrade | null> {
   return result;
 }
 
-async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: number | null; avgCostBasis: number | null }> {
-  const { wallet, tokenMint, type, tokenAmount, baseAmount } = trade;
+async function updatePositionAndGetPnL(trade: RawTrade, usdValue: number): Promise<{ realizedPnl: number | null; avgCostBasis: number | null }> {
+  const { wallet, tokenMint, type, tokenAmount } = trade;
 
   // CONFIDENCE GUARD: If confidence is 'low', skip PnL to avoid phantom profit/loss.
   // The trade is still persisted for record-keeping, but realized_pnl stays null.
@@ -49,7 +50,7 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
   if (type === 'buy') {
     // Add to position
     const newSize = currentSize + tokenAmount;
-    const newCost = currentCost + baseAmount;
+    const newCost = currentCost + usdValue;
     avgCost = newSize > 0 ? newCost / newSize : 0;
 
     await upsertPosition(wallet, tokenMint, newSize, newCost, avgCost);
@@ -57,7 +58,7 @@ async function updatePositionAndGetPnL(trade: RawTrade): Promise<{ realizedPnl: 
     // Sell: calculate PnL
     if (currentSize > 0 && avgCost > 0) {
       const soldCost = avgCost * tokenAmount;
-      realizedPnl = baseAmount - soldCost;
+      realizedPnl = usdValue - soldCost;
 
       const remainingSize = Math.max(0, currentSize - tokenAmount);
       const remainingCost = remainingSize > 0 ? avgCost * remainingSize : 0;
@@ -133,12 +134,16 @@ export async function processBatch(transactions: IngestedTransaction[], received
       processed++;
       txTimer.checkpoint('Trade detected');
 
+      // Convert raw denomination baseAmount to USD for DB storage and PnL
+      const usdValue = await getUsdValue(trade.baseMint, trade.baseAmount);
+      txTimer.checkpoint('USD conversion');
+
       // Calculate latency (time from on-chain to now)
       const latencyMs = receivedAt - (trade.timestamp * 1000);
-      let leaderPositionUpdated = false;
 
       // 1. CLAIM the trade — INSERT is the gate
       // Trade row built WITHOUT PnL fields (backfilled after position update)
+      let tradeClaimed = false;
       try {
         let queuedTraderStateIds: string[] = [];
 
@@ -154,7 +159,7 @@ export async function processBatch(transactions: IngestedTransaction[], received
           token_out_mint: trade.tokenOutMint,
           token_out_symbol: getTokenSymbol(trade.tokenOutMint),
           token_out_amount: trade.tokenOutAmount,
-          usd_value: trade.baseAmount,
+          usd_value: usdValue,
           realized_pnl: null,     // will be backfilled
           avg_cost_basis: null,   // will be backfilled
           block_timestamp: trade.timestamp,
@@ -172,6 +177,7 @@ export async function processBatch(transactions: IngestedTransaction[], received
           continue;
         }
 
+        tradeClaimed = true;
         inserted++;
         txTimer.checkpoint('DB: Insert leader trade (Claimed)');
         const winSrc = tx.source?.toUpperCase() || 'UNKNOWN';
@@ -180,41 +186,111 @@ export async function processBatch(transactions: IngestedTransaction[], received
 
         // === FROM HERE, ONLY THE WINNER EXECUTES ===
 
-        // 2. Queue follower rows only. Triggering happens after leader position succeeds.
-        const queueResult = await queueCopyTrades(trade, receivedAt);
-        queuedTraderStateIds = queueResult.queuedTraderStateIds;
-        txTimer.checkpoint('Queue follower rows');
-
-        // 3. Update leader position.
-        const { realizedPnl, avgCostBasis } = await updatePositionAndGetPnL(trade);
-        leaderPositionUpdated = true;
-        txTimer.checkpoint('Update leader position');
-
-        // 4. Backfill PnL on the trade row we already inserted (best-effort only).
+        // 2. Fan out the live-pilot parent intent immediately after the canonical
+        // claim gate so demo queueing/accounting cannot hold up the live path.
         try {
-          await updateTradePnL(trade.signature, realizedPnl, avgCostBasis);
-          txTimer.checkpoint('Backfill Trade PnL');
-        } catch (pnlError: any) {
-          console.warn(`[ORCHESTRATOR] Failed to backfill PnL for ${trade.signature.slice(0, 12)}...`, pnlError.message);
+          const pilotIntent = await maybeCreatePilotIntent(trade, receivedAt);
+          if (pilotIntent.considered) {
+            txTimer.checkpoint('Create live-pilot intent');
+          }
+        } catch (pilotIntentError: any) {
+          console.warn(
+            `[ORCHESTRATOR] Live-pilot intent creation failed for ${trade.signature.slice(0, 12)}...`,
+            pilotIntentError.message,
+          );
         }
 
-        // 5. Trigger queue processors only after the leader position commit point.
-        triggerQueuedTradeProcessors(queuedTraderStateIds);
-        txTimer.checkpoint('Trigger queue processors');
+        // 3+4. Queue followers and update the leader position in parallel, but
+        // treat both as sidecars after the canonical claim has committed.
+        const [queueResult, pnlResult] = await Promise.allSettled([
+          queueCopyTrades(trade, receivedAt),
+          updatePositionAndGetPnL(trade, usdValue),
+        ]);
 
-        // 6. BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
+        if (queueResult.status === 'fulfilled') {
+          queuedTraderStateIds = queueResult.value.queuedTraderStateIds;
+        } else {
+          console.warn(
+            `[ORCHESTRATOR] Follower queueing failed for ${trade.signature.slice(0, 12)}...`,
+            queueResult.reason?.message || queueResult.reason,
+          );
+        }
+
+        if (pnlResult.status === 'rejected') {
+          console.warn(
+            `[ORCHESTRATOR] Leader position update failed for ${trade.signature.slice(0, 12)}...`,
+            pnlResult.reason?.message || pnlResult.reason,
+          );
+        } else {
+          txTimer.checkpoint('Update leader position');
+        }
+
+        const sidecarDegraded = queueResult.status === 'rejected' || pnlResult.status === 'rejected';
+        if (sidecarDegraded) {
+          const { error: queuedDeleteError } = await deleteQueuedTradesBySignature(trade.signature);
+          if (queuedDeleteError) {
+            console.warn(
+              `[ORCHESTRATOR] Failed to clean up queued follower trades for ${trade.signature.slice(0, 12)}...`,
+              queuedDeleteError.message,
+            );
+          } else if (queuedTraderStateIds.length > 0 || queueResult.status === 'rejected') {
+            console.warn(
+              `[ORCHESTRATOR] Cleared queued follower trades for ${trade.signature.slice(0, 12)}... `
+              + `because the demo sidecar did not fully commit.`
+            );
+          }
+        } else {
+          txTimer.checkpoint('Queue followers + Update position (parallel)');
+        }
+
+        // 5. Backfill PnL on the trade row whenever the leader position update succeeds.
+        try {
+          if (pnlResult.status === 'fulfilled') {
+            await updateTradePnL(trade.signature, pnlResult.value.realizedPnl, pnlResult.value.avgCostBasis);
+            txTimer.checkpoint('Backfill Trade PnL');
+          }
+        } catch (pnlBackfillError: any) {
+          console.warn(`[ORCHESTRATOR] Failed to backfill PnL for ${trade.signature.slice(0, 12)}...`, pnlBackfillError.message);
+        }
+
+        // 6. Trigger queue processors only after the leader position commit point.
+        if (!sidecarDegraded && queuedTraderStateIds.length > 0) {
+          triggerQueuedTradeProcessors(queuedTraderStateIds);
+          txTimer.checkpoint('Trigger queue processors');
+        } else if (queuedTraderStateIds.length > 0 && pnlResult.status === 'rejected') {
+          console.warn(
+            `[ORCHESTRATOR] Suppressed queued follower execution for ${trade.signature.slice(0, 12)}... `
+            + `because the leader position update failed.`
+          );
+        } else if (queuedTraderStateIds.length > 0 && queueResult.status === 'rejected') {
+          console.warn(
+            `[ORCHESTRATOR] Suppressed queued follower execution for ${trade.signature.slice(0, 12)}... `
+            + `because follower queueing only partially committed.`
+          );
+        }
+
+        if (sidecarDegraded) {
+          const sidecarParts = [
+            queueResult.status === 'rejected' ? 'follower queueing' : null,
+            pnlResult.status === 'rejected' ? 'leader position update' : null,
+          ].filter(Boolean).join(' + ');
+          console.warn(
+            `[ORCHESTRATOR] Canonical trade kept for ${trade.signature.slice(0, 12)}... `
+            + `while the demo sidecar degraded (${sidecarParts}).`
+          );
+        }
+
+        // 7. BACKGROUND: Enrich token symbols (fire-and-forget, doesn't block)
         enrichTradeSymbols(trade.signature, trade.tokenInMint, trade.tokenOutMint).catch(() => { });
 
       } catch (error: any) {
-        if (!leaderPositionUpdated) {
+        if (tradeClaimed) {
           const { error: queuedDeleteError } = await deleteQueuedTradesBySignature(trade.signature);
           if (queuedDeleteError) {
-            throw new Error(`Failed to delete queued follower trades for ${trade.signature}: ${queuedDeleteError.message}`);
-          }
-
-          const { error: tradeDeleteError } = await deleteClaimedTrade(trade.signature);
-          if (tradeDeleteError) {
-            throw new Error(`Failed to delete claimed trade for ${trade.signature}: ${tradeDeleteError.message}`);
+            console.warn(
+              `[ORCHESTRATOR] Failed to clean up queued follower trades after unexpected error for ${trade.signature.slice(0, 12)}...`,
+              queuedDeleteError.message,
+            );
           }
         }
         console.log(`Trade insert/process error for ${trade.signature}:`, error.message);

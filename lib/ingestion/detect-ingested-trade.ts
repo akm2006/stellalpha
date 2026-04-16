@@ -1,5 +1,4 @@
-import { getSolPrice } from '@/lib/services/token-service';
-import { BASE_MINTS, detectTrade as detectTradeParser, getUsdValueSync, RawTrade, WSOL } from '@/lib/trade-parser';
+import { BASE_MINTS, detectTrade as detectTradeParser, RawTrade, WSOL } from '@/lib/trade-parser';
 import { adaptShyftParsedTx } from '@/lib/ingestion/shyft-adapter';
 
 const SOL_LITERAL = 'SOL';
@@ -26,7 +25,7 @@ function inferConfidence(trade: {
   return 'low';
 }
 
-function adaptShyftParsedTxToRawTrade(parsed: any, wallet: string, solPrice: number): RawTrade | null {
+function adaptShyftParsedTxToRawTrade(parsed: any, wallet: string): RawTrade | null {
   const adapted = adaptShyftParsedTx(parsed, wallet);
   if (!adapted.parsed) {
     return null;
@@ -34,9 +33,7 @@ function adaptShyftParsedTxToRawTrade(parsed: any, wallet: string, solPrice: num
 
   const baseMint = adapted.parsed.type === 'buy' ? adapted.parsed.tokenInMint : adapted.parsed.tokenOutMint;
   const baseTokenAmount = adapted.parsed.type === 'buy' ? adapted.parsed.tokenInAmount : adapted.parsed.tokenOutAmount;
-  const baseAmount =
-    adapted.parsed.baseAmount ??
-    (isSolLikeMint(baseMint) ? getUsdValueSync(SOL_LITERAL, baseTokenAmount, solPrice) : 0);
+  const baseAmount = adapted.parsed.baseAmount ?? (isSolLikeMint(baseMint) ? baseTokenAmount : 0);
 
   return {
     signature: adapted.parsed.signature,
@@ -45,6 +42,7 @@ function adaptShyftParsedTxToRawTrade(parsed: any, wallet: string, solPrice: num
     tokenMint: adapted.parsed.tokenMint,
     tokenAmount: adapted.parsed.tokenAmount,
     baseAmount,
+    baseMint,
     tokenInMint: adapted.parsed.tokenInMint,
     tokenInAmount: adapted.parsed.tokenInAmount,
     tokenInPreBalance: 0,
@@ -60,13 +58,15 @@ function adaptShyftParsedTxToRawTrade(parsed: any, wallet: string, solPrice: num
 export async function detectIngestedTrade(
   tx: any,
   wallet: string,
-  options?: { solPrice?: number }
 ): Promise<RawTrade | null> {
-  if (tx?.__parsedProvider === 'shyft') {
-    const solPrice = options?.solPrice ?? await getSolPrice();
-    return adaptShyftParsedTxToRawTrade(tx, wallet, solPrice);
+  // Carbon parser pre-parsed result (set by worker when Carbon handles the transaction)
+  if (tx?.__carbonParsed) {
+    return tx.__carbonParsed as RawTrade;
   }
 
-  const solPrice = options?.solPrice ?? await getSolPrice();
-  return detectTradeParser(tx, wallet, solPrice);
+  if (tx?.__parsedProvider === 'shyft') {
+    return adaptShyftParsedTxToRawTrade(tx, wallet);
+  }
+
+  return detectTradeParser(tx, wallet);
 }

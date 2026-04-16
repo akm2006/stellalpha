@@ -19,7 +19,7 @@ build/
 dist/
 
 # Environment files (secrets - never commit)
-.env
+.env.colosseum
 .env.local
 .env.production
 .env.development
@@ -91,3 +91,29 @@ whitepaper/
 
 tests/
 migrations/
+
+# ===========================================
+# AI Assistant / Agent files
+# ===========================================
+
+# Claude Code configuration and state
+.claude/
+
+# Claude session state (project instructions CLAUDE.md should be tracked)
+RESUME_STATE.md
+
+# Cursor IDE rules
+.cursorrules
+
+# Aider agent configuration
+.aider*
+
+CLAUDE.md
+
+# Carbon parser build artifacts (Rust source is tracked in carbon-parser/)
+carbon-parser/target/
+carbon-parser/target-stream-runtime/
+
+stellalpha_vault/
+
+buidl.md

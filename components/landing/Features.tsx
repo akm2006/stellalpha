@@ -2,15 +2,14 @@
 
 import React from "react";
 import { motion } from "framer-motion";
-import { Zap, ShieldCheck, Activity, Network, Cpu, Server } from "lucide-react";
-import { COLORS } from "@/lib/theme";
+import { Zap, ShieldCheck, Activity, Network } from "lucide-react";
 
 const FEATURES = [
   {
     icon: Activity,
-    label: "Helius Geyser & Webhooks",
+    label: "Yellowstone gRPC",
     value: "Sub-Second Detection",
-    description: "Enterprise-grade transaction ingress via Helius Enhanced Webhooks ensures instant signal detection."
+    description: "Real-time transaction ingress via Yellowstone gRPC gives Stellalpha the low-latency signal path needed for fast copy execution."
   },
   {
     icon: Zap,
@@ -103,12 +102,11 @@ export const Features = () => {
                 </div>
                 <div>
                   <h3 className="text-lg font-medium mb-1 text-white">
-                    Cross-Program Invocation (CPI)
+                    Yellowstone + PDA Vault Execution
                   </h3>
                   <p className="text-sm text-slate-400 leading-relaxed">
-                    We use Anchor CPIs to interact directly with Jupiter's on-chain programs. 
-                    This means your funds never leave the vault's permissioned environment—even during a swap.
-                    Zero intermediate custody.
+                    Stellalpha's intended mainnet path pairs Yellowstone gRPC signal detection with delegated Jupiter execution through the protocol's PDA vault model.
+                    The result is fast signal handling with a non-custodial execution boundary.
                   </p>
                 </div>
               </div>
