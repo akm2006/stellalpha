@@ -9,6 +9,9 @@ import {
   getPilotTradeMaxAttempts,
   isAmbiguousExecuteError,
   isExecuteRetryWindowOpen,
+  isNoRouteFailure,
+  maybeQueueResidualExitTrade,
+  quarantineFailedMint,
   isRetryableExecutionCode,
   isRetryableSellExecutionFailure,
 } from '@/lib/live-pilot/executor';
@@ -136,12 +139,13 @@ async function maybeRequeueExpiredAttempt(args: {
 }
 
 async function maybeRecoverMissingExecuteSignature(args: {
+  wallet: LivePilotConfig['wallets'][number];
   walletAlias: string;
   trade: NonNullable<Awaited<ReturnType<typeof getPilotTradeById>>>;
   attempt: Awaited<ReturnType<typeof listSubmittedPilotTradeAttempts>>[number];
   maxAttempts: number;
 }) {
-  const { walletAlias, trade, attempt, maxAttempts } = args;
+  const { wallet, walletAlias, trade, attempt, maxAttempts } = args;
 
   if (!attempt.jupiter_request_id || !attempt.signed_transaction) {
     await failSubmittedAttempt(
@@ -223,6 +227,10 @@ async function maybeRecoverMissingExecuteSignature(args: {
       const code = String(executeResponse.errorCode ?? executeResponse.code ?? 'execute_failed');
       const message = executeResponse.message || executeResponse.error || 'Jupiter execute did not return a transaction signature';
       const classification = classifyJupiterFailure(message, code, isRetryableExecutionCode(code));
+      const shouldQuarantineMint =
+        trade.leader_type === 'sell'
+        && isNoRouteFailure(message)
+        && trade.attempt_count >= maxAttempts;
 
       await updatePilotTradeAttempt(attempt.id, {
         status: 'failed',
@@ -250,6 +258,25 @@ async function maybeRecoverMissingExecuteSignature(args: {
           tradeId: trade.id,
         });
         return { outcome: 'requeued' as const, signature: null as string | null };
+      }
+
+      if (shouldQuarantineMint) {
+        await quarantineFailedMint({
+          trade,
+          walletAlias,
+          message,
+        }).catch(() => undefined);
+        await updatePilotTradeIfStatus(trade.id, 'submitted', {
+          status: 'skipped',
+          skip_reason: 'trapped_unquotable',
+          next_retry_at: null,
+          error_message: message,
+        });
+        await updatePilotRuntimeState(walletAlias, {
+          last_error: message,
+          last_reconcile_at: retriedAt,
+        });
+        return { outcome: 'failed' as const, signature: null as string | null };
       }
 
       await failSubmittedAttempt(walletAlias, trade.id, attempt.id, message, code);
@@ -308,6 +335,10 @@ async function maybeRecoverMissingExecuteSignature(args: {
     const classification = classifyJupiterFailure(message, code, retryable, {
       retryNoRoute: trade.leader_type === 'sell',
     });
+    const shouldQuarantineMint =
+      trade.leader_type === 'sell'
+      && isNoRouteFailure(message)
+      && trade.attempt_count >= maxAttempts;
     await updatePilotTradeAttempt(attempt.id, {
       status: 'failed',
       error_code: code,
@@ -334,6 +365,25 @@ async function maybeRecoverMissingExecuteSignature(args: {
         tradeId: trade.id,
       });
       return { outcome: 'requeued' as const, signature: null as string | null };
+    }
+
+    if (shouldQuarantineMint) {
+      await quarantineFailedMint({
+        trade,
+        walletAlias,
+        message,
+      }).catch(() => undefined);
+      await updatePilotTradeIfStatus(trade.id, 'submitted', {
+        status: 'skipped',
+        skip_reason: 'trapped_unquotable',
+        next_retry_at: null,
+        error_message: message,
+      });
+      await updatePilotRuntimeState(walletAlias, {
+        last_error: message,
+        last_reconcile_at: retriedAt,
+      });
+      return { outcome: 'failed' as const, signature: null as string | null };
     }
 
     await failSubmittedAttempt(walletAlias, trade.id, attempt.id, message, code);
@@ -398,6 +448,7 @@ export async function recoverSubmittedPilotTrades(args: {
       let signature = attempt.tx_signature;
       if (!signature) {
         const executeRecovery = await maybeRecoverMissingExecuteSignature({
+          wallet,
           walletAlias: wallet.alias,
           trade,
           attempt,
@@ -477,12 +528,26 @@ export async function recoverSubmittedPilotTrades(args: {
             last_error: null,
             last_reconcile_at: confirmedAt,
           });
+          const residualTrade = await maybeQueueResidualExitTrade({
+            trade,
+            wallet,
+            connection,
+            attemptedInputRaw: attempt.quoted_input_amount_raw,
+          });
           await sendLivePilotAlert('Trade confirmed in recovery', [
             `wallet=${wallet.alias}`,
             `trade=${trade.id}`,
             `signature=${signature}`,
             formatSolscanTxUrl(signature),
           ]).catch(() => undefined);
+          if (residualTrade) {
+            await sendLivePilotAlert('Residual exit queued', [
+              `wallet=${wallet.alias}`,
+              `sourceTrade=${trade.id}`,
+              `residualTrade=${residualTrade.id}`,
+              `mint=${trade.token_in_mint}`,
+            ]).catch(() => undefined);
+          }
           outcome = 'confirmed';
         } else if (attempt.last_valid_block_height) {
           const currentBlockHeight = await connection.getBlockHeight('confirmed');

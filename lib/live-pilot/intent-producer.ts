@@ -9,6 +9,7 @@ import {
   ensurePilotRuntimeState,
   updatePilotRuntimeState,
 } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
+import { isPilotMintQuarantined } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
 import { createPilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import {
   BUY_STALENESS_THRESHOLD_MS,
@@ -16,6 +17,8 @@ import {
   createPrivateRpcConnection,
 } from '@/lib/ingestion/copy-signal';
 import { findPilotWalletForStarTrader, getLivePilotPublicConfig } from '@/lib/live-pilot/config';
+
+const LIVE_PILOT_TECHNICAL_MIN_SOL = 0.005;
 
 export interface PilotIntentResult {
   considered: boolean;
@@ -64,6 +67,7 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
 
     const connection = createPrivateRpcConnection();
     const signal = await computeCopyTradeSignal(trade, receivedAt, connection);
+    const copyRatio = Math.min(Math.max(signal.finalRatio, 0), 1);
 
     let deployableSol: number | null = null;
     let skipReason: string | null = null;
@@ -93,20 +97,22 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       skipReason = 'global_paused';
     } else if (!skipReason && walletControl.is_paused) {
       skipReason = 'wallet_paused';
-    } else if (!skipReason && signal.finalRatio <= 0) {
+    } else if (!skipReason && copyRatio <= 0) {
       skipReason = 'zero_copy_ratio';
     } else if (!skipReason && signal.isStaleBuy) {
       skipReason = 'stale_buy';
     } else if (!skipReason && trade.type === 'buy') {
-      const cappedBuyAmountSol = Math.min(
-        (deployableSol || 0) * signal.finalRatio,
-        (deployableSol || 0) * pilotWallet.maxTradeBuypowerPct,
-      );
+      const outputMint = trade.tokenOutMint || null;
+      if (outputMint && await isPilotMintQuarantined(outputMint)) {
+        skipReason = 'mint_quarantined';
+      }
 
-      if ((deployableSol || 0) <= 0) {
+      const desiredInputSol = (deployableSol || 0) * copyRatio;
+
+      if (!skipReason && (deployableSol || 0) <= 0) {
         skipReason = 'insufficient_deployable_sol';
-      } else if (cappedBuyAmountSol < pilotWallet.minTradeSizeSol) {
-        skipReason = 'below_min_trade_size';
+      } else if (!skipReason && desiredInputSol < LIVE_PILOT_TECHNICAL_MIN_SOL) {
+        skipReason = 'technically_too_small';
       }
     }
 
@@ -123,7 +129,7 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       leader_type: trade.type,
       token_in_mint: trade.tokenInMint || null,
       token_out_mint: trade.tokenOutMint || null,
-      copy_ratio: signal.finalRatio,
+      copy_ratio: copyRatio,
       leader_block_timestamp: toBlockTimestampIso(trade.timestamp),
       received_at: toIso(receivedAt),
       intent_created_at: toIso(intentCreatedAt),
@@ -152,7 +158,7 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
     } else {
       console.log(
         `[LIVE_PILOT] Queued pilot intent for ${pilotWallet.alias} / ${trade.signature.slice(0, 12)}... `
-        + `(ratio=${(signal.finalRatio * 100).toFixed(2)}%, deployable=${(deployableSol || 0).toFixed(4)} SOL)`
+        + `(ratio=${(copyRatio * 100).toFixed(2)}%, deployable=${(deployableSol || 0).toFixed(4)} SOL)`
       );
     }
 

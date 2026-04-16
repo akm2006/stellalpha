@@ -14,12 +14,13 @@ import type { PilotTradeRow } from '@/lib/live-pilot/types';
 import { formatSolscanTxUrl, sendLivePilotAlert } from '@/lib/live-pilot/alerts';
 import { evaluateSellExitProtection, evaluateWalletCircuitBreaker } from '@/lib/live-pilot/breaker';
 import { broadcastLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
+import { isPilotMintQuarantined, quarantinePilotMint } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
 import {
   createPilotTradeAttempt,
   updatePilotTradeAttempt,
 } from '@/lib/live-pilot/repositories/pilot-trade-attempts.repo';
 import { updatePilotRuntimeState } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
-import { updatePilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import { createPilotTrade, updatePilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import { getTokenDecimals, getTokenSymbol, WSOL } from '@/lib/services/token-service';
 import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 
@@ -41,7 +42,15 @@ const EXECUTE_RETRY_WINDOW_MS = 120_000;
 const EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
 const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_MAX_MS = 8_000;
+export const LIVE_PILOT_TECHNICAL_MIN_SOL = 0.005;
 const SELL_SLIPPAGE_LADDER_BPS = [1000, 3000, 5000, 8000];
+const SELL_EXIT_CHUNK_LADDER = [
+  { numerator: 1n, denominator: 1n, label: '100%' },
+  { numerator: 1n, denominator: 2n, label: '50%' },
+  { numerator: 1n, denominator: 4n, label: '25%' },
+  { numerator: 1n, denominator: 10n, label: '10%' },
+  { numerator: 1n, denominator: 20n, label: '5%' },
+];
 
 type JupiterApiError = Error & {
   code?: string;
@@ -95,9 +104,14 @@ type ExecutionPlan =
       outputMint: string;
       inputAmountUi: number;
       inputAmountRaw: string;
-      quotedInputDecimals: number;
-      maxAttempts: number;
-      slippageBps: number | null;
+    quotedInputDecimals: number;
+    maxAttempts: number;
+    slippageBps: number | null;
+    chunkFraction?: {
+      numerator: bigint;
+      denominator: bigint;
+      label: string;
+    } | null;
     };
 
 type ConfirmationResult =
@@ -171,6 +185,20 @@ function uiToRaw(amount: number, decimals: number) {
   return BigInt(Math.max(scaled, 0));
 }
 
+function ceilDiv(numerator: bigint, denominator: bigint) {
+  return (numerator + denominator - 1n) / denominator;
+}
+
+function getSellChunkFraction(attemptNumber: number) {
+  const normalizedAttempt = Math.max(attemptNumber, 1);
+  return SELL_EXIT_CHUNK_LADDER[Math.min(normalizedAttempt - 1, SELL_EXIT_CHUNK_LADDER.length - 1)]!;
+}
+
+export function isNoRouteFailure(message: string) {
+  const lower = message.toLowerCase();
+  return lower.includes('no route') || lower.includes('no quote') || lower.includes('route not found');
+}
+
 export function getSellSlippageBps(wallet: LivePilotWalletConfig, attemptNumber: number) {
   const ladder = buildSellSlippageLadderBps(wallet);
   const normalizedAttempt = Math.max(attemptNumber, 1);
@@ -214,7 +242,7 @@ export function getPilotTradeMaxAttempts(wallet: LivePilotWalletConfig, trade: P
     return 1 + Math.max(wallet.buyMaxRequotes, 0);
   }
 
-  return buildSellSlippageLadderBps(wallet).length;
+  return Math.max(buildSellSlippageLadderBps(wallet).length, SELL_EXIT_CHUNK_LADDER.length);
 }
 
 export function isExecuteRetryWindowOpen(attemptTimestamp: string | null | undefined) {
@@ -295,11 +323,14 @@ export function isAmbiguousExecuteError(error: unknown) {
 
 function isNotableSkipReason(reason: string) {
   return [
+    'mint_quarantined',
     'price_impact_too_high',
     'insufficient_balance',
     'insufficient_deployable_sol',
     'insufficient_sol_for_fees',
     'no_route',
+    'technically_too_small',
+    'trapped_unquotable',
   ].includes(reason);
 }
 
@@ -456,10 +487,7 @@ async function buildExecutionPlan(
       wallet.minFeeReserveSol,
     );
     const deployableSol = Math.max(0, walletBalanceSol - reserveSol);
-    const desiredInputSol = Math.min(
-      deployableSol * copyRatio,
-      deployableSol * wallet.maxTradeBuypowerPct,
-    );
+    const desiredInputSol = deployableSol * copyRatio;
 
     if (desiredInputSol <= 0) {
       return {
@@ -469,11 +497,19 @@ async function buildExecutionPlan(
       };
     }
 
-    if (desiredInputSol < wallet.minTradeSizeSol) {
+    if (await isPilotMintQuarantined(outputMint)) {
       return {
         kind: 'skip',
-        reason: 'below_min_trade_size',
-        message: `Buy size ${desiredInputSol.toFixed(6)} SOL is below the configured minimum`,
+        reason: 'mint_quarantined',
+        message: `${getTokenSymbol(outputMint)} is quarantined for live-pilot buys`,
+      };
+    }
+
+    if (desiredInputSol < LIVE_PILOT_TECHNICAL_MIN_SOL) {
+      return {
+        kind: 'skip',
+        reason: 'technically_too_small',
+        message: `Buy size ${desiredInputSol.toFixed(6)} SOL is below the technical viability floor`,
       };
     }
 
@@ -486,6 +522,7 @@ async function buildExecutionPlan(
       quotedInputDecimals: 9,
       maxAttempts: getPilotTradeMaxAttempts(wallet, trade),
       slippageBps: null,
+      chunkFraction: null,
     };
   }
 
@@ -532,15 +569,30 @@ async function buildExecutionPlan(
     };
   }
 
+  const chunkFraction = getSellChunkFraction(trade.attempt_count);
+  const chunkedAmountRaw = trade.attempt_count <= 1
+    ? desiredAmountRaw
+    : (desiredAmountRaw * chunkFraction.numerator) / chunkFraction.denominator;
+  const attemptedAmountRaw = chunkedAmountRaw > 0n ? chunkedAmountRaw : desiredAmountRaw > 0n ? 1n : 0n;
+
+  if (attemptedAmountRaw <= 0n) {
+    return {
+      kind: 'skip',
+      reason: 'technically_too_small',
+      message: `Sell amount became technically too small for ${getTokenSymbol(inputMint)}`,
+    };
+  }
+
   return {
     kind: 'swap',
     inputMint,
     outputMint: SOL_MINT,
-    inputAmountUi: rawToUi(desiredAmountRaw, tokenBalance.decimals),
-    inputAmountRaw: desiredAmountRaw.toString(),
+    inputAmountUi: rawToUi(attemptedAmountRaw, tokenBalance.decimals),
+    inputAmountRaw: attemptedAmountRaw.toString(),
     quotedInputDecimals: tokenBalance.decimals,
     maxAttempts: getPilotTradeMaxAttempts(wallet, trade),
     slippageBps: getSellSlippageBps(wallet, trade.attempt_count),
+    chunkFraction,
   };
 }
 
@@ -702,6 +754,119 @@ async function maybeAlertTradeConfirmed(trade: PilotTradeRow, walletAlias: strin
     `signature=${signature}`,
     formatSolscanTxUrl(signature),
   ]).catch(() => undefined);
+}
+
+async function maybeAlertMintQuarantined(args: {
+  walletAlias: string;
+  trade: PilotTradeRow;
+  mint: string;
+  message: string;
+}) {
+  const { walletAlias, trade, mint, message } = args;
+  await sendLivePilotAlert('Mint quarantined', [
+    `wallet=${walletAlias}`,
+    `trade=${trade.id}`,
+    `mint=${mint}`,
+    `symbol=${getTokenSymbol(mint)}`,
+    message,
+  ]).catch(() => undefined);
+}
+
+export async function maybeQueueResidualExitTrade(args: {
+  trade: PilotTradeRow;
+  wallet: LivePilotWalletConfig;
+  connection: Connection;
+  attemptedInputRaw: string | null;
+}) {
+  const { trade, wallet, connection, attemptedInputRaw } = args;
+  if (
+    trade.leader_type !== 'sell'
+    || !trade.token_in_mint
+    || !attemptedInputRaw
+    || trade.attempt_count <= 1
+  ) {
+    return null;
+  }
+
+  const chunkFraction = getSellChunkFraction(trade.attempt_count);
+  if (chunkFraction.numerator === chunkFraction.denominator) {
+    return null;
+  }
+
+  const attemptedRaw = BigInt(attemptedInputRaw);
+  const inferredDesiredRaw = ceilDiv(attemptedRaw * chunkFraction.denominator, chunkFraction.numerator);
+  const residualRaw = inferredDesiredRaw - attemptedRaw;
+  if (residualRaw <= 0n) {
+    return null;
+  }
+
+  const postTradeBalance = await getTokenBalance(connection, wallet.publicKey, trade.token_in_mint);
+  const remainingBalanceRaw = BigInt(postTradeBalance.rawAmount);
+  if (remainingBalanceRaw <= 0n) {
+    return null;
+  }
+
+  const residualToSellRaw = residualRaw < remainingBalanceRaw ? residualRaw : remainingBalanceRaw;
+  if (residualToSellRaw <= 0n) {
+    return null;
+  }
+
+  const residualCopyRatio = Number(residualToSellRaw) / Number(remainingBalanceRaw);
+  if (!Number.isFinite(residualCopyRatio) || residualCopyRatio <= 0) {
+    return null;
+  }
+
+  const createdAt = new Date().toISOString();
+  const result = await createPilotTrade({
+    wallet_alias: wallet.alias,
+    wallet_public_key: wallet.publicKey,
+    trigger_kind: trade.trigger_kind,
+    trigger_reason: trade.trigger_kind === 'liquidation' ? 'residual_liquidation' : 'residual_exit',
+    star_trader: trade.star_trader,
+    star_trade_signature: trade.star_trade_signature,
+    leader_type: trade.leader_type,
+    token_in_mint: trade.token_in_mint,
+    token_out_mint: trade.token_out_mint,
+    copy_ratio: Math.min(Math.max(residualCopyRatio, 0), 1),
+    leader_block_timestamp: trade.leader_block_timestamp,
+    received_at: createdAt,
+    intent_created_at: createdAt,
+    sol_price_at_intent: trade.sol_price_at_intent,
+    status: 'queued',
+    skip_reason: null,
+    error_message: null,
+    next_retry_at: null,
+  });
+
+  return result.created ? result.trade : null;
+}
+
+export async function quarantineFailedMint(args: {
+  trade: PilotTradeRow;
+  walletAlias: string;
+  message: string;
+}) {
+  const { trade, walletAlias, message } = args;
+  const mint = trade.token_in_mint;
+  if (!mint) {
+    return null;
+  }
+
+  const quarantine = await quarantinePilotMint({
+    mint,
+    reason: 'trapped_unquotable',
+    firstWalletAlias: walletAlias,
+    firstStarTrader: trade.star_trader,
+    firstPilotTradeId: trade.id,
+    note: message,
+  });
+  await maybeAlertMintQuarantined({
+    walletAlias,
+    trade,
+    mint,
+    message,
+  });
+  return quarantine;
 }
 
 async function queueTradeRetry(
@@ -969,7 +1134,22 @@ export async function executePilotTrade(
           last_error: null,
         }),
       ]);
+      const residualTrade = await maybeQueueResidualExitTrade({
+        trade,
+        wallet,
+        connection,
+        attemptedInputRaw: quotedInputRaw,
+      });
       await maybeAlertTradeConfirmed(trade, wallet.alias, txSignature);
+      if (residualTrade) {
+        await sendLivePilotAlert('Residual exit queued', [
+          `wallet=${wallet.alias}`,
+          `sourceTrade=${trade.id}`,
+          `residualTrade=${residualTrade.id}`,
+          `mint=${trade.token_in_mint}`,
+          `chunk=${plan.chunkFraction?.label || '100%'}`,
+        ]).catch(() => undefined);
+      }
       return { outcome: 'confirmed', signature: txSignature };
     }
 
@@ -998,6 +1178,11 @@ export async function executePilotTrade(
       ...(failedSubmittedAt ? { tx_submitted_at: failedSubmittedAt } : {}),
     });
 
+    const shouldQuarantineMint =
+      trade.leader_type === 'sell'
+      && isNoRouteFailure(message)
+      && trade.attempt_count >= plan.maxAttempts;
+
     const canRetry = classification.retryable && trade.attempt_count < plan.maxAttempts;
     if (canRetry) {
       const nextRetryAt = await queueTradeRetry(trade, wallet.alias, message, {
@@ -1012,6 +1197,32 @@ export async function executePilotTrade(
       ]).catch(() => undefined);
       return {
         outcome: 'requeued',
+        message,
+      };
+    }
+
+    if (shouldQuarantineMint) {
+      await quarantineFailedMint({
+        trade,
+        walletAlias: wallet.alias,
+        message,
+      }).catch(() => undefined);
+      await updatePilotTrade(trade.id, {
+        status: 'skipped',
+        skip_reason: 'trapped_unquotable',
+        error_message: message,
+        next_retry_at: null,
+        ...(failedTxSignature ? { tx_signature: failedTxSignature } : {}),
+        ...(failedSubmittedAt ? { tx_submitted_at: failedSubmittedAt } : {}),
+      });
+      await updatePilotRuntimeState(wallet.alias, {
+        ...(failedTxSignature ? { last_submitted_tx_signature: failedTxSignature } : {}),
+        last_error: message,
+      });
+      await maybeAlertSkippedTrade(trade, wallet.alias, 'trapped_unquotable', message);
+      return {
+        outcome: 'skipped',
+        reason: 'trapped_unquotable',
         message,
       };
     }
