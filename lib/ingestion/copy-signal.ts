@@ -3,7 +3,6 @@ import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { RawTrade } from '@/lib/trade-parser';
 import {
   getSolPrice,
-  getTokenDecimals,
   getUsdValue,
 } from '@/lib/services/token-service';
 
@@ -29,7 +28,20 @@ export interface CopyTradeSignal {
   solPrice: number;
 }
 
+function isSafeBoostEnabled() {
+  const raw = (process.env.COPY_SIGNAL_SAFE_BOOST_ENABLED || '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(raw);
+}
+
 export function applySafeBoost(rawRatio: number): { boostedRatio: number; tier: string; multiplier: number } {
+  if (!isSafeBoostEnabled()) {
+    return {
+      boostedRatio: rawRatio,
+      tier: 'Disabled',
+      multiplier: 1,
+    };
+  }
+
   for (const tier of SAFE_BOOST_TIERS) {
     if (rawRatio <= tier.maxRatio) {
       return {
@@ -101,9 +113,24 @@ export async function computeCopyTradeSignal(
   receivedAt: number,
   connection: Connection | null = createPrivateRpcConnection(),
 ): Promise<CopyTradeSignal> {
+  if (trade.type !== 'buy') {
+    const solPrice = await getSolPrice();
+    const tradeAgeMs = receivedAt - trade.timestamp * 1000;
+    return {
+      rawRatio: 0,
+      finalRatio: 0,
+      leaderMetric: 0,
+      leaderUsdValue: 0,
+      boostTier: 'Disabled',
+      boostMultiplier: 1,
+      tradeAgeMs,
+      isStaleBuy: false,
+      solPrice,
+    };
+  }
+
   const starTrader = trade.wallet;
   const sourceMint = trade.tokenInMint;
-  const destMint = trade.tokenOutMint;
   const solPrice = await getSolPrice();
 
   let ratio = 0;
@@ -111,38 +138,15 @@ export async function computeCopyTradeSignal(
   let leaderUsdValue = 0;
 
   try {
-    if (trade.type === 'buy') {
-      if (connection) {
-        const postTradeBuyingPower = await getTraderBuyingPower(starTrader, connection, solPrice);
-        leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
-        const preTradeBuyingPower = postTradeBuyingPower + leaderUsdValue;
+    if (connection) {
+      const postTradeBuyingPower = await getTraderBuyingPower(starTrader, connection, solPrice);
+      leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
+      const preTradeBuyingPower = postTradeBuyingPower + leaderUsdValue;
 
-        leaderMetric = preTradeBuyingPower;
-        ratio = preTradeBuyingPower > 0 ? leaderUsdValue / preTradeBuyingPower : 0;
-      } else {
-        console.warn('[COPY_SIGNAL] Skipping buy-side ratio reconstruction because HELIUS_API_RPC_URL is unavailable.');
-      }
+      leaderMetric = preTradeBuyingPower;
+      ratio = preTradeBuyingPower > 0 ? leaderUsdValue / preTradeBuyingPower : 0;
     } else {
-      leaderUsdValue = await getUsdValue(destMint, trade.tokenOutAmount);
-
-      if (connection) {
-        const mintPubkey = new PublicKey(sourceMint);
-        const ata = getAssociatedTokenAddressSync(mintPubkey, new PublicKey(starTrader));
-        const accountInfo = await connection.getAccountInfo(ata);
-        let postTradeTokenBalance = 0;
-
-        if (accountInfo && accountInfo.data.length >= 72) {
-          const rawAmount = Number(accountInfo.data.readBigUInt64LE(64));
-          const decimals = await getTokenDecimals(sourceMint);
-          postTradeTokenBalance = rawAmount / Math.pow(10, decimals);
-        }
-
-        const preTradeTokenBalance = postTradeTokenBalance + trade.tokenInAmount;
-        leaderMetric = preTradeTokenBalance;
-        ratio = preTradeTokenBalance > 0 ? trade.tokenInAmount / preTradeTokenBalance : 0;
-      } else {
-        console.warn('[COPY_SIGNAL] Skipping sell-side ratio reconstruction because HELIUS_API_RPC_URL is unavailable.');
-      }
+      console.warn('[COPY_SIGNAL] Skipping buy-side ratio reconstruction because HELIUS_API_RPC_URL is unavailable.');
     }
   } catch (error: any) {
     console.warn('[COPY_SIGNAL] Ratio reconstruction failed:', error?.message || error);

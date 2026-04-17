@@ -108,6 +108,11 @@ export interface PilotTradeRow {
   token_in_mint: string | null;
   token_out_mint: string | null;
   copy_ratio: number | null;
+  leader_position_before: number | null;
+  leader_position_after: number | null;
+  copied_position_before: number | null;
+  copied_position_after: number | null;
+  sell_fraction: number | null;
   leader_block_timestamp: string | null;
   received_at: string | null;
   intent_created_at: string | null;
@@ -131,6 +136,22 @@ export interface PilotTradeRow {
   status: PilotTradeStatus;
   skip_reason: string | null;
   error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CopyPositionStateRow {
+  scope_type: 'demo' | 'pilot';
+  scope_key: string;
+  star_trader: string;
+  mint: string;
+  token_symbol: string | null;
+  leader_open_amount: number;
+  copied_open_amount: number;
+  copied_cost_usd: number;
+  avg_cost_usd: number;
+  last_leader_trade_signature: string | null;
+  last_leader_trade_at: string | null;
   created_at: string;
   updated_at: string;
 }

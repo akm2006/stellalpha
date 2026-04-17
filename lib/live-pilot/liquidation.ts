@@ -6,6 +6,7 @@ import { sendLivePilotAlert } from '@/lib/live-pilot/alerts';
 import { listActivePilotMintQuarantines } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
 import { listActiveLiquidationTrades, createPilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import { updatePilotRuntimeState } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
+import { getCopyPositionState } from '@/lib/repositories/copy-position-states.repo';
 import { getSolPrice, getTokenSymbol } from '@/lib/services/token-service';
 
 const DUST_SOL_VALUE_THRESHOLD = 0.001;
@@ -201,6 +202,12 @@ export async function enqueueLiquidationIntentsForWallet(args: {
   let created = 0;
 
   for (const holding of candidates) {
+    const copyState = await getCopyPositionState({
+      scopeType: 'pilot',
+      scopeKey: wallet.alias,
+      starTrader: wallet.starTrader,
+      mint: holding.mint,
+    });
     const result = await createPilotTrade({
       wallet_alias: wallet.alias,
       wallet_public_key: wallet.publicKey,
@@ -212,6 +219,11 @@ export async function enqueueLiquidationIntentsForWallet(args: {
       token_in_mint: holding.mint,
       token_out_mint: WSOL,
       copy_ratio: 1,
+      leader_position_before: null,
+      leader_position_after: null,
+      copied_position_before: copyState?.copied_open_amount ?? holding.uiAmount,
+      copied_position_after: copyState?.copied_open_amount ?? holding.uiAmount,
+      sell_fraction: null,
       received_at: createdAt,
       intent_created_at: createdAt,
       sol_price_at_intent: solPrice,

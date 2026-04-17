@@ -2,7 +2,11 @@ import { RawTrade } from '@/lib/trade-parser';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { getActiveFollowers } from '@/lib/repositories/demo-trader-states.repo';
 import { queueTrade } from '@/lib/repositories/demo-trades.repo';
-import { getTokenSymbol } from '@/lib/services/token-service';
+import {
+  recordObservedLeaderBuy,
+  recordObservedLeaderSell,
+} from '@/lib/repositories/copy-position-states.repo';
+import { getTokenSymbol, getUsdValue } from '@/lib/services/token-service';
 import {
   BUY_STALENESS_THRESHOLD_MS,
   computeCopyTradeSignal,
@@ -54,20 +58,18 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
 
   console.log(`[PRODUCER] Queueing trade for ${followers.length} trader state(s)`);
 
-  const signal = await computeCopyTradeSignal(trade, receivedAt);
-  const finalRatio = signal.finalRatio;
-  const leaderMetric = signal.leaderMetric;
-  const leaderUsdValue = signal.leaderUsdValue;
-  const boostTier = signal.boostTier;
-  const boostMultiplier = signal.boostMultiplier;
-  const tradeAgeMs = signal.tradeAgeMs;
-  const isStaleBuy = signal.isStaleBuy;
+  const signal = trade.type === 'buy'
+    ? await computeCopyTradeSignal(trade, receivedAt)
+    : null;
+  const finalRatio = signal?.finalRatio ?? 0;
+  const leaderMetric = signal?.leaderMetric ?? 0;
+  const leaderUsdValue = signal?.leaderUsdValue ?? await getUsdValue(destMint, trade.tokenOutAmount);
+  const boostTier = signal?.boostTier ?? 'Disabled';
+  const boostMultiplier = signal?.boostMultiplier ?? 1;
+  const tradeAgeMs = signal?.tradeAgeMs ?? receivedAt - trade.timestamp * 1000;
+  const isStaleBuy = signal?.isStaleBuy ?? false;
 
   timer.checkpoint('Calculate copy ratio + boost');
-
-  if (isStaleBuy) {
-    console.log(`[STALENESS] BUY is ${Math.round(tradeAgeMs / 1000)}s old (threshold ${BUY_STALENESS_THRESHOLD_MS / 1000}s) — skipping for all followers`);
-  }
 
   // 4. Insert queued trades for all followers in parallel
   const insertPromises: Promise<void>[] = [];
@@ -75,17 +77,62 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
   for (const traderState of followers) {
     const traderStateId = traderState.id;
 
-    if (isStaleBuy) {
-      console.log(`  [STALENESS] SKIP stale BUY | TS ${traderStateId.slice(0, 8)} (age: ${Math.round(tradeAgeMs / 1000)}s)`);
-      continue;
-    }
-
-    if (type === 'sell' && tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
-      console.log(`  [STALENESS] Delayed SELL executing | TS ${traderStateId.slice(0, 8)} (age: ${Math.round(tradeAgeMs / 1000)}s)`);
-    }
-
     insertPromises.push(
       (async () => {
+        const transitionMetadata = {
+          scopeType: 'demo' as const,
+          scopeKey: traderStateId,
+          starTrader,
+          tokenSymbol: getTokenSymbol(type === 'buy' ? destMint : sourceMint),
+          tradeSignature: trade.signature,
+          tradeTimestampIso: new Date(trade.timestamp * 1000).toISOString(),
+        };
+
+        let status: 'queued' | 'skipped' = 'queued';
+        let errorMessage: string | null = null;
+        let copyRatio = finalRatio;
+        let leaderPositionBefore = leaderMetric;
+        let leaderPositionAfter = leaderMetric;
+        let copiedPositionBefore = 0;
+        let sellFraction: number | null = null;
+
+        if (trade.type === 'buy') {
+          const leaderBuyTransition = await recordObservedLeaderBuy({
+            ...transitionMetadata,
+            mint: destMint,
+            leaderBuyAmount: trade.tokenOutAmount,
+          });
+
+          leaderPositionBefore = leaderBuyTransition.leaderPositionBefore;
+          leaderPositionAfter = leaderBuyTransition.leaderPositionAfter;
+          copiedPositionBefore = leaderBuyTransition.copiedPositionBefore;
+
+          if (isStaleBuy) {
+            status = 'skipped';
+            errorMessage = 'stale_buy';
+          } else if (copyRatio <= 0) {
+            status = 'skipped';
+            errorMessage = 'zero_copy_ratio';
+          }
+        } else {
+          const leaderSellTransition = await recordObservedLeaderSell({
+            ...transitionMetadata,
+            mint: sourceMint,
+            leaderSellAmount: trade.tokenInAmount,
+          });
+
+          copyRatio = leaderSellTransition.sellFraction;
+          leaderPositionBefore = leaderSellTransition.leaderPositionBefore;
+          leaderPositionAfter = leaderSellTransition.leaderPositionAfter;
+          copiedPositionBefore = leaderSellTransition.copiedPositionBefore;
+          sellFraction = leaderSellTransition.sellFraction;
+
+          if (leaderSellTransition.notFollowedPosition || copyRatio <= 0) {
+            status = 'skipped';
+            errorMessage = 'not_followed_position';
+          }
+        }
+
         const { error: insertError } = await queueTrade({
           trader_state_id: traderStateId,
           star_trade_signature: trade.signature,
@@ -97,23 +144,34 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
           token_out_symbol: getTokenSymbol(destMint),
           token_out_amount: null,
           star_trade_timestamp: trade.timestamp,
-          status: 'queued',
+          status,
           leader_in_amount: trade.tokenInAmount,
           leader_out_amount: trade.tokenOutAmount,
           leader_usd_value: leaderUsdValue,
-          leader_before_balance: leaderMetric,
-          copy_ratio: finalRatio,
+          leader_before_balance: leaderPositionBefore,
+          copy_ratio: copyRatio,
           boost_tier: boostTier,
           boost_multiplier: boostMultiplier,
-          raw_data: trade
+          raw_data: trade,
+          error_message: errorMessage,
+          leader_position_before: leaderPositionBefore,
+          leader_position_after: leaderPositionAfter,
+          copied_position_before: copiedPositionBefore,
+          copied_position_after: copiedPositionBefore,
+          sell_fraction: sellFraction,
         });
 
         if (insertError) {
           throw new Error(`Failed to queue trade for ${traderStateId}: ${insertError.message}`);
         }
 
-        queuedTraderStateIds.push(traderStateId);
-        console.log(`  TS ${traderStateId.slice(0, 8)}: Trade queued (Ratio: ${(finalRatio * 100).toFixed(2)}%${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
+        if (status === 'queued') {
+          queuedTraderStateIds.push(traderStateId);
+          console.log(`  TS ${traderStateId.slice(0, 8)}: Trade queued (Ratio: ${(copyRatio * 100).toFixed(2)}%${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
+          return;
+        }
+
+        console.log(`  TS ${traderStateId.slice(0, 8)}: Trade skipped (${errorMessage})`);
       })()
     );
   }

@@ -13,6 +13,11 @@ export interface CreatePilotTradeInput {
   token_in_mint?: string | null;
   token_out_mint?: string | null;
   copy_ratio?: number | null;
+  leader_position_before?: number | null;
+  leader_position_after?: number | null;
+  copied_position_before?: number | null;
+  copied_position_after?: number | null;
+  sell_fraction?: number | null;
   leader_block_timestamp?: string | null;
   received_at?: string | null;
   intent_created_at?: string | null;

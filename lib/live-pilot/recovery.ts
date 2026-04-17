@@ -12,6 +12,7 @@ import {
   isExecuteRetryWindowOpen,
   isNoRouteFailure,
   maybeQueueResidualExitTrade,
+  recordConfirmedCopyPositionMutation,
   quarantineFailedMint,
   isRetryableBuyExecutionFailure,
   isRetryableExecutionCode,
@@ -516,6 +517,12 @@ export async function recoverSubmittedPilotTrades(args: {
           }
         } else if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
           const confirmedAt = new Date().toISOString();
+          const lifecycle = await recordConfirmedCopyPositionMutation({
+            trade,
+            wallet,
+            inputAmount: attempt.actual_input_amount ?? attempt.quoted_input_amount,
+            outputAmount: attempt.actual_output_amount ?? attempt.quoted_output_amount,
+          });
           await updatePilotTradeAttempt(attempt.id, {
             status: 'confirmed',
             tx_confirmed_at: confirmedAt,
@@ -526,6 +533,7 @@ export async function recoverSubmittedPilotTrades(args: {
             tx_confirmed_at: confirmedAt,
             confirmation_slot: status.slot ?? null,
             winning_attempt_id: attempt.id,
+            copied_position_after: lifecycle.copiedPositionAfter,
             next_retry_at: null,
             error_message: null,
           });

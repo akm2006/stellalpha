@@ -10,6 +10,7 @@ const NON_BREAKER_ERROR_CODES = new Set([
   'missing_input_mint',
   'missing_output_mint',
   'no_route',
+  'not_followed_position',
   'price_impact_too_high',
   'stale_buy',
   'technically_too_small',

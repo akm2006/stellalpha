@@ -21,6 +21,11 @@ import {
 } from '@/lib/live-pilot/repositories/pilot-trade-attempts.repo';
 import { updatePilotRuntimeState } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import { createPilotTrade, updatePilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import {
+  getCopyPositionState,
+  recordSuccessfulCopiedBuy,
+  recordSuccessfulCopiedSell,
+} from '@/lib/repositories/copy-position-states.repo';
 import { getTokenDecimals, getTokenSymbol, WSOL } from '@/lib/services/token-service';
 import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 
@@ -103,11 +108,12 @@ type ExecutionPlan =
       kind: 'swap';
       inputMint: string;
       outputMint: string;
-      inputAmountUi: number;
-      inputAmountRaw: string;
+    inputAmountUi: number;
+    inputAmountRaw: string;
     quotedInputDecimals: number;
     maxAttempts: number;
     slippageBps: number | null;
+    positionDriftMessage?: string | null;
     chunkFraction?: {
       numerator: bigint;
       denominator: bigint;
@@ -359,6 +365,7 @@ function isNotableSkipReason(reason: string) {
     'mint_quarantined',
     'price_impact_too_high',
     'insufficient_balance',
+    'not_followed_position',
     'insufficient_deployable_sol',
     'insufficient_sol_for_fees',
     'no_route',
@@ -589,9 +596,18 @@ async function buildExecutionPlan(
     };
   }
 
-  const desiredAmountUi = tokenBalance.uiAmount * copyRatio;
+  const copiedPositionBefore = Math.max(Number(trade.copied_position_before || 0), 0);
+  if (copiedPositionBefore <= 0) {
+    return {
+      kind: 'skip',
+      reason: 'not_followed_position',
+      message: `Wallet ${wallet.alias} did not build a copied ${getTokenSymbol(inputMint)} position`,
+    };
+  }
+
+  const desiredAmountUi = copiedPositionBefore * copyRatio;
   const desiredAmountRaw = copyRatio >= 0.999
-    ? BigInt(tokenBalance.rawAmount)
+    ? uiToRaw(copiedPositionBefore, tokenBalance.decimals)
     : uiToRaw(desiredAmountUi, tokenBalance.decimals);
 
   if (desiredAmountRaw <= BigInt(0)) {
@@ -607,8 +623,11 @@ async function buildExecutionPlan(
     ? desiredAmountRaw
     : (desiredAmountRaw * chunkFraction.numerator) / chunkFraction.denominator;
   const attemptedAmountRaw = chunkedAmountRaw > 0n ? chunkedAmountRaw : desiredAmountRaw > 0n ? 1n : 0n;
+  const clampedAttemptedAmountRaw = attemptedAmountRaw < BigInt(tokenBalance.rawAmount)
+    ? attemptedAmountRaw
+    : BigInt(tokenBalance.rawAmount);
 
-  if (attemptedAmountRaw <= 0n) {
+  if (clampedAttemptedAmountRaw <= 0n) {
     return {
       kind: 'skip',
       reason: 'technically_too_small',
@@ -616,15 +635,20 @@ async function buildExecutionPlan(
     };
   }
 
+  const positionDriftMessage = copiedPositionBefore - tokenBalance.uiAmount > 1e-9
+    ? `Copied position ${copiedPositionBefore.toFixed(6)} ${getTokenSymbol(inputMint)} exceeded on-chain balance ${tokenBalance.uiAmount.toFixed(6)}; clamping sell size`
+    : null;
+
   return {
     kind: 'swap',
     inputMint,
     outputMint: SOL_MINT,
-    inputAmountUi: rawToUi(attemptedAmountRaw, tokenBalance.decimals),
-    inputAmountRaw: attemptedAmountRaw.toString(),
+    inputAmountUi: rawToUi(clampedAttemptedAmountRaw, tokenBalance.decimals),
+    inputAmountRaw: clampedAttemptedAmountRaw.toString(),
     quotedInputDecimals: tokenBalance.decimals,
     maxAttempts: getPilotTradeMaxAttempts(wallet, trade),
     slippageBps: getSellSlippageBps(wallet, trade.attempt_count),
+    positionDriftMessage,
     chunkFraction,
   };
 }
@@ -805,6 +829,57 @@ async function maybeAlertMintQuarantined(args: {
   ]).catch(() => undefined);
 }
 
+export async function recordConfirmedCopyPositionMutation(args: {
+  trade: PilotTradeRow;
+  wallet: LivePilotWalletConfig;
+  inputAmount: number | null;
+  outputAmount: number | null;
+}) {
+  const { trade, wallet, inputAmount, outputAmount } = args;
+  const tradeTimestampIso = trade.leader_block_timestamp || new Date().toISOString();
+
+  if (trade.leader_type === 'buy' && trade.token_out_mint) {
+    const copiedBuyAmount = Math.max(outputAmount || 0, 0);
+    const copiedCostUsd = Math.max(inputAmount || 0, 0) * Math.max(Number(trade.sol_price_at_intent || 0), 0);
+    const lifecycle = await recordSuccessfulCopiedBuy({
+      scopeType: 'pilot',
+      scopeKey: wallet.alias,
+      starTrader: trade.star_trader || wallet.starTrader || '',
+      mint: trade.token_out_mint,
+      tokenSymbol: getTokenSymbol(trade.token_out_mint),
+      tradeSignature: trade.star_trade_signature,
+      tradeTimestampIso,
+      copiedBuyAmount,
+      copiedCostUsd,
+    });
+
+    return {
+      copiedPositionAfter: lifecycle.copiedPositionAfter,
+    };
+  }
+
+  if (trade.token_in_mint) {
+    const lifecycle = await recordSuccessfulCopiedSell({
+      scopeType: 'pilot',
+      scopeKey: wallet.alias,
+      starTrader: trade.star_trader || wallet.starTrader || '',
+      mint: trade.token_in_mint,
+      tokenSymbol: getTokenSymbol(trade.token_in_mint),
+      tradeSignature: trade.star_trade_signature,
+      tradeTimestampIso,
+      copiedSellAmount: Math.max(inputAmount || 0, 0),
+    });
+
+    return {
+      copiedPositionAfter: lifecycle.copiedPositionAfter,
+    };
+  }
+
+  return {
+    copiedPositionAfter: trade.copied_position_after,
+  };
+}
+
 export async function maybeQueueResidualExitTrade(args: {
   trade: PilotTradeRow;
   wallet: LivePilotWalletConfig;
@@ -849,6 +924,13 @@ export async function maybeQueueResidualExitTrade(args: {
     return null;
   }
 
+  const copyState = await getCopyPositionState({
+    scopeType: 'pilot',
+    scopeKey: wallet.alias,
+    starTrader: trade.star_trader || wallet.starTrader || '',
+    mint: trade.token_in_mint,
+  });
+
   const createdAt = new Date().toISOString();
   const result = await createPilotTrade({
     wallet_alias: wallet.alias,
@@ -861,6 +943,11 @@ export async function maybeQueueResidualExitTrade(args: {
     token_in_mint: trade.token_in_mint,
     token_out_mint: trade.token_out_mint,
     copy_ratio: Math.min(Math.max(residualCopyRatio, 0), 1),
+    leader_position_before: trade.leader_position_before,
+    leader_position_after: trade.leader_position_after,
+    copied_position_before: copyState?.copied_open_amount ?? null,
+    copied_position_after: copyState?.copied_open_amount ?? null,
+    sell_fraction: trade.sell_fraction,
     leader_block_timestamp: trade.leader_block_timestamp,
     received_at: createdAt,
     intent_created_at: createdAt,
@@ -975,6 +1062,17 @@ export async function executePilotTrade(
       reason: plan.reason,
       message: plan.message,
     };
+  }
+
+  if (plan.positionDriftMessage) {
+    await updatePilotRuntimeState(wallet.alias, {
+      last_error: plan.positionDriftMessage,
+    }).catch(() => undefined);
+    await sendLivePilotAlert('Copy position reconciled to on-chain balance', [
+      `wallet=${wallet.alias}`,
+      `trade=${trade.id}`,
+      plan.positionDriftMessage,
+    ]).catch(() => undefined);
   }
 
   const attempt = await createPilotTradeAttempt({
@@ -1154,6 +1252,12 @@ export async function executePilotTrade(
     const confirmation = await waitForPilotConfirmation(connection, txSignature);
     if (confirmation.state === 'confirmed') {
       const confirmedAt = new Date().toISOString();
+      const lifecycle = await recordConfirmedCopyPositionMutation({
+        trade,
+        wallet,
+        inputAmount: actualInputAmount,
+        outputAmount: actualOutputAmount,
+      });
       await Promise.all([
         updatePilotTradeAttempt(attempt.id, {
           status: 'confirmed',
@@ -1165,6 +1269,7 @@ export async function executePilotTrade(
           tx_confirmed_at: confirmedAt,
           confirmation_slot: confirmation.slot,
           winning_attempt_id: attempt.id,
+          copied_position_after: lifecycle.copiedPositionAfter,
           next_retry_at: null,
         }),
         updatePilotRuntimeState(wallet.alias, {

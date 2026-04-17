@@ -16,6 +16,10 @@ import {
   updateDemoPosition, 
   insertDemoPosition 
 } from '@/lib/repositories/demo-positions.repo';
+import {
+  recordSuccessfulCopiedBuy,
+  recordSuccessfulCopiedSell,
+} from '@/lib/repositories/copy-position-states.repo';
 import { 
   getSolPrice, 
   getTokenDecimals, 
@@ -300,6 +304,10 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
 
   // Apply Ratio to Follower's Balance
   let copyAmount = sourceBalance * tradeRatio;
+  if (trade.type === 'sell') {
+    const copiedPositionBefore = Number(tradeRow.copied_position_before || 0);
+    copyAmount = Math.min(copiedPositionBefore * tradeRatio, sourceBalance);
+  }
   copyAmount = Math.min(copyAmount, sourceBalance);
 
   if (copyAmount <= 0) {
@@ -398,8 +406,16 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
   );
 
   // 7+8. Run quote write and position update concurrently (different tables, no shared state)
-  async function updatePositions(): Promise<number | null> {
+  async function updatePositions(): Promise<{ pnl: number | null; copiedPositionAfter: number | null }> {
     let pnl: number | null = null;
+    let copiedPositionAfter: number | null = null;
+    const transitionMetadata = {
+      scopeType: 'demo' as const,
+      scopeKey: traderStateId,
+      starTrader: trade.wallet,
+      tradeSignature: trade.signature,
+      tradeTimestampIso: new Date(trade.timestamp * 1000).toISOString(),
+    };
 
     if (isBuy) {
       // ============ BUY LOGIC (Weighted Average Cost) ============
@@ -431,6 +447,15 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
       } else {
         await insertDemoPosition(traderStateId, destMint, getTokenSymbol(destMint), newAmount, newCostBasis, newAvgCost);
       }
+
+      const lifecycle = await recordSuccessfulCopiedBuy({
+        ...transitionMetadata,
+        mint: destMint,
+        tokenSymbol: getTokenSymbol(destMint),
+        copiedBuyAmount: tokenReceived,
+        copiedCostUsd: usdSpent,
+      });
+      copiedPositionAfter = lifecycle.copiedPositionAfter;
 
     } else if (isSell) {
       // ============ SELL LOGIC (Realize PnL - WAC Method) ============
@@ -474,6 +499,14 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
         );
       }
 
+      const lifecycle = await recordSuccessfulCopiedSell({
+        ...transitionMetadata,
+        mint: sourceMint,
+        tokenSymbol: getTokenSymbol(sourceMint),
+        copiedSellAmount: copyAmount,
+      });
+      copiedPositionAfter = lifecycle.copiedPositionAfter;
+
     } else {
       // Token → Token swap (rare)
       console.log(`  Token→Token swap, no USD cost tracking`);
@@ -492,10 +525,10 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
       }
     }
 
-    return pnl;
+    return { pnl, copiedPositionAfter };
   }
 
-  const [, pnlResult] = await Promise.all([
+  const [, positionUpdateResult] = await Promise.all([
     updateDemoTrade(tradeRow.id, {
       token_in_mint: sourceMint,
       token_in_symbol: getTokenSymbol(sourceMint),
@@ -516,15 +549,16 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
   timer.checkpoint('DB: Update trade + positions (parallel)');
 
   // 9. Backfill PnL — sequential, depends on position result
-  if (pnlResult !== null) {
+  if (positionUpdateResult.pnl !== null || positionUpdateResult.copiedPositionAfter !== null) {
     await updateDemoTrade(tradeRow.id, {
-      realized_pnl: pnlResult
+      realized_pnl: positionUpdateResult.pnl,
+      copied_position_after: positionUpdateResult.copiedPositionAfter,
     });
   }
 
   timer.checkpoint('DB: Backfill PnL');
 
-  console.log(`  Copied ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} → ${quoteOutAmount.toFixed(4)} ${getTokenSymbol(destMint)} | USD: $${tradeUsdValue.toFixed(2)} | PnL: ${pnlResult !== null ? '$' + pnlResult.toFixed(2) : 'N/A'} | Latency: ${latencyDiff}ms`);
+  console.log(`  Copied ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} → ${quoteOutAmount.toFixed(4)} ${getTokenSymbol(destMint)} | USD: $${tradeUsdValue.toFixed(2)} | PnL: ${positionUpdateResult.pnl !== null ? '$' + positionUpdateResult.pnl.toFixed(2) : 'N/A'} | Latency: ${latencyDiff}ms`);
 
   timer.finish('executeQueuedTrade - SUCCESS');
 }

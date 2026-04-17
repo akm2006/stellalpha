@@ -17,6 +17,11 @@ import {
   createPrivateRpcConnection,
 } from '@/lib/ingestion/copy-signal';
 import { findPilotWalletForStarTrader, getLivePilotPublicConfig } from '@/lib/live-pilot/config';
+import { getTokenSymbol } from '@/lib/services/token-service';
+import {
+  recordObservedLeaderBuy,
+  recordObservedLeaderSell,
+} from '@/lib/repositories/copy-position-states.repo';
 
 const LIVE_PILOT_TECHNICAL_MIN_SOL = 0;
 
@@ -64,55 +69,103 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
     const controlRows = await listPilotControlStates();
     const control = buildPilotControlSnapshot(controlRows, [pilotWallet.alias]);
     const walletControl = control.wallets[0];
-
     const connection = createPrivateRpcConnection();
-    const signal = await computeCopyTradeSignal(trade, receivedAt, connection);
-    const copyRatio = Math.min(Math.max(signal.finalRatio, 0), 1);
+    const signal = trade.type === 'buy'
+      ? await computeCopyTradeSignal(trade, receivedAt, connection)
+      : null;
 
     let deployableSol: number | null = null;
     let skipReason: string | null = null;
+    let copyRatio = Math.min(Math.max(signal?.finalRatio || 0, 0), 1);
+    let leaderPositionBefore: number | null = null;
+    let leaderPositionAfter: number | null = null;
+    let copiedPositionBefore: number | null = null;
+    let sellFraction: number | null = null;
 
-    if (!connection) {
-      skipReason = 'rpc_unavailable';
-    } else {
-      try {
-        const lamports = await connection.getBalance(new PublicKey(pilotWallet.publicKey), 'confirmed');
-        const walletBalanceSol = lamports / 1e9;
-        const reserveSol = Math.max(
-          walletBalanceSol * pilotWallet.feeReservePct,
-          pilotWallet.minFeeReserveSol,
-        );
-        deployableSol = Math.max(0, walletBalanceSol - reserveSol);
-      } catch (error: any) {
-        console.warn(`[LIVE_PILOT] Failed to fetch pilot wallet balance for ${pilotWallet.alias}:`, error?.message || error);
-        skipReason = 'balance_unavailable';
+    if (control.global.kill_switch_active) {
+      skipReason = 'kill_switch_active';
+    } else if (walletControl.kill_switch_active) {
+      skipReason = 'wallet_kill_switch_active';
+    } else if (control.global.is_paused) {
+      skipReason = 'global_paused';
+    } else if (walletControl.is_paused) {
+      skipReason = 'wallet_paused';
+    }
+
+    if (trade.type === 'buy' && !skipReason) {
+      if (!connection) {
+        skipReason = 'rpc_unavailable';
+      } else {
+        try {
+          const lamports = await connection.getBalance(new PublicKey(pilotWallet.publicKey), 'confirmed');
+          const walletBalanceSol = lamports / 1e9;
+          const reserveSol = Math.max(
+            walletBalanceSol * pilotWallet.feeReservePct,
+            pilotWallet.minFeeReserveSol,
+          );
+          deployableSol = Math.max(0, walletBalanceSol - reserveSol);
+        } catch (error: any) {
+          console.warn(`[LIVE_PILOT] Failed to fetch pilot wallet balance for ${pilotWallet.alias}:`, error?.message || error);
+          skipReason = 'balance_unavailable';
+        }
       }
     }
 
-    if (!skipReason && control.global.kill_switch_active) {
-      skipReason = 'kill_switch_active';
-    } else if (!skipReason && walletControl.kill_switch_active) {
-      skipReason = 'wallet_kill_switch_active';
-    } else if (!skipReason && control.global.is_paused) {
-      skipReason = 'global_paused';
-    } else if (!skipReason && walletControl.is_paused) {
-      skipReason = 'wallet_paused';
-    } else if (!skipReason && copyRatio <= 0) {
-      skipReason = 'zero_copy_ratio';
-    } else if (!skipReason && signal.isStaleBuy) {
-      skipReason = 'stale_buy';
-    } else if (!skipReason && trade.type === 'buy') {
-      const outputMint = trade.tokenOutMint || null;
-      if (outputMint && await isPilotMintQuarantined(outputMint)) {
-        skipReason = 'mint_quarantined';
+    if (!skipReason && trade.type === 'buy') {
+      const leaderBuy = await recordObservedLeaderBuy({
+        scopeType: 'pilot',
+        scopeKey: pilotWallet.alias,
+        starTrader: trade.wallet,
+        mint: trade.tokenOutMint || '',
+        tokenSymbol: trade.tokenOutMint ? getTokenSymbol(trade.tokenOutMint) : null,
+        tradeSignature: trade.signature,
+        tradeTimestampIso: toBlockTimestampIso(trade.timestamp),
+        leaderBuyAmount: trade.tokenOutAmount,
+      });
+
+      leaderPositionBefore = leaderBuy.leaderPositionBefore;
+      leaderPositionAfter = leaderBuy.leaderPositionAfter;
+      copiedPositionBefore = leaderBuy.copiedPositionBefore;
+
+      if (copyRatio <= 0) {
+        skipReason = 'zero_copy_ratio';
+      } else if (signal?.isStaleBuy) {
+        skipReason = 'stale_buy';
+      } else {
+        const outputMint = trade.tokenOutMint || null;
+        if (outputMint && await isPilotMintQuarantined(outputMint)) {
+          skipReason = 'mint_quarantined';
+        }
+
+        const desiredInputSol = (deployableSol || 0) * copyRatio;
+        if (!skipReason && (deployableSol || 0) <= 0) {
+          skipReason = 'insufficient_deployable_sol';
+        } else if (!skipReason && desiredInputSol < LIVE_PILOT_TECHNICAL_MIN_SOL) {
+          skipReason = 'technically_too_small';
+        }
       }
+    }
 
-      const desiredInputSol = (deployableSol || 0) * copyRatio;
+    if (!skipReason && trade.type === 'sell') {
+      const leaderSell = await recordObservedLeaderSell({
+        scopeType: 'pilot',
+        scopeKey: pilotWallet.alias,
+        starTrader: trade.wallet,
+        mint: trade.tokenInMint || '',
+        tokenSymbol: trade.tokenInMint ? getTokenSymbol(trade.tokenInMint) : null,
+        tradeSignature: trade.signature,
+        tradeTimestampIso: toBlockTimestampIso(trade.timestamp),
+        leaderSellAmount: trade.tokenInAmount,
+      });
 
-      if (!skipReason && (deployableSol || 0) <= 0) {
-        skipReason = 'insufficient_deployable_sol';
-      } else if (!skipReason && desiredInputSol < LIVE_PILOT_TECHNICAL_MIN_SOL) {
-        skipReason = 'technically_too_small';
+      leaderPositionBefore = leaderSell.leaderPositionBefore;
+      leaderPositionAfter = leaderSell.leaderPositionAfter;
+      copiedPositionBefore = leaderSell.copiedPositionBefore;
+      copyRatio = Math.min(Math.max(leaderSell.sellFraction, 0), 1);
+      sellFraction = leaderSell.sellFraction;
+
+      if (leaderSell.notFollowedPosition || copyRatio <= 0) {
+        skipReason = 'not_followed_position';
       }
     }
 
@@ -130,11 +183,16 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       token_in_mint: trade.tokenInMint || null,
       token_out_mint: trade.tokenOutMint || null,
       copy_ratio: copyRatio,
+      leader_position_before: leaderPositionBefore,
+      leader_position_after: leaderPositionAfter,
+      copied_position_before: copiedPositionBefore,
+      copied_position_after: copiedPositionBefore,
+      sell_fraction: sellFraction,
       leader_block_timestamp: toBlockTimestampIso(trade.timestamp),
       received_at: toIso(receivedAt),
       intent_created_at: toIso(intentCreatedAt),
       deployable_sol_at_intent: deployableSol,
-      sol_price_at_intent: signal.solPrice,
+      sol_price_at_intent: signal?.solPrice ?? null,
       status,
       skip_reason: skipReason,
       error_message: null,
@@ -153,7 +211,7 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
     if (status === 'skipped') {
       console.log(
         `[LIVE_PILOT] Skipped intent for ${pilotWallet.alias} / ${trade.signature.slice(0, 12)}... `
-        + `(${skipReason}, age=${Math.round(signal.tradeAgeMs / 1000)}s, stale-threshold=${BUY_STALENESS_THRESHOLD_MS / 1000}s)`
+        + `(${skipReason}, age=${Math.round((signal?.tradeAgeMs ?? receivedAt - trade.timestamp * 1000) / 1000)}s, stale-threshold=${BUY_STALENESS_THRESHOLD_MS / 1000}s)`
       );
     } else {
       console.log(
