@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { formatCopyBuyModelConfigSummary, formatCopyBuyModelLabel } from '@/lib/copy-models/format';
+import { getCopyModelRecommendationForTrader } from '@/lib/copy-models/recommendations';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/session';
 import {
@@ -58,6 +60,7 @@ export async function GET(request: NextRequest) {
 
     const sortedTraders = sortStarTradersByCompositeScore(
       (traders || []).map((trader) => ({
+        recommendation: getCopyModelRecommendationForTrader(trader.address),
         wallet: trader.address,
         name: trader.name || getStarTraderFallbackName(trader.address),
         image: trader.image_url || getStarTraderFallbackImage(trader.address),
@@ -68,7 +71,21 @@ export async function GET(request: NextRequest) {
     );
 
     const response = NextResponse.json({
-      traders: sortedTraders,
+      traders: sortedTraders.map((trader) => {
+        const { recommendation, ...traderWithoutRecommendation } = trader;
+
+        return {
+          ...traderWithoutRecommendation,
+          recommendedCopyModelKey: recommendation.modelKey,
+          recommendedCopyModelConfig: recommendation.config,
+          recommendedCopyModelReason: recommendation.reason,
+          recommendedCopyModelLabel: formatCopyBuyModelLabel(recommendation.modelKey),
+          recommendedCopyModelSummary: formatCopyBuyModelConfigSummary(
+            recommendation.modelKey,
+            recommendation.config,
+          ),
+        };
+      }),
       total: sortedTraders.length
     });
 

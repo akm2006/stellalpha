@@ -1,4 +1,8 @@
 import { RawTrade } from '@/lib/trade-parser';
+import {
+  modelRequiresLeaderRatio,
+  parseCopyBuyModelSelection,
+} from '@/lib/copy-models/catalog';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { getActiveFollowers } from '@/lib/repositories/demo-trader-states.repo';
 import { queueTrade } from '@/lib/repositories/demo-trades.repo';
@@ -61,6 +65,7 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
   const signal = trade.type === 'buy'
     ? await computeCopyTradeSignal(trade, receivedAt)
     : null;
+  const rawRatio = signal?.rawRatio ?? 0;
   const finalRatio = signal?.finalRatio ?? 0;
   const leaderMetric = signal?.leaderMetric ?? 0;
   const leaderUsdValue = signal?.leaderUsdValue ?? await getUsdValue(destMint, trade.tokenOutAmount);
@@ -79,6 +84,17 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
 
     insertPromises.push(
       (async () => {
+        const { modelKey: buyModelKey, config: buyModelConfig } = parseCopyBuyModelSelection(
+          traderState.copy_model_key,
+          traderState.copy_model_config,
+        );
+        const buySizingContext = {
+          leaderBuyUsdValue: leaderUsdValue,
+          leaderRawRatio: rawRatio,
+          leaderFinalRatio: finalRatio,
+          leaderMetric,
+          tradeAgeMs,
+        };
         const transitionMetadata = {
           scopeType: 'demo' as const,
           scopeKey: traderStateId,
@@ -90,7 +106,9 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
 
         let status: 'queued' | 'skipped' = 'queued';
         let errorMessage: string | null = null;
-        let copyRatio = finalRatio;
+        let copyRatio: number | null = trade.type === 'buy' && buyModelKey === 'current_ratio'
+          ? finalRatio
+          : null;
         let leaderPositionBefore = leaderMetric;
         let leaderPositionAfter = leaderMetric;
         let copiedPositionBefore = 0;
@@ -110,9 +128,15 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
           if (isStaleBuy) {
             status = 'skipped';
             errorMessage = 'stale_buy';
-          } else if (copyRatio <= 0) {
+          } else if (
+            modelRequiresLeaderRatio(buyModelKey)
+            && (buyModelKey === 'current_ratio' ? finalRatio <= 0 : rawRatio <= 0)
+          ) {
             status = 'skipped';
             errorMessage = 'zero_copy_ratio';
+          } else if (buyModelKey === 'target_buy_pct_with_cap' && leaderUsdValue <= 0) {
+            status = 'skipped';
+            errorMessage = 'missing_leader_buy_value';
           }
         } else {
           const leaderSellTransition = await recordObservedLeaderSell({
@@ -159,6 +183,10 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
           copied_position_before: copiedPositionBefore,
           copied_position_after: copiedPositionBefore,
           sell_fraction: sellFraction,
+          buy_model_key: trade.type === 'buy' ? buyModelKey : null,
+          buy_model_config: trade.type === 'buy' ? buyModelConfig : null,
+          leader_buy_ratio: trade.type === 'buy' ? rawRatio : null,
+          buy_sizing_context: trade.type === 'buy' ? buySizingContext : null,
         });
 
         if (insertError) {
@@ -167,7 +195,10 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
 
         if (status === 'queued') {
           queuedTraderStateIds.push(traderStateId);
-          console.log(`  TS ${traderStateId.slice(0, 8)}: Trade queued (Ratio: ${(copyRatio * 100).toFixed(2)}%${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
+          const ratioLabel = copyRatio !== null
+            ? `Ratio: ${(copyRatio * 100).toFixed(2)}%`
+            : `Model: ${buyModelKey}`;
+          console.log(`  TS ${traderStateId.slice(0, 8)}: Trade queued (${ratioLabel}${boostMultiplier > 1 ? ` [${boostTier} ${boostMultiplier}x]` : ''})`);
           return;
         }
 

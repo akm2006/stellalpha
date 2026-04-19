@@ -1,6 +1,8 @@
 'use client';
 
 import PageLoader from '@/components/PageLoader';
+import { formatCopyBuyModelLabel } from '@/lib/copy-models/format';
+import { CopyBuyModelKey } from '@/lib/copy-models/types';
 
 
 import { createPortal } from 'react-dom';
@@ -81,6 +83,9 @@ interface PortfolioData {
   starTrader: string;
   allocatedUsd: number;
   realizedPnlUsd: number;
+  copyModelKey: string;
+  copyModelConfig: Record<string, unknown>;
+  copyModelSummary: string;
   isInitialized: boolean;
   isPaused: boolean;
   isSettled: boolean;
@@ -604,7 +609,7 @@ export default function TraderStateDetailPage() {
   const { 
     positions, portfolioValue, totalPnL, totalPnLPercent, 
     allocatedUsd, starTrader, isPaused, isSettled, isInitialized,
-    realizedPnlUsd, unrealizedPnL
+    realizedPnlUsd, unrealizedPnL, copyModelKey, copyModelSummary,
   } = portfolio;
   
   const avgLatency = tradeStats.avgLatency;
@@ -696,6 +701,17 @@ export default function TraderStateDetailPage() {
               </div>
               <ArrowUpRight size={12} style={{ color: COLORS.brand }} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform duration-200 ml-1" />
             </Link>
+            <div className="flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-white/[0.03] border border-white/10 rounded">
+              <span className="text-[10px] uppercase tracking-wider" style={{ color: COLORS.data }}>Model:</span>
+              <div className="flex flex-col min-w-0">
+                <span className="text-xs font-semibold truncate" style={{ color: COLORS.text }}>
+                  {formatCopyBuyModelLabel((copyModelKey || 'current_ratio') as CopyBuyModelKey)}
+                </span>
+                <span className="text-[10px] truncate" style={{ color: COLORS.data }}>
+                  {copyModelSummary}
+                </span>
+              </div>
+            </div>
           </div>
           
           {/* Right: Action Buttons - Professional Outline Style */}
@@ -716,12 +732,12 @@ export default function TraderStateDetailPage() {
                     color: '#10B981'
                   }}
                 >
-                  <span className="flex items-center gap-1.5"><Play size={12} /> Initialize</span>
+                  <span className="flex items-center gap-1.5"><Play size={12} /> Start</span>
                 </button>
                 <InfoTooltip>
-                  <strong>Initialize Copy Engine</strong><br/><br/>
-                  Activates the Copy Engine. The bot will use your available USDC (Vault Balance) to mirror <strong>new</strong> trades from this trader.<br/><br/>
-                  Funds remain in your control.
+                  <strong>Start Copying</strong><br/><br/>
+                  This turns the setup on. New trades from this trader will use the demo funds in this setup.<br/><br/>
+                  Your funds stay in your control.
                 </InfoTooltip>
               </div>
             )}

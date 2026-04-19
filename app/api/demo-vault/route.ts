@@ -131,6 +131,17 @@ export async function DELETE(request: NextRequest) {
         return NextResponse.json({ error: 'Failed to delete demo positions' }, { status: 500 });
       }
 
+      const { error: lifecycleDeleteError } = await supabase
+        .from('copy_position_states')
+        .delete()
+        .eq('scope_type', 'demo')
+        .in('scope_key', traderStateIds);
+
+      if (lifecycleDeleteError) {
+        console.error('Copy position lifecycle delete error:', lifecycleDeleteError);
+        return NextResponse.json({ error: 'Failed to delete copy position lifecycle state' }, { status: 500 });
+      }
+
       const { error: statesDeleteError } = await supabase
         .from('demo_trader_states')
         .delete()
@@ -204,6 +215,11 @@ export async function GET(request: NextRequest) {
         star_trader,
         allocated_usd,
         realized_pnl_usd,
+        copy_model_key,
+        copy_model_config,
+        starting_capital_usd,
+        recommended_model_key,
+        recommended_model_reason,
         is_syncing,
         is_initialized,
         is_paused,

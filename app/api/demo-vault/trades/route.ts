@@ -43,21 +43,23 @@ export async function GET(request: NextRequest) {
     let tsId = traderStateId;
     
     if (!tsId && starTrader) {
-      const { data: traderState } = await supabase
+      const { data: traderStates } = await supabase
         .from('demo_trader_states')
         .select('id')
         .eq('vault_id', vault.id)
-        .eq('star_trader', starTrader)
-        .single();
+        .eq('star_trader', starTrader);
       
-      if (!traderState) {
+      if (!traderStates || traderStates.length === 0) {
         return NextResponse.json({ 
           trades: [], 
           pagination: { page: 1, pageSize, totalCount: 0, totalPages: 0 },
           stats: { avgLatency: 0, totalRealizedPnl: 0, completedCount: 0, failedCount: 0 }
         });
       }
-      tsId = traderState.id;
+      if (traderStates.length > 1) {
+        return NextResponse.json({ error: 'Multiple trader states found for this star trader. Use traderStateId.' }, { status: 400 });
+      }
+      tsId = traderStates[0].id;
     }
     
     if (!tsId) {

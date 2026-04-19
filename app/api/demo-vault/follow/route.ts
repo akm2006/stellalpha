@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { formatCopyBuyModelLabel } from '@/lib/copy-models/format';
+import { parseCopyBuyModelSelection } from '@/lib/copy-models/catalog';
+import { getCopyModelRecommendationForTrader } from '@/lib/copy-models/recommendations';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/session';
 
@@ -10,6 +13,87 @@ const STABLECOIN_MINTS = new Set([
   'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', // USD1
 ]);
 
+const VAULT_BALANCE_UPDATE_MAX_RETRIES = 5;
+
+function roundUsdAmount(value: number) {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+async function adjustVaultBalanceOptimistically(vaultId: string, deltaUsd: number) {
+  const normalizedDelta = roundUsdAmount(deltaUsd);
+
+  if (!Number.isFinite(normalizedDelta)) {
+    return { success: false as const, reason: 'invalid_delta' };
+  }
+
+  if (normalizedDelta === 0) {
+    const { data: vault, error } = await supabase
+      .from('demo_vaults')
+      .select('balance_usd')
+      .eq('id', vaultId)
+      .single();
+
+    if (error || !vault) {
+      return { success: false as const, reason: 'vault_not_found' };
+    }
+
+    return {
+      success: true as const,
+      previousBalance: Number(vault.balance_usd),
+      nextBalance: Number(vault.balance_usd),
+    };
+  }
+
+  for (let attempt = 0; attempt < VAULT_BALANCE_UPDATE_MAX_RETRIES; attempt += 1) {
+    const { data: vault, error: vaultError } = await supabase
+      .from('demo_vaults')
+      .select('balance_usd')
+      .eq('id', vaultId)
+      .single();
+
+    if (vaultError || !vault) {
+      return { success: false as const, reason: 'vault_not_found' };
+    }
+
+    const previousBalance = roundUsdAmount(Number(vault.balance_usd));
+    const nextBalance = roundUsdAmount(previousBalance + normalizedDelta);
+
+    if (nextBalance < 0) {
+      return {
+        success: false as const,
+        reason: 'insufficient_balance',
+        previousBalance,
+      };
+    }
+
+    const { data: updatedVault, error: updateError } = await supabase
+      .from('demo_vaults')
+      .update({ balance_usd: nextBalance })
+      .eq('id', vaultId)
+      .eq('balance_usd', previousBalance)
+      .select('balance_usd')
+      .maybeSingle();
+
+    if (updateError) {
+      return {
+        success: false as const,
+        reason: 'update_failed',
+        error: updateError,
+      };
+    }
+
+    if (updatedVault) {
+      return {
+        success: true as const,
+        previousBalance,
+        nextBalance: Number(updatedVault.balance_usd),
+      };
+    }
+  }
+
+  return { success: false as const, reason: 'concurrent_update_conflict' };
+}
+
 // POST: Create a new TraderState with USD allocation (no auto-sync)
 export async function POST(request: NextRequest) {
   try {
@@ -18,7 +102,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { wallet: requestedWallet, starTrader, allocationUsd } = await request.json();
+    const {
+      wallet: requestedWallet,
+      starTrader,
+      allocationUsd,
+      copyModelKey: rawCopyModelKey,
+      copyModelConfig: rawCopyModelConfig,
+      initializeNow,
+    } = await request.json();
     const wallet = session.user.wallet;
 
     if (requestedWallet && requestedWallet !== wallet) {
@@ -53,60 +144,138 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
     
-    // Check if already following this trader
-    const { data: existingTs } = await supabase
-      .from('demo_trader_states')
-      .select('id')
-      .eq('vault_id', vault.id)
-      .eq('star_trader', starTrader)
-      .single();
-    
-    if (existingTs) {
-      return NextResponse.json({ 
-        error: 'Already following this trader. Unfollow first to change allocation.' 
-      }, { status: 400 });
-    }
-    
-    // INSERT new trader state - starts as pending (not synced, not initialized)
-    const { data: traderState, error } = await supabase
-      .from('demo_trader_states')
-      .insert({
-        vault_id: vault.id,
-        star_trader: starTrader,
-        allocated_usd: usdAmount,
-        is_syncing: false,
-        is_initialized: false,
-        is_paused: false,
-        is_settled: false
-      })
-      .select()
-      .single();
-    
-    if (error) {
-      console.error('Create trader state error:', error);
+    const { modelKey: copyModelKey, config: copyModelConfig } = parseCopyBuyModelSelection(
+      rawCopyModelKey,
+      rawCopyModelConfig,
+    );
+    const recommendation = getCopyModelRecommendationForTrader(starTrader);
+
+    let createdTraderStateId: string | null = null;
+    let vaultBalanceDeducted = false;
+    let insertedUsdcPosition = false;
+    let traderState: any = null;
+
+    try {
+      // Create the trader state as pending first so it cannot start copying before funding exists.
+      const { data: createdTraderState, error } = await supabase
+        .from('demo_trader_states')
+        .insert({
+          vault_id: vault.id,
+          star_trader: starTrader,
+          allocated_usd: usdAmount,
+          copy_model_key: copyModelKey,
+          copy_model_config: copyModelConfig,
+          starting_capital_usd: usdAmount,
+          recommended_model_key: recommendation.modelKey,
+          recommended_model_reason: recommendation.reason,
+          is_syncing: false,
+          is_initialized: false,
+          is_paused: false,
+          is_settled: false,
+        })
+        .select()
+        .single();
+
+      if (error || !createdTraderState) {
+        console.error('Create trader state error:', error);
+        return NextResponse.json({ error: 'Failed to create trader state' }, { status: 500 });
+      }
+
+      traderState = createdTraderState;
+      createdTraderStateId = createdTraderState.id;
+
+      const reserveResult = await adjustVaultBalanceOptimistically(vault.id, -usdAmount);
+
+      if (!reserveResult.success) {
+        const reserveError = new Error(`Failed to reserve vault balance: ${reserveResult.reason}`);
+        (reserveError as Error & { code?: string; availableBalance?: number }).code = reserveResult.reason;
+        (reserveError as Error & { code?: string; availableBalance?: number }).availableBalance = reserveResult.previousBalance;
+        throw reserveError;
+      }
+
+      vaultBalanceDeducted = true;
+
+      const { error: positionInsertError } = await supabase.from('demo_positions').insert({
+        trader_state_id: createdTraderState.id,
+        token_mint: USDC_MINT,
+        token_symbol: 'USDC',
+        size: usdAmount,
+        cost_usd: usdAmount,
+        avg_cost: 1,
+      });
+
+      if (positionInsertError) {
+        throw new Error(`Failed to create initial USDC position: ${positionInsertError.message}`);
+      }
+
+      insertedUsdcPosition = true;
+
+      if (initializeNow) {
+        const { error: initializeError } = await supabase
+          .from('demo_trader_states')
+          .update({ is_initialized: true })
+          .eq('id', createdTraderState.id);
+
+        if (initializeError) {
+          throw new Error(`Failed to initialize trader state: ${initializeError.message}`);
+        }
+
+        traderState = {
+          ...createdTraderState,
+          is_initialized: true,
+        };
+      }
+    } catch (stageError) {
+      console.error('Create trader state staged setup error:', stageError);
+
+      if (insertedUsdcPosition && createdTraderStateId) {
+        const { error: rollbackPositionError } = await supabase
+          .from('demo_positions')
+          .delete()
+          .eq('trader_state_id', createdTraderStateId);
+
+        if (rollbackPositionError) {
+          console.error('Rollback position delete error:', rollbackPositionError);
+        }
+      }
+
+      if (vaultBalanceDeducted) {
+        const rollbackVaultResult = await adjustVaultBalanceOptimistically(vault.id, usdAmount);
+
+        if (!rollbackVaultResult.success) {
+          console.error('Rollback vault refund error:', rollbackVaultResult);
+        }
+      }
+
+      if (createdTraderStateId) {
+        const { error: rollbackStateError } = await supabase
+          .from('demo_trader_states')
+          .delete()
+          .eq('id', createdTraderStateId);
+
+        if (rollbackStateError) {
+          console.error('Rollback trader state delete error:', rollbackStateError);
+        }
+      }
+
+      if (
+        stageError instanceof Error
+        && (stageError as Error & { code?: string; availableBalance?: number }).code === 'insufficient_balance'
+      ) {
+        return NextResponse.json({
+          error: `Insufficient balance. Available: $${Number((stageError as Error & { availableBalance?: number }).availableBalance || 0).toFixed(2)}`,
+        }, { status: 400 });
+      }
+
       return NextResponse.json({ error: 'Failed to create trader state' }, { status: 500 });
     }
-    
-    // Deduct from vault balance
-    await supabase
-      .from('demo_vaults')
-      .update({ balance_usd: Number(vault.balance_usd) - usdAmount })
-      .eq('id', vault.id);
-    
-    // Create initial USDC position (funds are reserved, not synced yet)
-    await supabase.from('demo_positions').insert({
-      trader_state_id: traderState.id,
-      token_mint: USDC_MINT,
-      token_symbol: 'USDC',
-      size: usdAmount,
-      cost_usd: usdAmount,
-      avg_cost: 1
-    });
     
     return NextResponse.json({
       success: true,
       traderState,
-      message: 'Trader state created. Click Initialize to start copying.'
+      message: initializeNow
+        ? `Trader state created and initialized with ${formatCopyBuyModelLabel(copyModelKey)}.`
+        : 'Trader state created. Click Start to begin copying.'
     });
   } catch (error) {
     console.error('Create trader state error:', error);
@@ -313,17 +482,78 @@ export async function DELETE(request: NextRequest) {
       }
     }
     
-    // Return funds to vault
-    await supabase
-      .from('demo_vaults')
-      .update({ balance_usd: Number(vault.balance_usd) + totalReturnValue })
-      .eq('id', vault.id);
-    
-    // Delete trader state (cascades to positions and trades)
-    await supabase
+    let vaultRefunded = false;
+
+    const rollbackRefundIfNeeded = async (step: string, originalError: unknown) => {
+      if (!vaultRefunded || totalReturnValue <= 0) {
+        return NextResponse.json({ error: `Failed to ${step}` }, { status: 500 });
+      }
+
+      const rollbackResult = await adjustVaultBalanceOptimistically(vault.id, -totalReturnValue);
+      if (!rollbackResult.success) {
+        console.error(`Failed to rollback vault refund after ${step} error:`, {
+          originalError,
+          rollbackResult,
+          traderStateId: traderState.id,
+          refundAmount: totalReturnValue,
+        });
+        return NextResponse.json({
+          error: `Failed to ${step} after refunding vault balance. Manual review required.`,
+        }, { status: 500 });
+      }
+
+      vaultRefunded = false;
+      return NextResponse.json({ error: `Failed to ${step}` }, { status: 500 });
+    };
+
+    const refundResult = await adjustVaultBalanceOptimistically(vault.id, totalReturnValue);
+    if (!refundResult.success) {
+      console.error('Vault refund error:', refundResult);
+      return NextResponse.json({ error: 'Failed to refund vault balance' }, { status: 500 });
+    }
+
+    vaultRefunded = totalReturnValue > 0;
+
+    const { error: tradeDeleteError } = await supabase
+      .from('demo_trades')
+      .delete()
+      .eq('trader_state_id', traderState.id);
+
+    if (tradeDeleteError) {
+      console.error('Demo trades delete error:', tradeDeleteError);
+      return rollbackRefundIfNeeded('delete demo trades', tradeDeleteError);
+    }
+
+    const { error: positionDeleteError } = await supabase
+      .from('demo_positions')
+      .delete()
+      .eq('trader_state_id', traderState.id);
+
+    if (positionDeleteError) {
+      console.error('Demo positions delete error:', positionDeleteError);
+      return rollbackRefundIfNeeded('delete demo positions', positionDeleteError);
+    }
+
+    const { error: lifecycleDeleteError } = await supabase
+      .from('copy_position_states')
+      .delete()
+      .eq('scope_type', 'demo')
+      .eq('scope_key', traderState.id);
+
+    if (lifecycleDeleteError) {
+      console.error('Copy position lifecycle delete error:', lifecycleDeleteError);
+      return rollbackRefundIfNeeded('delete copy position lifecycle state', lifecycleDeleteError);
+    }
+
+    const { error: traderStateDeleteError } = await supabase
       .from('demo_trader_states')
       .delete()
       .eq('id', traderState.id);
+
+    if (traderStateDeleteError) {
+      console.error('Trader state delete error:', traderStateDeleteError);
+      return rollbackRefundIfNeeded('delete trader state', traderStateDeleteError);
+    }
     
     return NextResponse.json({ 
       success: true,

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { formatCopyBuyModelConfigSummary, formatCopyBuyModelLabel } from '@/lib/copy-models/format';
+import { getCopyModelRecommendationForTrader } from '@/lib/copy-models/recommendations';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/session';
 import {
@@ -44,17 +46,17 @@ export async function GET(
         .single();
 
       if (userVault?.id) {
-        const { data: userTraderState } = await supabase
+        const { count } = await supabase
           .from('demo_trader_states')
-          .select('id')
+          .select('id', { head: true, count: 'exact' })
           .eq('vault_id', userVault.id)
-          .eq('star_trader', wallet)
-          .single();
+          .eq('star_trader', wallet);
 
-        isFollowing = Boolean(userTraderState?.id);
+        isFollowing = Boolean((count || 0) > 0);
       }
     }
     const stats = normalizeStarTraderStatsRow(statsRows?.[0]);
+    const recommendation = getCopyModelRecommendationForTrader(wallet);
 
     return NextResponse.json({
       trader: {
@@ -64,6 +66,14 @@ export async function GET(
         createdAt: trader.created_at,
         isFollowing,
         stats,
+        recommendedCopyModelKey: recommendation.modelKey,
+        recommendedCopyModelConfig: recommendation.config,
+        recommendedCopyModelReason: recommendation.reason,
+        recommendedCopyModelLabel: formatCopyBuyModelLabel(recommendation.modelKey),
+        recommendedCopyModelSummary: formatCopyBuyModelConfigSummary(
+          recommendation.modelKey,
+          recommendation.config,
+        ),
       },
     });
   } catch (error) {

@@ -138,9 +138,15 @@ export async function computeCopyTradeSignal(
   let leaderUsdValue = 0;
 
   try {
+    leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
+  } catch (error: any) {
+    console.warn('[COPY_SIGNAL] Failed to derive leader USD value:', error?.message || error);
+    leaderUsdValue = 0;
+  }
+
+  try {
     if (connection) {
       const postTradeBuyingPower = await getTraderBuyingPower(starTrader, connection, solPrice);
-      leaderUsdValue = await getUsdValue(sourceMint, trade.tokenInAmount);
       const preTradeBuyingPower = postTradeBuyingPower + leaderUsdValue;
 
       leaderMetric = preTradeBuyingPower;

@@ -4,6 +4,7 @@ import {
   fetchDemoVaultPriceMap,
   normalizeDemoVaultPositions,
 } from '@/lib/demo-vault-pricing';
+import { formatCopyBuyModelConfigSummary, formatCopyBuyModelLabel } from '@/lib/copy-models/format';
 import { supabase } from '@/lib/supabase';
 import { getTokensMetadata } from '@/lib/jupiter-tokens';
 import { getSession } from '@/lib/session';
@@ -36,6 +37,9 @@ interface PortfolioResponse {
   starTrader: string;
   allocatedUsd: number;
   realizedPnlUsd: number;
+  copyModelKey: string;
+  copyModelConfig: Record<string, unknown>;
+  copyModelSummary: string;
   isInitialized: boolean;
   isPaused: boolean;
   isSettled: boolean;
@@ -107,6 +111,8 @@ export async function GET(request: NextRequest) {
         star_trader,
         allocated_usd,
         realized_pnl_usd,
+        copy_model_key,
+        copy_model_config,
         is_initialized,
         is_paused,
         is_settled,
@@ -204,6 +210,8 @@ export async function GET(request: NextRequest) {
     
     const allocatedUsd = Number(traderState.allocated_usd);
     const realizedPnlUsd = Number(traderState.realized_pnl_usd) || 0;
+    const copyModelKey = traderState.copy_model_key || 'current_ratio';
+    const copyModelConfig = traderState.copy_model_config || {};
     
     // Unrealized = Portfolio Value - Cost Basis (what we'd gain/lose if we sold now)
     const unrealizedPnL = portfolioValue - totalCostBasis;
@@ -228,6 +236,9 @@ export async function GET(request: NextRequest) {
       starTrader: traderState.star_trader,
       allocatedUsd,
       realizedPnlUsd,
+      copyModelKey,
+      copyModelConfig,
+      copyModelSummary: `${formatCopyBuyModelLabel(copyModelKey)} • ${formatCopyBuyModelConfigSummary(copyModelKey, copyModelConfig)}`,
       isInitialized: traderState.is_initialized,
       isPaused: traderState.is_paused,
       isSettled: traderState.is_settled,

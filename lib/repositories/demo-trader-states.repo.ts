@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase';
 export async function getActiveFollowers(starTrader: string) {
   return supabase
     .from('demo_trader_states')
-    .select('id')
+    .select('id, copy_model_key, copy_model_config, starting_capital_usd')
     .eq('star_trader', starTrader)
     .eq('is_initialized', true)
     .eq('is_paused', false);

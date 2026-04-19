@@ -1,4 +1,8 @@
 import { RawTrade } from '@/lib/trade-parser';
+import {
+  parseCopyBuyModelSelection,
+} from '@/lib/copy-models/catalog';
+import { resolveDemoBuySpend } from '@/lib/copy-models/resolve-demo-buy-spend';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { 
   getOldestQueuedTrade, 
@@ -168,7 +172,8 @@ export async function processTradeQueue(traderStateId: string) {
           // "No balance" = follower doesn't hold the token; retrying wastes 4.3s and blocks the queue.
           const msg = err.message || '';
           const isDeterministic = /No .+ balance \(have: 0\)/.test(msg)
-                               || msg === 'Copy amount 0 after ratio calculation';
+                               || msg === 'Copy amount 0 after ratio calculation'
+                               || /^Copy amount 0 after model resolution/.test(msg);
           if (isDeterministic) {
             console.log(`[CONSUMER] Non-retryable: ${msg.slice(0, 60)} — skipping remaining attempts`);
             break;
@@ -281,37 +286,67 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
     throw new Error(`No ${getTokenSymbol(sourceMint)} balance (have: ${sourceBalance})`);
   }
 
-  // 3. DYNAMIC RATIO CALCULATION
+  // 3. RESOLVE BUY/SELL SIZE
   let tradeRatio = 0;
+  let copyAmount = 0;
 
-  // V2: Use pre-calculated Equity Model ratio from Producer (High Precision)
-  if (tradeRow.copy_ratio !== undefined && tradeRow.copy_ratio !== null) {
-    tradeRatio = Number(tradeRow.copy_ratio);
-    console.log(`  [V2] Using Pre-calculated Ratio: ${(tradeRatio * 100).toFixed(2)}%`);
-  }
-  // V1 Fallback (Legacy)
-  else {
-    const leaderTradeAmount = trade.tokenInAmount;
-    const leaderBeforeBalance = Number(tradeRow.leader_before_balance) > 0
-      ? Number(tradeRow.leader_before_balance)
-      : leaderTradeAmount;
+  if (trade.type === 'buy') {
+    const { modelKey, config } = parseCopyBuyModelSelection(
+      tradeRow.buy_model_key ?? traderState.copy_model_key,
+      tradeRow.buy_model_config ?? traderState.copy_model_config,
+    );
+    const rawSizingContext = tradeRow.buy_sizing_context && typeof tradeRow.buy_sizing_context === 'object'
+      ? tradeRow.buy_sizing_context as Record<string, unknown>
+      : {};
+    const resolution = resolveDemoBuySpend({
+      modelKey,
+      modelConfig: config,
+      availableCashUsd: sourceBalance,
+      startingCapitalUsd: Number(traderState.starting_capital_usd || traderState.allocated_usd || 0),
+      leaderContext: {
+        leaderBuyUsdValue: Number(rawSizingContext.leaderBuyUsdValue ?? tradeRow.leader_usd_value ?? 0),
+        leaderRawRatio: Number(rawSizingContext.leaderRawRatio ?? tradeRow.leader_buy_ratio ?? 0),
+        leaderFinalRatio: Number(rawSizingContext.leaderFinalRatio ?? tradeRow.copy_ratio ?? 0),
+        leaderMetric: Number(rawSizingContext.leaderMetric ?? tradeRow.leader_before_balance ?? 0),
+        tradeAgeMs: Number(rawSizingContext.tradeAgeMs ?? 0),
+      },
+    });
 
-    tradeRatio = leaderBeforeBalance > 0 ? leaderTradeAmount / leaderBeforeBalance : 1;
-    console.log(`  [V1-Legacy] Dynamic Ratio: ${(tradeRatio * 100).toFixed(1)}% (Leader: ${leaderTradeAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)})`);
-  }
+    copyAmount = Math.min(resolution.buyAmount, sourceBalance);
+    tradeRatio = sourceBalance > 0 ? copyAmount / sourceBalance : 0;
 
-  tradeRatio = Math.min(Math.max(tradeRatio, 0), 1);
+    console.log(
+      `  [BUY MODEL] ${modelKey} -> ${copyAmount.toFixed(4)} ${getTokenSymbol(sourceMint)} (${(tradeRatio * 100).toFixed(2)}% of available cash)`,
+    );
 
-  // Apply Ratio to Follower's Balance
-  let copyAmount = sourceBalance * tradeRatio;
-  if (trade.type === 'sell') {
+    if (copyAmount <= 0) {
+      throw new Error(`Copy amount 0 after model resolution (${resolution.reason || modelKey})`);
+    }
+  } else {
+    // V2: Use pre-calculated sell fraction from copied-position lifecycle
+    if (tradeRow.copy_ratio !== undefined && tradeRow.copy_ratio !== null) {
+      tradeRatio = Number(tradeRow.copy_ratio);
+      console.log(`  [SELL] Using copied-position sell fraction: ${(tradeRatio * 100).toFixed(2)}%`);
+    } else {
+      // Legacy fallback for old queued rows
+      const leaderTradeAmount = trade.tokenInAmount;
+      const leaderBeforeBalance = Number(tradeRow.leader_before_balance) > 0
+        ? Number(tradeRow.leader_before_balance)
+        : leaderTradeAmount;
+
+      tradeRatio = leaderBeforeBalance > 0 ? leaderTradeAmount / leaderBeforeBalance : 1;
+      console.log(`  [V1-Legacy] Dynamic Ratio: ${(tradeRatio * 100).toFixed(1)}% (Leader: ${leaderTradeAmount.toFixed(4)}/${leaderBeforeBalance.toFixed(4)})`);
+    }
+
+    tradeRatio = Math.min(Math.max(tradeRatio, 0), 1);
+
     const copiedPositionBefore = Number(tradeRow.copied_position_before || 0);
     copyAmount = Math.min(copiedPositionBefore * tradeRatio, sourceBalance);
-  }
-  copyAmount = Math.min(copyAmount, sourceBalance);
+    copyAmount = Math.min(copyAmount, sourceBalance);
 
-  if (copyAmount <= 0) {
-    throw new Error(`Copy amount 0 after ratio calculation`);
+    if (copyAmount <= 0) {
+      throw new Error(`Copy amount 0 after ratio calculation`);
+    }
   }
 
   // 4. GET JUPITER QUOTE
@@ -541,7 +576,8 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
       quote_out_amount: quoteOutAmount,
       price_impact: priceImpact,
       copy_trade_timestamp: Math.floor(copyTradeTimestamp / 1000),
-      latency_diff_ms: latencyDiff
+      latency_diff_ms: latencyDiff,
+      copy_ratio: tradeRatio,
     }),
     updatePositions(),
   ]);
