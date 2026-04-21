@@ -79,93 +79,18 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Forbidden: wallet does not match authenticated user' }, { status: 403 });
     }
 
-    const { data: vault, error: vaultLookupError } = await supabase
-      .from('demo_vaults')
-      .select('id')
-      .eq('user_wallet', wallet)
-      .single();
+    const { data, error } = await supabase.rpc('delete_demo_vault_by_wallet', {
+      p_wallet: wallet,
+    });
 
-    if (vaultLookupError && vaultLookupError.code !== 'PGRST116') {
-      console.error('Vault lookup error:', vaultLookupError);
-      return NextResponse.json({ error: 'Failed to lookup vault' }, { status: 500 });
-    }
-
-    if (!vault) {
-      return NextResponse.json({
-        success: true,
-        deleted: false,
-        message: 'No vault found',
-      });
-    }
-
-    const { data: traderStates, error: tsError } = await supabase
-      .from('demo_trader_states')
-      .select('id')
-      .eq('vault_id', vault.id);
-
-    if (tsError) {
-      console.error('Trader states lookup error:', tsError);
-      return NextResponse.json({ error: 'Failed to lookup trader states' }, { status: 500 });
-    }
-
-    const traderStateIds = (traderStates || []).map((ts) => ts.id);
-
-    if (traderStateIds.length > 0) {
-      const { error: tradesDeleteError } = await supabase
-        .from('demo_trades')
-        .delete()
-        .in('trader_state_id', traderStateIds);
-
-      if (tradesDeleteError) {
-        console.error('Demo trades delete error:', tradesDeleteError);
-        return NextResponse.json({ error: 'Failed to delete demo trades' }, { status: 500 });
-      }
-
-      const { error: positionsDeleteError } = await supabase
-        .from('demo_positions')
-        .delete()
-        .in('trader_state_id', traderStateIds);
-
-      if (positionsDeleteError) {
-        console.error('Demo positions delete error:', positionsDeleteError);
-        return NextResponse.json({ error: 'Failed to delete demo positions' }, { status: 500 });
-      }
-
-      const { error: lifecycleDeleteError } = await supabase
-        .from('copy_position_states')
-        .delete()
-        .eq('scope_type', 'demo')
-        .in('scope_key', traderStateIds);
-
-      if (lifecycleDeleteError) {
-        console.error('Copy position lifecycle delete error:', lifecycleDeleteError);
-        return NextResponse.json({ error: 'Failed to delete copy position lifecycle state' }, { status: 500 });
-      }
-
-      const { error: statesDeleteError } = await supabase
-        .from('demo_trader_states')
-        .delete()
-        .eq('vault_id', vault.id);
-
-      if (statesDeleteError) {
-        console.error('Demo trader states delete error:', statesDeleteError);
-        return NextResponse.json({ error: 'Failed to delete trader states' }, { status: 500 });
-      }
-    }
-
-    const { error: vaultDeleteError } = await supabase
-      .from('demo_vaults')
-      .delete()
-      .eq('id', vault.id);
-
-    if (vaultDeleteError) {
-      console.error('Demo vault delete error:', vaultDeleteError);
+    if (error) {
+      console.error('Demo vault delete RPC error:', error);
       return NextResponse.json({ error: 'Failed to delete vault' }, { status: 500 });
     }
 
     return NextResponse.json({
       success: true,
-      deleted: true,
+      ...(data && typeof data === 'object' ? data : { deleted: Boolean(data) }),
     });
   } catch (error) {
     console.error('Demo vault delete error:', error);

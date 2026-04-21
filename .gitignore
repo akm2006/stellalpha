@@ -86,7 +86,6 @@ test-ledger-fork/
 # Misc
 *.pem
 coverage/
-LICENSE
 whitepaper/
 _logs/
 _scratch/
@@ -113,6 +112,12 @@ RESUME_STATE.md
 
 # Aider agent configuration
 .aider*
+
+# Internal agent / planning files
+AGENTS.md
+ai/
+context/
+experiments/
 
 CLAUDE.md
 
