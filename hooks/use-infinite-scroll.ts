@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { type SetStateAction, useState, useCallback, useRef, useEffect } from 'react';
 
 interface UseInfiniteScrollOptions<T> {
   fetchData: (cursor?: string) => Promise<{ data: T[]; nextCursor: string | null }>;
@@ -12,8 +12,8 @@ export function useInfiniteScroll<T>({
   fetchData, 
   initialData = [], 
   limit = 50, 
-  rootMargin = '100px', // Tighter default
-  throttleMs = 500      // Default throttle
+  rootMargin = '100px',
+  throttleMs = 500
 }: UseInfiniteScrollOptions<T>) {
   const [data, setData] = useState<T[]>(initialData);
   const [loading, setLoading] = useState(false);
@@ -23,80 +23,110 @@ export function useInfiniteScroll<T>({
   
   const observer = useRef<IntersectionObserver | null>(null);
   const loadingRef = useRef(false);
-  const lastFetchTime = useRef(0); // Track last fetch timestamp
+  const hasMoreRef = useRef(true);
+  const cursorRef = useRef<string | null>(null);
+  const fetchDataRef = useRef(fetchData);
+  const lastFetchTime = useRef(0);
 
   useEffect(() => {
     loadingRef.current = loading;
   }, [loading]);
 
+  useEffect(() => {
+    hasMoreRef.current = hasMore;
+  }, [hasMore]);
+
+  useEffect(() => {
+    cursorRef.current = cursor;
+  }, [cursor]);
+
+  useEffect(() => {
+    fetchDataRef.current = fetchData;
+  }, [fetchData]);
+
+  const setCursorValue = useCallback((value: SetStateAction<string | null>) => {
+    setCursor(previous => {
+      const next = typeof value === 'function'
+        ? (value as (previous: string | null) => string | null)(previous)
+        : value;
+      cursorRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const setHasMoreValue = useCallback((value: SetStateAction<boolean>) => {
+    setHasMore(previous => {
+      const next = typeof value === 'function'
+        ? (value as (previous: boolean) => boolean)(previous)
+        : value;
+      hasMoreRef.current = next;
+      return next;
+    });
+  }, []);
+
   const loadMore = useCallback(async () => {
     const now = Date.now();
-    // Check throttle
     if (now - lastFetchTime.current < throttleMs) return;
     
-    if (loadingRef.current || !hasMore) return;
+    if (loadingRef.current || !hasMoreRef.current) return;
 
     setLoading(true);
     setError(null);
     loadingRef.current = true;
-    lastFetchTime.current = now; // Update timestamp
+    lastFetchTime.current = now;
 
     try {
-      const result = await fetchData(cursor || undefined);
+      const result = await fetchDataRef.current(cursorRef.current || undefined);
       
       const newData = result.data;
       const nextCursor = result.nextCursor;
 
       setData(prev => [...prev, ...newData]);
-      setCursor(nextCursor);
+      setCursorValue(nextCursor);
       
-      if (newData.length < limit || !nextCursor) {
-        setHasMore(false);
-      }
+      setHasMoreValue(newData.length >= limit && !!nextCursor);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load more data');
     } finally {
       setLoading(false);
       loadingRef.current = false;
     }
-  }, [cursor, fetchData, hasMore, limit, throttleMs]);
+  }, [limit, setCursorValue, setHasMoreValue, throttleMs]);
 
   const lastElementRef = useCallback((node: HTMLElement | null) => {
-    if (loadingRef.current) return;
-    
     if (observer.current) observer.current.disconnect();
+    if (!node || !hasMoreRef.current) return;
     
     observer.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasMore && !loadingRef.current) {
-        // Double-check throttle before calling loadMore
-        if (Date.now() - lastFetchTime.current >= throttleMs) {
-          loadMore();
-        }
+      if (entries.some(entry => entry.isIntersecting)) {
+        void loadMore();
       }
     }, {
       rootMargin
     });
     
-    if (node) observer.current.observe(node);
-  }, [loadMore, hasMore, rootMargin, throttleMs]);
+    observer.current.observe(node);
+  }, [loadMore, rootMargin]);
 
   // Reset function to reload from scratch
   const reset = useCallback(() => {
     setData([]);
-    setCursor(null);
-    setHasMore(true);
-    // Logic to reload initial data should be handled by the consumer effectively or by calling loadMore immediately if data is empty
-  }, []);
+    setCursorValue(null);
+    setHasMoreValue(true);
+    setError(null);
+    lastFetchTime.current = 0;
+  }, [setCursorValue, setHasMoreValue]);
 
   return {
     data,
     loading,
     error,
     hasMore,
+    loadMore,
     lastElementRef,
     reset,
     setData,
-    setCursor,
-    setHasMore
+    setCursor: setCursorValue,
+    setHasMore: setHasMoreValue
   };
 }

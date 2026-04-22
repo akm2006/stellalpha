@@ -617,6 +617,24 @@ h6,
   animation: cyberLoadingScan 1.1s ease-in-out infinite;
 }
 
+.cyber-skeleton-block {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  background:
+    linear-gradient(90deg, rgba(0, 255, 133, 0.08), transparent 46%),
+    rgba(255, 255, 255, 0.055);
+}
+
+.cyber-skeleton-block span {
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(0, 229, 212, 0.34), transparent);
+  animation: cyberLoadingScan 1.15s ease-in-out infinite;
+}
+
 .cyber-range {
   appearance: none;
   height: 0.35rem;
@@ -686,6 +704,7 @@ h6,
   .cyber-model-card,
   .cyber-action-primary::after,
   .cyber-loading-track span,
+  .cyber-skeleton-block span,
   .cyber-progress,
   .cyber-tooltip {
     animation: none;

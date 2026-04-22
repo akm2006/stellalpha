@@ -35,6 +35,7 @@ interface Position {
 interface PortfolioResponse {
   traderStateId: string;
   starTrader: string;
+  createdAt: string;
   allocatedUsd: number;
   realizedPnlUsd: number;
   copyModelKey: string;
@@ -109,6 +110,7 @@ export async function GET(request: NextRequest) {
       .select(`
         id,
         star_trader,
+        created_at,
         allocated_usd,
         realized_pnl_usd,
         copy_model_key,
@@ -234,6 +236,7 @@ export async function GET(request: NextRequest) {
     const response: PortfolioResponse = {
       traderStateId,
       starTrader: traderState.star_trader,
+      createdAt: traderState.created_at,
       allocatedUsd,
       realizedPnlUsd,
       copyModelKey,

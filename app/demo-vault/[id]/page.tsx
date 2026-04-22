@@ -1,8 +1,11 @@
 'use client';
 
 import PageLoader from '@/components/PageLoader';
-import { formatCopyBuyModelLabel } from '@/lib/copy-models/format';
-import { CopyBuyModelKey } from '@/lib/copy-models/types';
+import {
+  formatCopyBuyModelConfigBadge,
+  formatCopyBuyModelLabel,
+} from '@/lib/copy-models/format';
+import { CopyBuyModelConfig, CopyBuyModelKey } from '@/lib/copy-models/types';
 
 
 import { createPortal } from 'react-dom';
@@ -27,16 +30,11 @@ import {
   StopCircle,
   Clock,
   CheckCircle,
-  ExternalLink,
   X,
   Loader2,
   Info,
-  TrendingUp,
-  TrendingDown,
-  CheckCircle2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { SkeletonRow } from '@/components/SkeletonRow';
 
 // =============================================================================
 // TYPES
@@ -55,6 +53,7 @@ interface Position {
   unrealizedPnL: number | null;
   unrealizedPercent: number | null;
   portfolioPercent: number | null;
+  priceStale?: boolean;
 }
 
 interface Trade {
@@ -71,7 +70,7 @@ interface Trade {
   latency_diff_ms: number | null;
   star_trade_signature: string;
   created_at: string;
-  status: 'queued' | 'processing' | 'completed' | 'failed';
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'skipped';
   error_message: string | null;
   leader_in_amount: number | null;
   leader_out_amount: number | null;
@@ -81,10 +80,11 @@ interface Trade {
 interface PortfolioData {
   traderStateId: string;
   starTrader: string;
+  createdAt: string;
   allocatedUsd: number;
   realizedPnlUsd: number;
-  copyModelKey: string;
-  copyModelConfig: Record<string, unknown>;
+  copyModelKey: CopyBuyModelKey;
+  copyModelConfig: CopyBuyModelConfig;
   copyModelSummary: string;
   isInitialized: boolean;
   isPaused: boolean;
@@ -110,6 +110,8 @@ interface StarTraderSummary {
   name: string;
   image?: string;
 }
+
+const SOLSCAN_LOGO_SRC = 'https://solscan.io/_next/static/media/solscan-logo-light.1410e164.svg';
 
 // =============================================================================
 // FORMATTING UTILITIES
@@ -175,11 +177,24 @@ function formatLatency(ms: number | null): string {
 function timeAgo(dateStr: string): string {
   const now = Date.now();
   const date = new Date(dateStr).getTime();
+  if (!Number.isFinite(date)) return '—';
   const diff = Math.floor((now - date) / 1000);
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function formatDateTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return 'Unknown creation time';
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 // =============================================================================
@@ -335,6 +350,145 @@ function InfoTooltip({ children }: { children: ReactNode }) {
   );
 }
 
+function signedUsd(amount: number | null | undefined) {
+  if (amount === null || amount === undefined) return '—';
+  return `${amount >= 0 ? '+' : ''}${formatUsd(amount)}`;
+}
+
+function signedPercent(value: number | null | undefined) {
+  if (value === null || value === undefined) return '—';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+}
+
+function getStatusTone(isSettled: boolean, isPaused: boolean, isInitialized: boolean) {
+  if (isSettled) {
+    return {
+      label: 'Settled',
+      icon: StopCircle,
+      className: 'border-zinc-500/40 bg-zinc-500/10 text-zinc-300',
+    };
+  }
+  if (isPaused) {
+    return {
+      label: 'Paused',
+      icon: Pause,
+      className: 'border-amber-400/45 bg-amber-400/10 text-amber-300',
+    };
+  }
+  if (isInitialized) {
+    return {
+      label: 'Active',
+      icon: CheckCircle,
+      className: 'border-emerald-400/45 bg-emerald-400/10 text-emerald-300',
+    };
+  }
+  return {
+    label: 'Pending',
+    icon: Clock,
+    className: 'border-orange-400/45 bg-orange-400/10 text-orange-300',
+  };
+}
+
+function CopyModelBadge({
+  modelKey,
+  summary,
+  config,
+}: {
+  modelKey: CopyBuyModelKey;
+  summary: string;
+  config: CopyBuyModelConfig;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="copy-style-badge inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em]">
+        <span>[</span>
+        <span>{formatCopyBuyModelLabel(modelKey).replace('Trader ', '')}</span>
+        <span className="text-cyan-200/70">· {formatCopyBuyModelConfigBadge(modelKey, config)}</span>
+        <span>]</span>
+      </span>
+      <InfoTooltip>
+        <strong>{formatCopyBuyModelLabel(modelKey)}</strong><br /><br />
+        {summary}<br /><br />
+        This model controls how demo buys are sized for this trader state. Sells still follow the copied-position sell logic.
+      </InfoTooltip>
+    </div>
+  );
+}
+
+function MetricTile({
+  label,
+  value,
+  helper,
+  tone = 'neutral',
+  children,
+}: {
+  label: string;
+  value: ReactNode;
+  helper?: ReactNode;
+  tone?: 'neutral' | 'positive' | 'negative' | 'warning';
+  children?: ReactNode;
+}) {
+  const valueClass =
+    tone === 'positive' ? 'text-emerald-300'
+      : tone === 'negative' ? 'text-red-300'
+        : tone === 'warning' ? 'text-amber-300'
+          : 'text-white';
+
+  return (
+    <div className="cyber-kpi cyber-panel-soft border px-4 py-4">
+      <div className="cyber-command mb-2 text-[10px] text-white/50">{label}</div>
+      <div className={`font-mono text-lg font-semibold tabular-nums ${valueClass}`}>{value}</div>
+      {helper && <div className="mt-2 text-xs leading-relaxed text-white/45">{helper}</div>}
+      {children}
+    </div>
+  );
+}
+
+function SolscanLink({ signature, compact = false }: { signature: string; compact?: boolean }) {
+  return (
+    <a
+      href={`https://solscan.io/tx/${signature}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label="Open transaction on Solscan"
+      title="Open on Solscan"
+      className={`cyber-control inline-flex items-center justify-center border-cyan-300/35 transition hover:border-emerald-300/70 hover:bg-emerald-300/10 ${compact ? 'min-w-[30px] px-1.5 py-1' : 'min-w-[44px] px-2 py-1'}`}
+    >
+      <img
+        src={SOLSCAN_LOGO_SRC}
+        alt=""
+        aria-hidden="true"
+        className={compact ? 'h-3.5 w-auto max-w-[38px] object-contain' : 'h-3.5 w-auto max-w-[44px] object-contain'}
+      />
+      <span className="sr-only">Open on Solscan</span>
+    </a>
+  );
+}
+
+function CyberTradeSkeletonRows() {
+  return (
+    <div className="grid gap-2 px-3 py-2 md:px-0" aria-label="Loading more copied trades">
+      {[...Array(3)].map((_, index) => (
+        <div
+          key={`trade-skeleton-${index}`}
+          className="cyber-row cyber-panel-soft grid gap-3 border border-white/[0.08] p-4 md:grid-cols-[88px_minmax(280px,2fr)_0.8fr_0.8fr_0.7fr_0.7fr_80px] md:items-center md:border-x-0 md:px-5 md:py-3"
+        >
+          <div className="cyber-skeleton-block h-7 w-16"><span /></div>
+          <div className="grid gap-2">
+            <div className="cyber-skeleton-block h-3 w-48 max-w-full"><span /></div>
+            <div className="cyber-skeleton-block h-2 w-28 max-w-full opacity-60"><span /></div>
+          </div>
+          <div className="cyber-skeleton-block h-3 w-20"><span /></div>
+          <div className="cyber-skeleton-block h-3 w-20"><span /></div>
+          <div className="cyber-skeleton-block h-3 w-14"><span /></div>
+          <div className="cyber-skeleton-block h-3 w-12"><span /></div>
+          <div className="cyber-skeleton-block h-6 w-10"><span /></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // =============================================================================
 // MAIN COMPONENT
 // =============================================================================
@@ -363,6 +517,10 @@ export default function TraderStateDetailPage() {
 
   // Tab state for Portfolio/Copy Trades switching
   const [activeTab, setActiveTab] = useState<'portfolio' | 'trades'>('portfolio');
+  const [portfolioSort, setPortfolioSort] = useState<'value' | 'pnl' | 'weight'>('value');
+  const [showDust, setShowDust] = useState(true);
+  const [showStaleOnly, setShowStaleOnly] = useState(false);
+  const [showWithdrawReview, setShowWithdrawReview] = useState(false);
   
   // =============================================================================
   // DATA FETCHING
@@ -434,7 +592,9 @@ export default function TraderStateDetailPage() {
   const { 
     data: trades, 
     loading: infiniteLoading, 
-    hasMore, 
+    hasMore,
+    error: tradesPaginationError,
+    loadMore: loadMoreTrades,
     lastElementRef, 
     setData: setTrades,
     setCursor: setTradesCursor,
@@ -442,8 +602,8 @@ export default function TraderStateDetailPage() {
   } = useInfiniteScroll<Trade>({
     fetchData: fetchTradesPage,
     limit: 50,
-    rootMargin: '100px', // Explicit strict triggering
-    throttleMs: 500
+    rootMargin: '0px 0px 280px 0px',
+    throttleMs: 900
   });
 
   
@@ -537,7 +697,7 @@ export default function TraderStateDetailPage() {
     const balance = portfolio?.usdcBalance || 0;
     if (balance < 10) {
       if (!confirm(`Your Available USDC ($${balance.toFixed(2)}) is low. Recommended: $100+. Continue?`)) {
-        // handled by UI state update
+        return;
       }
     }
     
@@ -552,7 +712,7 @@ export default function TraderStateDetailPage() {
   };
   
   const handleWithdraw = async () => {
-    if (!walletAddress || !traderStateId || !confirm('Withdraw all funds and delete this trader state?')) return;
+    if (!walletAddress || !traderStateId) return;
     setActionLoading(true);
     
     try {
@@ -609,566 +769,766 @@ export default function TraderStateDetailPage() {
   const { 
     positions, portfolioValue, totalPnL, totalPnLPercent, 
     allocatedUsd, starTrader, isPaused, isSettled, isInitialized,
-    realizedPnlUsd, unrealizedPnL, copyModelKey, copyModelSummary,
+    realizedPnlUsd, unrealizedPnL, copyModelKey, copyModelConfig, copyModelSummary,
+    createdAt,
   } = portfolio;
   
   const avgLatency = tradeStats.avgLatency;
   const totalTrades = getDemoTradeCount(tradeStats);
   
-  // Win Rate = Profitable / (Profitable + Loss)
-  const totalClosedTrades = (tradeStats.profitableCount || 0) + (tradeStats.lossCount || 0);
-  const winRate = totalClosedTrades > 0 ? Math.round(((tradeStats.profitableCount || 0) / totalClosedTrades) * 100) : 0;
   const profitFactor = tradeStats.profitFactor || 0;
+  const modelKey = (copyModelKey || 'current_ratio') as CopyBuyModelKey;
+  const statusTone = getStatusTone(isSettled, isPaused, isInitialized);
+  const StatusIcon = statusTone.icon;
+  const dustPositions = positions.filter((position) => (position.currentValue ?? 0) < 0.01 && position.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v').length;
+  const stalePriceCount = positions.filter((position) => position.priceStale || position.currentPrice === null).length;
+  const currentValuePct = allocatedUsd > 0 ? Math.max(0, (portfolioValue / allocatedUsd) * 100) : 0;
+  const wins = tradeStats.profitableCount || 0;
+  const losses = tradeStats.lossCount || 0;
+  const closedSellOutcomes = wins + losses;
+  const shownPositions = positions
+    .filter((position) => {
+      const isDust = (position.currentValue ?? 0) < 0.01 && position.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+      const isStale = position.priceStale || position.currentPrice === null;
+      if (!showDust && isDust) return false;
+      if (showStaleOnly && !isStale) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      if (portfolioSort === 'pnl') return (b.unrealizedPnL ?? -Infinity) - (a.unrealizedPnL ?? -Infinity);
+      if (portfolioSort === 'weight') return (b.portfolioPercent ?? -Infinity) - (a.portfolioPercent ?? -Infinity);
+      return (b.currentValue ?? -Infinity) - (a.currentValue ?? -Infinity);
+    });
   
   // =============================================================================
   // RENDER
   // =============================================================================
   
   return (
-    <div className="min-h-screen animate-in fade-in duration-700" style={{ backgroundColor: COLORS.canvas, color: COLORS.text, fontFamily: 'Inter, system-ui, sans-serif' }}>
-      <style jsx global>{`
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .animate-fade-up {
-          animation: fadeUp 0.5s ease-out forwards;
-        }
-        .delay-100 { animation-delay: 100ms; }
-        .delay-200 { animation-delay: 200ms; }
-        .delay-300 { animation-delay: 300ms; }
-      `}</style>
-      <main className="w-full px-5 py-4 pt-20">
-        
-        {/* Back Button */}
-        <Link 
-          href="/demo-vault"
-          className="group inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border border-white/10 rounded hover:bg-white/5 transition-all duration-200 mb-4 hover:border-white/20 active:scale-[0.98]"
-          style={{ color: COLORS.text }}
-        >
-          <ArrowLeft size={14} className="group-hover:-translate-x-1 transition-transform duration-200" /> Back
-        </Link>
-        
-        {/* ===== CONTROL DECK ROW 1: Header - Responsive ===== */}
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-3 py-3 px-4 sm:px-5 border border-white/10 bg-white/[0.02] animate-fade-up" style={{ backgroundColor: COLORS.surface }}>
-          {/* Top Row: Title + Status + UUID */}
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-lg sm:text-xl font-semibold" style={{ color: COLORS.text }}>Trader State</h1>
-            {isSettled ? (
-              <span className="inline-flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider font-medium rounded border border-gray-500/30 bg-gray-500/10 text-gray-400">
-                <StopCircle size={10} /> Settled
-              </span>
-            ) : isPaused ? (
-              <span className="inline-flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider font-medium rounded border border-yellow-500/30 bg-yellow-500/10 text-yellow-400">
-                <Pause size={10} /> Paused
-              </span>
-            ) : isInitialized ? (
-              <span className="inline-flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider font-medium rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
-                <CheckCircle size={10} /> Active
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider font-medium rounded border border-orange-500/30 bg-orange-500/10 text-orange-400">
-                <Clock size={10} /> Pending
-              </span>
-            )}
-            {/* UUID */}
-            <div className="flex items-center gap-2 px-2 py-1 bg-white/[0.02] border border-white/10 rounded">
-              <span className="text-[10px] uppercase tracking-wider" style={{ color: COLORS.data }}>ID:</span>
-              <code className="font-mono text-[10px] sm:text-xs" style={{ color: COLORS.text }}>{traderStateId.slice(0, 8)}...{traderStateId.slice(-4)}</code>
-            </div>
-          </div>
-          
-          {/* Middle Row: Following Badge */}
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wider" style={{ color: COLORS.data }}>Following:</span>
-            <Link 
-              href={`/star-traders/${starTrader}`}
-              className="flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-white/[0.03] border border-white/10 rounded hover:bg-white/5 transition-all duration-200 hover:scale-[1.02] group"
-            >
-              <div className="transition-transform duration-200 group-hover:scale-110">
-                <TraderAvatar 
-                  address={starTrader} 
-                  image={starTraderProfile?.image}
-                />
+    <div className="cyber-vault-shell min-h-screen animate-in fade-in duration-700 text-white">
+      <main className="cyber-vault-content w-full px-4 py-5 pt-20 sm:px-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <Link
+            href="/demo-vault"
+            className="cyber-control group inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold transition active:scale-[0.98]"
+          >
+            <ArrowLeft size={14} className="transition-transform group-hover:-translate-x-1" />
+            Back to vault
+          </Link>
+          <div className="cyber-command text-[10px] text-white/35">Demo simulation · no real funds</div>
+        </div>
+
+        <section className="cyber-panel mb-4 border p-4 sm:p-5">
+          <div className="grid gap-5 xl:grid-cols-[1.35fr_1fr_auto] xl:items-center">
+            <div className="min-w-0">
+              <div className="mb-3 flex flex-wrap items-center gap-3">
+                <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">Trader State Health</h1>
+                <span className={`inline-flex items-center gap-1.5 border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${statusTone.className}`}>
+                  <StatusIcon size={12} />
+                  {statusTone.label}
+                </span>
+                <code className="border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[11px] text-white/55">
+                  {traderStateId.slice(0, 8)}...{traderStateId.slice(-4)}
+                </code>
               </div>
-              <div className="flex flex-col min-w-0">
-                <span className="font-semibold text-xs sm:text-sm truncate" style={{ color: COLORS.text }}>
-                   {starTraderProfile?.name || 'Unknown Trader'}
-                </span>
-                <span className="font-mono text-[10px] opacity-60 truncate" style={{ color: COLORS.data }}>
-                  {starTrader.slice(0, 4)}...{starTrader.slice(-4)}
-                </span>
-              </div>
-              <ArrowUpRight size={12} style={{ color: COLORS.brand }} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform duration-200 ml-1" />
-            </Link>
-            <div className="flex items-center gap-2 px-2 sm:px-3 py-1.5 bg-white/[0.03] border border-white/10 rounded">
-              <span className="text-[10px] uppercase tracking-wider" style={{ color: COLORS.data }}>Model:</span>
-              <div className="flex flex-col min-w-0">
-                <span className="text-xs font-semibold truncate" style={{ color: COLORS.text }}>
-                  {formatCopyBuyModelLabel((copyModelKey || 'current_ratio') as CopyBuyModelKey)}
-                </span>
-                <span className="text-[10px] truncate" style={{ color: COLORS.data }}>
-                  {copyModelSummary}
-                </span>
-              </div>
-            </div>
-          </div>
-          
-          {/* Right: Action Buttons - Professional Outline Style */}
-          <div className="flex items-center gap-2">
-            {!isInitialized && !isSettled && (
-              <div className="flex items-center gap-1">
-                <button 
-                  onClick={handleInitClick} 
-                  disabled={actionLoading} 
-                  className={`px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 shadow-lg ${
-                    onboardingStep === 'INITIALIZE' 
-                      ? 'bg-emerald-500 text-white border-emerald-400 hover:bg-emerald-600 shadow-emerald-500/20 ring-2 ring-emerald-400 ring-offset-2 ring-offset-black animate-pulse' 
-                      : 'shadow-emerald-500/10'
-                  }`} 
-                  style={onboardingStep === 'INITIALIZE' ? {} : { 
-                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                    borderColor: 'rgba(16, 185, 129, 0.5)',
-                    color: '#10B981'
-                  }}
+
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <Link
+                  href={`/star-traders/${starTrader}`}
+                  className="cyber-panel-soft cyber-hover-slice group flex min-w-[220px] items-center gap-3 border px-3 py-2 transition"
                 >
-                  <span className="flex items-center gap-1.5"><Play size={12} /> Start</span>
-                </button>
-                <InfoTooltip>
-                  <strong>Start Copying</strong><br/><br/>
-                  This turns the setup on. New trades from this trader will use the demo funds in this setup.<br/><br/>
-                  Your funds stay in your control.
-                </InfoTooltip>
+                  <TraderAvatar address={starTrader} image={starTraderProfile?.image} />
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">{starTraderProfile?.name || 'Unknown Trader'}</div>
+                    <div className="truncate font-mono text-[11px] text-white/40">{starTrader.slice(0, 6)}...{starTrader.slice(-4)}</div>
+                  </div>
+                  <ArrowUpRight size={13} className="ml-auto text-[#00FF85] transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                </Link>
+                <CopyModelBadge modelKey={modelKey} config={copyModelConfig} summary={copyModelSummary} />
               </div>
-            )}
-            
-            {isInitialized && !isSettled && (
-              isPaused ? (
-                <div className="flex items-center gap-1">
-                  <button 
-                    onClick={() => handleAction('resume')} 
-                    disabled={actionLoading} 
-                    className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 shadow-lg shadow-emerald-500/10"
-                    style={{ 
-                      backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                      borderColor: 'rgba(16, 185, 129, 0.5)',
-                      color: '#10B981'
-                    }}
-                  >
-                    <span className="flex items-center gap-1.5"><Play size={12} /> Resume</span>
-                  </button>
+
+              <div className="grid gap-2">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <div className="cyber-command mb-1 flex items-center gap-1 text-[10px] text-emerald-300">
+                      Current Value
+                      <InfoTooltip>
+                        <strong>Current Value</strong><br /><br />
+                        Estimated demo value for this trader state, including USDC balance and priced open positions. Stale or unpriced tokens can make this estimate conservative.
+                      </InfoTooltip>
+                    </div>
+                    <div className="font-mono text-3xl font-semibold tabular-nums sm:text-4xl">{formatUsd(portfolioValue)}</div>
+                  </div>
+                  <div className={`text-right font-mono text-sm font-semibold ${totalPnL >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                    <div>{signedUsd(totalPnL)}</div>
+                    <div>{signedPercent(totalPnLPercent)}</div>
+                  </div>
+                </div>
+                <div className="h-3 overflow-hidden bg-white/10">
+                  <div className="cyber-progress h-full bg-[#00FF85]/80" style={{ width: `${Math.min(100, currentValuePct)}%` }} />
+                </div>
+                <div className="flex flex-wrap justify-between gap-2 font-mono text-[11px] text-white/45">
+                  <span>{formatUsd(allocatedUsd)} allocated</span>
+                  <span>{Math.round(currentValuePct)}% of allocated value</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-2">
+              <MetricTile label="Avg Latency" value={formatLatency(avgLatency)} helper="Average copy delay">
+                <div className="mt-2 flex items-center gap-1 text-xs text-white/45">
+                  Detection to copy event.
                   <InfoTooltip>
-                    <strong>Resume Copy Trading</strong><br/><br/>
-                    Re-enables automatic trade mirroring. Any open positions will be managed again, and new trades from the star trader will be copied.
+                    <strong>Average Latency</strong><br /><br />
+                    Average delay between the star trader transaction and the demo copy event recorded by the system.
                   </InfoTooltip>
                 </div>
-              ) : (
-                <div className="flex items-center gap-1">
-                  <button 
-                    onClick={() => handleAction('pause')} 
-                    disabled={actionLoading} 
-                    className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 shadow-lg shadow-amber-500/10"
-                    style={{ 
-                      backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                      borderColor: 'rgba(245, 158, 11, 0.5)',
-                      color: '#F59E0B'
-                    }}
-                  >
-                    <span className="flex items-center gap-1.5"><Pause size={12} /> Pause</span>
-                  </button>
+              </MetricTile>
+              <MetricTile label="State Age" value={timeAgo(createdAt)} helper={`Created ${formatDateTime(createdAt)}`}>
+                <div className="mt-2 flex items-center gap-1 text-xs text-white/45">
+                  Time since setup.
                   <InfoTooltip>
-                    <strong>Pause Copy Trading</strong><br/><br/>
-                    Temporarily stops copying new trades. Existing positions remain open but will not be modified by the auto-trader until resumed.
+                    <strong>State Age</strong><br /><br />
+                    How long this trader state has existed. The exact creation time is shown above.
                   </InfoTooltip>
                 </div>
-              )
-            )}
-            
-            <div className="flex items-center gap-1">
-              <button 
-                onClick={handleWithdraw} 
-                disabled={actionLoading} 
-                className="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded border transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 hover:bg-red-500/20"
-                style={{ 
-                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                  borderColor: 'rgba(239, 68, 68, 0.5)',
-                  color: '#EF4444'
-                }}
+              </MetricTile>
+              <MetricTile label="Dust / Dead" value={dustPositions} tone={dustPositions > 0 ? 'warning' : 'neutral'} helper="Near-zero open positions">
+                <div className="mt-2 flex items-center gap-1 text-xs text-white/45">
+                  Low-value leftovers.
+                  <InfoTooltip>
+                    <strong>Dust / Dead Positions</strong><br /><br />
+                    Positions with near-zero current value. These can happen after partial sells, rugs, or tokens that no longer price cleanly.
+                  </InfoTooltip>
+                </div>
+              </MetricTile>
+              <MetricTile label="Price Status" value={stalePriceCount ? `${stalePriceCount} stale` : 'Fresh'} tone={stalePriceCount ? 'warning' : 'positive'} helper="Based on available price data">
+                <div className="mt-2 flex items-center gap-1 text-xs text-white/45">
+                  Pricing freshness.
+                  <InfoTooltip>
+                    <strong>Price Status</strong><br /><br />
+                    Shows whether open positions have fresh price data. Stale prices can make current value and unrealized PnL less reliable.
+                  </InfoTooltip>
+                </div>
+              </MetricTile>
+            </div>
+
+            <div className="flex flex-wrap gap-2 xl:w-[260px] xl:flex-col">
+              {!isInitialized && !isSettled && (
+                <button
+                  onClick={handleInitClick}
+                  disabled={actionLoading}
+                  className="cyber-action-primary border border-emerald-400/60 bg-emerald-400/12 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-emerald-200 transition hover:bg-emerald-400/18 disabled:opacity-50"
+                >
+                  <span className="relative z-10 flex items-center justify-center gap-2"><Play size={13} /> Start copying</span>
+                </button>
+              )}
+
+              {isInitialized && !isSettled && (
+                isPaused ? (
+                  <button
+                    onClick={() => handleAction('resume')}
+                    disabled={actionLoading}
+                    className="cyber-action-primary border border-emerald-400/60 bg-emerald-400/12 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-emerald-200 transition hover:bg-emerald-400/18 disabled:opacity-50"
+                  >
+                    <span className="relative z-10 flex items-center justify-center gap-2"><Play size={13} /> Resume copying</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleAction('pause')}
+                    disabled={actionLoading}
+                    className="cyber-action-primary border border-amber-400/55 bg-amber-400/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-amber-200 transition hover:bg-amber-400/16 disabled:opacity-50"
+                  >
+                    <span className="relative z-10 flex items-center justify-center gap-2"><Pause size={13} /> Pause</span>
+                  </button>
+                )
+              )}
+
+              <button
+                onClick={fetchData}
+                disabled={loading || actionLoading}
+                className="cyber-control inline-flex items-center justify-center gap-2 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-white/80 disabled:opacity-50"
+              >
+                <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+                Refresh
+              </button>
+
+              <button
+                onClick={() => setShowWithdrawReview(true)}
+                disabled={actionLoading}
+                className="cyber-control border-red-400/45 bg-red-500/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-red-200 transition hover:border-red-300/70 hover:bg-red-500/16 disabled:opacity-50"
               >
                 Withdraw
               </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="mb-4 grid gap-3 lg:grid-cols-6">
+          <MetricTile label="Allocated" value={formatUsd(allocatedUsd)}>
+            <div className="mt-2 flex items-center gap-1 text-xs text-white/45">
+              Funds reserved for this trader state.
               <InfoTooltip>
-                <strong>Withdraw & Close</strong><br/><br/>
-                Sells all open positions to USDC and returns funds to your main vault balance. This permanently closes this trader state.
+                <strong>Allocated Funds</strong><br /><br />
+                Demo capital reserved for this one trader setup. It is separate from free cash in the main demo vault.
               </InfoTooltip>
             </div>
-          </div>
-        </div>
-        
-        {/* ===== CONTROL DECK ROW 2: Stats HUD Strip ===== */}
-        <div className="border border-white/10 mb-4 overflow-x-auto animate-fade-up delay-100" style={{ backgroundColor: COLORS.surface }}>
-          <div className="flex items-stretch divide-x divide-white/10 min-w-[700px]">
-            <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center transition-colors duration-300 hover:bg-white/[0.06]">
-              <div className="text-xs uppercase tracking-wider mb-1.5" style={{ color: COLORS.data }}>Allocated</div>
-              <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(allocatedUsd)}</div>
+          </MetricTile>
+          <MetricTile label="Total PnL" value={`${signedUsd(totalPnL)} (${signedPercent(totalPnLPercent)})`} tone={totalPnL >= 0 ? 'positive' : 'negative'}>
+            <div className="mt-2 flex items-center gap-1 text-xs text-white/45">
+              Realized plus unrealized result.
+              <InfoTooltip>
+                <strong>Total PnL</strong><br /><br />
+                The full result for this setup: realized profit from completed sells plus the current paper result on open positions.
+              </InfoTooltip>
             </div>
-            <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">
-              <div className="text-xs uppercase tracking-wider mb-1.5" style={{ color: COLORS.data }}>Portfolio Value</div>
-              <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatUsd(portfolioValue)}</div>
+          </MetricTile>
+          <MetricTile label="Realized" value={signedUsd(realizedPnlUsd)} tone={realizedPnlUsd >= 0 ? 'positive' : 'negative'} />
+          <MetricTile label="Unrealized" value={signedUsd(unrealizedPnL)} tone={unrealizedPnL >= 0 ? 'positive' : 'negative'} />
+          <MetricTile label="Profit Factor" value={`${profitFactor.toFixed(2)}x`} tone={profitFactor >= 1 ? 'positive' : 'negative'}>
+            <div className="mt-2 flex items-center gap-1 text-xs text-white/45">
+              Gross profit divided by gross loss.
+              <InfoTooltip>
+                <strong>Profit Factor</strong><br /><br />
+                Shows whether profitable sells outweigh losing sells. Above 1.0 means gains are larger than losses.
+              </InfoTooltip>
             </div>
-            <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">
-              <div className="text-xs uppercase tracking-wider mb-1.5" style={{ color: COLORS.data }}>Total PNL</div>
-              <div className={`text-lg font-mono font-semibold ${totalPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {totalPnL >= 0 ? '+' : ''}{formatUsd(totalPnL)} ({totalPnLPercent >= 0 ? '+' : ''}{totalPnLPercent.toFixed(1)}%)
-              </div>
-              {/* Realized/Unrealized - Stacked for centering */}
-              <div className="flex justify-center gap-4 mt-2 text-sm font-mono">
-                <span style={{ color: COLORS.data }}>
-                  Realized: <span className={`font-semibold ${realizedPnlUsd >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{realizedPnlUsd >= 0 ? '+' : ''}{formatUsd(realizedPnlUsd)}</span>
-                </span>
-                <span style={{ color: COLORS.data }}>
-                  Unrealized: <span className={`font-semibold ${unrealizedPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{unrealizedPnL >= 0 ? '+' : ''}{formatUsd(unrealizedPnL)}</span>
-                </span>
-              </div>
+          </MetricTile>
+          <MetricTile
+            label="Wins / Losses"
+            value={(
+              <span>
+                <span className="text-emerald-300">{wins}</span>
+                <span className="text-white/35"> / </span>
+                <span className="text-red-300">{losses}</span>
+              </span>
+            )}
+            helper={`${closedSellOutcomes} closed sell outcomes`}
+          >
+            <div className="mt-2 flex items-center gap-1 text-xs text-white/45">
+              Completed sells only.
+              <InfoTooltip>
+                <strong>Wins / Losses</strong><br /><br />
+                A win is a completed sell with realized profit. A loss is a completed sell with negative realized PnL. Buys, skipped trades, failed trades, and open positions are not counted here.
+              </InfoTooltip>
             </div>
-            <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">
-              <div className="text-xs uppercase tracking-wider mb-1.5 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                Profit Factor
-                <InfoTooltip>
-                  <strong>Profit Factor</strong><br/><br/>
-                  Efficiency metric: Total Gross Profit / Total Gross Loss. &gt; 1.0 is profitable.
-                </InfoTooltip>
-              </div>
-              <div className={`text-lg font-mono font-semibold ${profitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {profitFactor.toFixed(2)}x
-              </div>
-            </div>
-            <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">
-              <div className="text-xs uppercase tracking-wider mb-1.5 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                Trades
-                <InfoTooltip>
-                  <strong>Win / Loss Count</strong><br/><br/>
-                  <span className="text-emerald-400">Green</span>: Profitable trades<br/>
-                  <span className="text-red-400">Red</span>: Loss trades
-                </InfoTooltip>
-              </div>
-              <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>
-                {/* Wins / Losses Breakdown */}
-                <span className="text-emerald-400">{tradeStats.profitableCount}</span>
-                <span className="text-white/30 mx-2">/</span>
-                <span className="text-red-400">{tradeStats.lossCount}</span>
-              </div>
-            </div>
-            <div className="flex-1 px-5 py-4 bg-white/[0.03] text-center">
-              <div className="text-xs uppercase tracking-wider mb-1.5 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                Avg Latency
-                <InfoTooltip>
-                  <strong>Copy Trade Latency</strong><br/><br/>
-                  Time difference between the Star Trader&apos;s transaction and your Vault&apos;s copy execution.<br/><br/>
-                  ⚠️ <strong>Simulation Mode:</strong> This demo performs <strong>no on-chain interactions</strong>. It simulates trades via database sync to show you how the logic works.<br/><br/>
-                  In production, we leverage Solana&apos;s <strong>~400ms block times</strong> for near-instant copy execution.
-                </InfoTooltip>
-              </div>
-              <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{formatLatency(avgLatency)}</div>
-            </div>
-          </div>
-        </div>
-        
-        {/* ===== TAB SWITCHER ===== */}
-        <div className="border border-white/10 overflow-hidden animate-fade-up delay-200" style={{ backgroundColor: COLORS.surface }}>
-          <div className="px-5 py-3 border-b border-white/10 bg-white/[0.02] flex items-center justify-between">
-            <div className="flex items-center gap-1">
-              <button 
+          </MetricTile>
+        </section>
+
+        <section className="cyber-panel border">
+          <div className="flex flex-col gap-3 border-b border-white/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
                 onClick={() => setActiveTab('portfolio')}
-                className={`px-4 py-2 text-sm font-medium rounded-t transition-all duration-200 ${activeTab === 'portfolio' ? 'bg-white/[0.05] border-b-2' : 'hover:bg-white/[0.03] opacity-70 hover:opacity-100'}`}
-                style={{ 
-                  color: activeTab === 'portfolio' ? COLORS.text : COLORS.data,
-                  borderColor: activeTab === 'portfolio' ? COLORS.brand : 'transparent'
-                }}
+                aria-current={activeTab === 'portfolio' ? 'page' : undefined}
+                className={`cyber-control relative px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] ${
+                  activeTab === 'portfolio'
+                    ? '!border-[#00FF85] !bg-[#00FF85] !text-black shadow-[0_0_22px_rgba(0,255,133,0.2),inset_0_-2px_0_rgba(0,0,0,0.35)]'
+                    : 'text-white/55'
+                }`}
               >
-                Portfolio ({positions.length})
+                <span className="inline-flex items-center gap-2">
+                  Portfolio ({shownPositions.length}/{positions.length})
+                </span>
               </button>
-              <button 
+              <button
                 onClick={() => setActiveTab('trades')}
-                className={`px-4 py-2 text-sm font-medium rounded-t transition-all duration-200 ${activeTab === 'trades' ? 'bg-white/[0.05] border-b-2' : 'hover:bg-white/[0.03] opacity-70 hover:opacity-100'}`}
-                style={{ 
-                  color: activeTab === 'trades' ? COLORS.text : COLORS.data,
-                  borderColor: activeTab === 'trades' ? COLORS.brand : 'transparent'
-                }}
+                aria-current={activeTab === 'trades' ? 'page' : undefined}
+                className={`cyber-control relative px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] ${
+                  activeTab === 'trades'
+                    ? '!border-[#00FF85] !bg-[#00FF85] !text-black shadow-[0_0_22px_rgba(0,255,133,0.2),inset_0_-2px_0_rgba(0,0,0,0.35)]'
+                    : 'text-white/55'
+                }`}
               >
-                Copy Trades ({typeof totalTradeCount === 'number' ? totalTradeCount : (totalTrades || trades.length)})
+                <span className="inline-flex items-center gap-2">
+                  Copy Trades ({typeof totalTradeCount === 'number' ? totalTradeCount : (totalTrades || trades.length)})
+                </span>
               </button>
             </div>
-            <button 
-              onClick={fetchData} 
-              disabled={loading}
-              className="group px-3 py-1.5 text-xs border border-white/20 rounded hover:bg-white/5 transition-all duration-200 active:scale-[0.98] flex items-center gap-1.5 disabled:opacity-50" 
-              style={{ color: COLORS.text }}
-            >
-              <RefreshCw size={12} className={loading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'} /> Refresh
-            </button>
+
+            {activeTab === 'portfolio' && (
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="cyber-command text-[10px] text-white/45" htmlFor="position-sort">Sort</label>
+                <select
+                  id="position-sort"
+                  value={portfolioSort}
+                  onChange={(event) => setPortfolioSort(event.target.value as 'value' | 'pnl' | 'weight')}
+                  className="cyber-control px-3 py-2 text-xs"
+                >
+                  <option value="value">Value</option>
+                  <option value="pnl">PnL</option>
+                  <option value="weight">Weight</option>
+                </select>
+                <button
+                  onClick={() => setShowDust((value) => !value)}
+                  className={`cyber-control px-3 py-2 text-xs uppercase tracking-[0.12em] ${showDust ? 'text-white/70' : 'border-emerald-400/60 text-emerald-200'}`}
+                >
+                  {showDust ? 'Hide dust' : 'Show dust'}
+                </button>
+                <InfoTooltip>
+                  <strong>Dust positions</strong><br /><br />
+                  Very small open positions can make this trader state look noisy. Hide dust to focus on positions that still have meaningful value.
+                </InfoTooltip>
+                <button
+                  onClick={() => setShowStaleOnly((value) => !value)}
+                  className={`cyber-control px-3 py-2 text-xs uppercase tracking-[0.12em] ${showStaleOnly ? 'border-amber-400/60 text-amber-200' : 'text-white/70'}`}
+                >
+                  Stale only
+                </button>
+                <InfoTooltip>
+                  <strong>Stale prices</strong><br /><br />
+                  Shows positions where current price data is missing or stale. These tokens may be dead, illiquid, or unavailable from the price source.
+                </InfoTooltip>
+              </div>
+            )}
           </div>
           
-          {/* ===== PORTFOLIO TAB ===== */}
           {activeTab === 'portfolio' && (
-            <div className="overflow-x-auto">
-              {/* Table Header */}
-              <div className="grid grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_0.8fr_1fr_1.2fr] gap-2 px-5 py-2.5 text-[11px] uppercase tracking-wider border-b border-white/10 font-mono bg-white/[0.04] min-w-[700px]" style={{ color: COLORS.data }}>
-                <div>Token</div>
-                <div className="flex items-center gap-1">
-                  Amount
-                  <InfoTooltip>
-                    <strong>Token Amount</strong><br/><br/>
-                    The total quantity of this token currently held in your trader state portfolio.
-                  </InfoTooltip>
+            <div>
+              <div className="hidden md:block">
+                <div className="cyber-table-header grid grid-cols-[minmax(190px,1.25fr)_0.8fr_0.8fr_0.8fr_0.8fr_1fr_1.05fr] gap-3 border-b border-white/10 px-5 py-3 text-[11px] uppercase tracking-[0.14em] text-white/50">
+                  <div>Token</div>
+                  <div className="flex items-center gap-1">
+                    Amount
+                    <InfoTooltip>
+                      <strong>Token Amount</strong><br /><br />
+                      The quantity of this token currently held in this trader state.
+                    </InfoTooltip>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    Avg Entry
+                    <InfoTooltip>
+                      <strong>Average Entry</strong><br /><br />
+                      The weighted average price paid for the current open position.
+                    </InfoTooltip>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    Price
+                    <InfoTooltip>
+                      <strong>Current Price</strong><br /><br />
+                      Latest available market price. A dash means the price source could not value the token.
+                    </InfoTooltip>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    Value
+                    <InfoTooltip>
+                      <strong>Position Value</strong><br /><br />
+                      Estimated current USD value of this holding.
+                    </InfoTooltip>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    PnL
+                    <InfoTooltip>
+                      <strong>Unrealized PnL</strong><br /><br />
+                      Paper profit or loss on this open position compared with its cost basis.
+                    </InfoTooltip>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    % Portfolio
+                    <InfoTooltip>
+                      <strong>Portfolio Weight</strong><br /><br />
+                      How much of this trader state&apos;s current value is concentrated in this token.
+                    </InfoTooltip>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1">
-                  Avg Entry
-                  <InfoTooltip>
-                    <strong>Average Entry Price</strong><br/><br/>
-                    The weighted average cost per token for your current position.<br/><br/>
-                    = Total Cost Basis / Token Amount
-                  </InfoTooltip>
-                </div>
-                <div className="flex items-center gap-1">
-                  Price
-                  <InfoTooltip>
-                    <strong>Current Price</strong><br/><br/>
-                    The real-time market price of the token.<br/><br/>
-                    Fetched from Jupiter/Birdeye APIs.
-                  </InfoTooltip>
-                </div>
-                <div className="flex items-center gap-1">
-                  Value
-                  <InfoTooltip>
-                    <strong>Position Value</strong><br/><br/>
-                    The current USD value of this holding.<br/><br/>
-                    = Token Amount × Current Price
-                  </InfoTooltip>
-                </div>
-                <div className="flex items-center gap-1">
-                  PNL
-                  <InfoTooltip>
-                    <strong>Unrealized Profit/Loss</strong><br/><br/>
-                    The paper profit or loss on this open position.<br/><br/>
-                    = (Current Price - Avg Entry) × Token Amount
-                  </InfoTooltip>
-                </div>
-                <div className="flex items-center gap-1">
-                  % Portfolio
-                  <InfoTooltip>
-                    <strong>Portfolio Weight</strong><br/><br/>
-                    How much of your total trader state value is in this token.<br/><br/>
-                    = Position Value / Total Portfolio Value
-                  </InfoTooltip>
+
+                <div>
+                  {shownPositions.length === 0 ? (
+                    <div className="px-5 py-12 text-center text-sm text-white/45">
+                      No positions match the current filters.
+                    </div>
+                  ) : (
+                    shownPositions.map((pos) => {
+                      const meta = tokenMeta[pos.mint] || { symbol: pos.symbol, name: pos.name, logoURI: pos.logoURI };
+                      const pnl = pos.unrealizedPnL;
+                      const pnlPercent = pos.unrealizedPercent;
+                      const isPositive = (pnl ?? 0) >= 0;
+                      const isStale = pos.priceStale || pos.currentPrice === null;
+
+                      return (
+                        <div
+                          key={pos.mint}
+                          className="cyber-row grid grid-cols-[minmax(190px,1.25fr)_0.8fr_0.8fr_0.8fr_0.8fr_1fr_1.05fr] items-center gap-3 border-b border-white/[0.06] px-5 py-3"
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
+                            <TokenIcon symbol={meta.symbol || pos.symbol} logoURI={meta.logoURI || pos.logoURI} />
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-semibold">{meta.symbol || pos.symbol}</div>
+                              <div className="truncate text-xs text-white/40">{meta.name || pos.name}</div>
+                            </div>
+                            {isStale && <span className="border border-amber-400/35 bg-amber-400/10 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.12em] text-amber-300">stale</span>}
+                          </div>
+                          <div className="font-mono text-sm tabular-nums text-white/80">{formatAmount(pos.amount)}</div>
+                          <div className="font-mono text-sm tabular-nums text-white/55">{formatPrice(pos.avgCost)}</div>
+                          <div className="font-mono text-sm tabular-nums text-white/55">{formatPrice(pos.currentPrice)}</div>
+                          <div className="font-mono text-sm font-semibold tabular-nums">{formatUsd(pos.currentValue)}</div>
+                          <div className={`font-mono text-sm font-semibold tabular-nums ${isPositive ? 'text-emerald-300' : 'text-red-300'}`}>
+                            {pnl !== null ? signedUsd(pnl) : '—'}
+                            {pnlPercent !== null && <span className="ml-1 text-xs">({signedPercent(pnlPercent)})</span>}
+                          </div>
+                          <PortfolioBar percent={pos.portfolioPercent ?? 0} />
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
-              
-              {/* Table Rows */}
-              <div className="max-h-[500px] overflow-y-auto divide-y divide-white/5">
-                {positions.length === 0 ? (
-                  <div className="text-center py-10 text-sm" style={{ color: COLORS.data }}>No positions</div>
+
+              <div className="grid gap-3 p-3 md:hidden">
+                {shownPositions.length === 0 ? (
+                  <div className="cyber-panel-soft border px-4 py-10 text-center text-sm text-white/45">
+                    No positions match the current filters.
+                  </div>
                 ) : (
-                  positions.map((pos, index) => {
+                  shownPositions.map((pos) => {
                     const meta = tokenMeta[pos.mint] || { symbol: pos.symbol, name: pos.name, logoURI: pos.logoURI };
                     const pnl = pos.unrealizedPnL;
                     const pnlPercent = pos.unrealizedPercent;
                     const isPositive = (pnl ?? 0) >= 0;
-                    
+                    const isStale = pos.priceStale || pos.currentPrice === null;
+
                     return (
-                      <div 
-                        key={pos.mint} 
-                        className={`grid grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_0.8fr_1fr_1.2fr] gap-2 px-5 py-3 items-center hover:bg-white/[0.04] transition-colors min-w-[700px] ${index % 2 === 1 ? 'bg-white/[0.02]' : ''}`}
-                      >
-                        {/* Token */}
-                        <div className="flex items-center gap-2">
-                          <TokenIcon symbol={meta.symbol || pos.symbol} logoURI={meta.logoURI || pos.logoURI} />
-                          <div>
-                            <div className="font-medium text-sm" style={{ color: COLORS.text }}>{meta.symbol || pos.symbol}</div>
-                            <div className="text-xs truncate max-w-[100px]" style={{ color: COLORS.data }}>{meta.name || pos.name}</div>
+                      <article key={pos.mint} className="cyber-panel-soft border p-4">
+                        <div className="mb-4 flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <TokenIcon symbol={meta.symbol || pos.symbol} logoURI={meta.logoURI || pos.logoURI} />
+                            <div className="min-w-0">
+                              <div className="truncate text-base font-semibold">{meta.symbol || pos.symbol}</div>
+                              <div className="truncate text-xs text-white/45">{meta.name || pos.name}</div>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="font-mono text-base font-semibold">{formatUsd(pos.currentValue)}</div>
+                            {isStale && <div className="mt-1 text-[10px] uppercase tracking-[0.12em] text-amber-300">stale price</div>}
                           </div>
                         </div>
-                        {/* Amount */}
-                        <div className="font-mono text-sm" style={{ color: COLORS.text }}>{formatAmount(pos.amount)}</div>
-                        {/* Avg Entry */}
-                        <div className="font-mono text-sm" style={{ color: COLORS.data }}>{formatPrice(pos.avgCost)}</div>
-                        {/* Price */}
-                        <div className="font-mono text-sm" style={{ color: COLORS.data }}>{formatPrice(pos.currentPrice)}</div>
-                        {/* Value */}
-                        <div className="font-mono text-sm font-medium" style={{ color: COLORS.text }}>{formatUsd(pos.currentValue)}</div>
-                        {/* PNL */}
-                        <div className={`font-mono text-sm font-medium ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {pnl !== null ? `${isPositive ? '+' : ''}${formatUsd(pnl)}` : '—'}
-                          {pnlPercent !== null && <span className="text-xs ml-1">({pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(1)}%)</span>}
+                        <div className="grid grid-cols-2 gap-3 text-sm">
+                          <div>
+                            <div className="cyber-command mb-1 text-[10px] text-white/35">Amount</div>
+                            <div className="font-mono">{formatAmount(pos.amount)}</div>
+                          </div>
+                          <div>
+                            <div className="cyber-command mb-1 text-[10px] text-white/35">PnL</div>
+                            <div className={`font-mono font-semibold ${isPositive ? 'text-emerald-300' : 'text-red-300'}`}>
+                              {pnl !== null ? signedUsd(pnl) : '—'} {pnlPercent !== null ? `(${signedPercent(pnlPercent)})` : ''}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="cyber-command mb-1 text-[10px] text-white/35">Avg / Price</div>
+                            <div className="font-mono text-white/70">{formatPrice(pos.avgCost)} / {formatPrice(pos.currentPrice)}</div>
+                          </div>
+                          <div>
+                            <div className="cyber-command mb-1 text-[10px] text-white/35">Weight</div>
+                            <PortfolioBar percent={pos.portfolioPercent ?? 0} />
+                          </div>
                         </div>
-                        {/* % Portfolio with Progress Bar */}
-                        <PortfolioBar percent={pos.portfolioPercent ?? 0} />
-                      </div>
+                      </article>
                     );
                   })
                 )}
               </div>
             </div>
           )}
-          
-          {/* ===== COPY TRADES TAB ===== */}
+
           {activeTab === 'trades' && (
-            <div className="overflow-x-auto">
-              {/* Table Header */}
-              <div className="grid grid-cols-[70px_2fr_0.8fr_0.8fr_0.6fr_0.6fr_70px] gap-2 px-5 py-2.5 text-[11px] uppercase tracking-wider border-b border-white/10 font-mono bg-white/[0.04] min-w-[700px]" style={{ color: COLORS.data }}>
-                <div>Type</div>
-                <div>Token In → Token Out</div>
-                <div>USD Value</div>
-                <div>Profit</div>
-                <div className="flex items-center gap-1">
-                  Latency
-                  <InfoTooltip>
-                    <strong>Copy Trade Latency</strong><br/><br/>
-                    Time difference between the Star Trader&apos;s transaction and your Vault&apos;s copy execution.<br/><br/>
-                    ⚠️ <strong>Simulation Mode:</strong> This demo performs <strong>no on-chain interactions</strong>. It simulates trades via database sync to show you how the logic works.<br/><br/>
-                    In production, we leverage Solana&apos;s <strong>~400ms block times</strong> for near-instant copy execution.
-                  </InfoTooltip>
+            <div>
+              <div className="hidden md:block">
+                <div className="cyber-table-header grid grid-cols-[88px_minmax(280px,2fr)_0.8fr_0.8fr_0.7fr_0.7fr_80px] gap-3 border-b border-white/10 px-5 py-3 text-[11px] uppercase tracking-[0.14em] text-white/50">
+                  <div>Type</div>
+                  <div className="flex items-center gap-1">
+                    Token Flow
+                    <InfoTooltip>
+                      <strong>Token Flow</strong><br /><br />
+                      The simulated swap path for this copied trade. It may fall back to leader amounts when the demo trade did not complete.
+                    </InfoTooltip>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    USD Value
+                    <InfoTooltip>
+                      <strong>USD Value</strong><br /><br />
+                      Estimated trade size in USD. Failed trades may show the leader-side value instead.
+                    </InfoTooltip>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    Profit
+                    <InfoTooltip>
+                      <strong>Realized Profit</strong><br /><br />
+                      Profit or loss is shown on sell trades when the copied position closes or reduces.
+                    </InfoTooltip>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    Latency
+                    <InfoTooltip>
+                      <strong>Copy Latency</strong><br /><br />
+                      Time between the star trader transaction and the demo copy event detected by the system.
+                    </InfoTooltip>
+                  </div>
+                  <div>Age</div>
+                  <div>TX</div>
                 </div>
-                <div>Age</div>
-                <div>Actions</div>
+
+                <div>
+                  {trades.length === 0 ? (
+                    <div className="px-5 py-12 text-center text-sm text-white/45">No copied trades yet.</div>
+                  ) : (
+                    trades.map((trade) => {
+                      const isBuy = trade.type === 'buy';
+                      const isFailed = trade.status === 'failed';
+                      const pnl = trade.realized_pnl;
+                      const isPositive = (pnl ?? 0) >= 0;
+                      const inMeta = tokenMeta[trade.token_in_mint] || { symbol: trade.token_in_symbol, logoURI: null };
+                      const outMeta = tokenMeta[trade.token_out_mint] || { symbol: trade.token_out_symbol, logoURI: null };
+                      const displayInAmount = trade.token_in_amount ?? trade.leader_in_amount;
+                      const displayOutAmount = trade.token_out_amount ?? trade.leader_out_amount;
+                      const displayUsdValue = trade.usd_value ?? trade.leader_usd_value;
+
+                      return (
+                        <div
+                          key={trade.id}
+                          className={`cyber-row grid grid-cols-[88px_minmax(280px,2fr)_0.8fr_0.8fr_0.7fr_0.7fr_80px] items-center gap-3 border-b border-white/[0.06] px-5 py-3 ${isFailed ? 'bg-red-500/8' : ''}`}
+                        >
+                          <div>
+                            {isFailed ? (
+                              <span className="inline-flex items-center gap-1 border border-red-400/45 bg-red-500/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-red-300"><X size={10} /> Failed</span>
+                            ) : isBuy ? (
+                              <span className="inline-flex border border-emerald-400/45 bg-emerald-400/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-300">Buy</span>
+                            ) : (
+                              <span className="inline-flex border border-red-400/45 bg-red-500/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-red-300">Sell</span>
+                            )}
+                          </div>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <TokenIcon symbol={inMeta.symbol || trade.token_in_symbol} logoURI={inMeta.logoURI} />
+                            <span className="truncate font-mono text-sm text-white/80">{formatAmount(displayInAmount)} {inMeta.symbol || trade.token_in_symbol}</span>
+                            <ArrowRight size={13} className="shrink-0 text-white/35" />
+                            <TokenIcon symbol={outMeta.symbol || trade.token_out_symbol} logoURI={outMeta.logoURI} />
+                            <span className="truncate font-mono text-sm text-white/80">{formatAmount(displayOutAmount)} {outMeta.symbol || trade.token_out_symbol}</span>
+                          </div>
+                          <div className="font-mono text-sm font-semibold">
+                            {isFailed ? (
+                              <div>
+                                <div className="text-red-300">Failed</div>
+                                {trade.error_message && (
+                                  <div className="mt-1 max-w-[150px] truncate text-[10px] font-normal text-red-300/70" title={trade.error_message}>
+                                    {trade.error_message}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              formatUsd(displayUsdValue)
+                            )}
+                          </div>
+                          <div className={`font-mono text-sm font-semibold ${isBuy || pnl === null || isFailed ? 'text-white/45' : isPositive ? 'text-emerald-300' : 'text-red-300'}`}>
+                            {isFailed || isBuy || pnl === null ? '—' : signedUsd(pnl)}
+                          </div>
+                          <div className="font-mono text-sm text-white/55">{formatLatency(trade.latency_diff_ms)}</div>
+                          <div className="font-mono text-sm text-white/55">{timeAgo(trade.created_at)}</div>
+                          <div>
+                            {trade.star_trade_signature ? (
+                              <SolscanLink signature={trade.star_trade_signature} />
+                            ) : (
+                              <span className="text-white/35">—</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               </div>
-              
-              {/* Table Rows */}
-              <div className="max-h-[500px] overflow-y-auto divide-y divide-white/5">
+
+              <div className="grid gap-3 p-3 md:hidden">
                 {trades.length === 0 ? (
-                  <div className="text-center py-10 text-sm" style={{ color: COLORS.data }}>No trades yet</div>
+                  <div className="cyber-panel-soft border px-4 py-10 text-center text-sm text-white/45">No copied trades yet.</div>
                 ) : (
-                  trades.map((trade, index) => {
+                  trades.map((trade) => {
                     const isBuy = trade.type === 'buy';
                     const isFailed = trade.status === 'failed';
                     const pnl = trade.realized_pnl;
                     const isPositive = (pnl ?? 0) >= 0;
-                    
                     const inMeta = tokenMeta[trade.token_in_mint] || { symbol: trade.token_in_symbol, logoURI: null };
                     const outMeta = tokenMeta[trade.token_out_mint] || { symbol: trade.token_out_symbol, logoURI: null };
-                    
                     const displayInAmount = trade.token_in_amount ?? trade.leader_in_amount;
                     const displayOutAmount = trade.token_out_amount ?? trade.leader_out_amount;
                     const displayUsdValue = trade.usd_value ?? trade.leader_usd_value;
-                    
-                    
+
                     return (
-                      <motion.div 
-                        key={trade.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        whileInView={{ opacity: 1, y: 0 }}
-                        viewport={{ once: true, margin: "-50px" }}
-                        transition={{ duration: 0.3, ease: "easeOut" }}
-                        className={`grid grid-cols-[70px_2fr_0.8fr_0.8fr_0.6fr_0.6fr_70px] gap-2 px-5 py-3 items-center transition-colors min-w-[700px] ${
-                          isFailed 
-                            ? 'bg-red-500/10 hover:bg-red-500/15 border-l-2 border-red-500' 
-                            : `${index % 2 === 1 ? 'bg-white/[0.02]' : ''} hover:bg-white/[0.04]`
-                        }`}
-                      >
-                        {/* Type Badge */}
-                        <div>
-                          {isFailed ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-semibold uppercase tracking-wider border border-red-500/50 bg-red-500/10 text-red-400">
-                              <X size={10} /> Failed
-                            </span>
-                          ) : isBuy ? (
-                            <span className="inline-flex items-center px-2.5 py-1 rounded text-[10px] font-semibold uppercase tracking-wider border border-emerald-500/50 bg-emerald-500/10 text-emerald-400">
-                              Buy
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-2.5 py-1 rounded text-[10px] font-semibold uppercase tracking-wider border border-red-500/50 bg-red-500/10 text-red-400">
-                              Sell
-                            </span>
-                          )}
+                      <article key={trade.id} className={`cyber-panel-soft border p-4 ${isFailed ? 'border-red-400/35 bg-red-500/8' : ''}`}>
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <span className={`inline-flex border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${isFailed ? 'border-red-400/45 bg-red-500/10 text-red-300' : isBuy ? 'border-emerald-400/45 bg-emerald-400/10 text-emerald-300' : 'border-red-400/45 bg-red-500/10 text-red-300'}`}>
+                            {isFailed ? 'Failed' : isBuy ? 'Buy' : 'Sell'}
+                          </span>
+                          <span className="font-mono text-xs text-white/45">{timeAgo(trade.created_at)}</span>
                         </div>
-                        
-                        {/* Token Flow with Icons */}
-                        <div className="flex items-center gap-2">
-                          <div className="flex items-center gap-1.5">
+                        <div className="mb-4 grid gap-2">
+                          <div className="flex items-center gap-2">
                             <TokenIcon symbol={inMeta.symbol || trade.token_in_symbol} logoURI={inMeta.logoURI} />
-                            <span className="font-mono text-sm" style={{ color: COLORS.text }}>
-                              {formatAmount(displayInAmount)} <span className="font-bold ml-1 px-1.5 py-0.5 rounded bg-white/10 text-white">{inMeta.symbol || trade.token_in_symbol}</span>
-                            </span>
+                            <span className="min-w-0 truncate font-mono text-sm">{formatAmount(displayInAmount)} {inMeta.symbol || trade.token_in_symbol}</span>
                           </div>
-                          <ArrowRight size={14} style={{ color: COLORS.data }} />
-                          <div className="flex items-center gap-1.5">
+                          <div className="pl-3 text-white/35"><ArrowRight size={14} /></div>
+                          <div className="flex items-center gap-2">
                             <TokenIcon symbol={outMeta.symbol || trade.token_out_symbol} logoURI={outMeta.logoURI} />
-                            <span className="font-mono text-sm" style={{ color: COLORS.text }}>
-                              {formatAmount(displayOutAmount)} <span className="font-bold ml-1 px-1.5 py-0.5 rounded bg-white/10 text-white">{outMeta.symbol || trade.token_out_symbol}</span>
-                            </span>
+                            <span className="min-w-0 truncate font-mono text-sm">{formatAmount(displayOutAmount)} {outMeta.symbol || trade.token_out_symbol}</span>
                           </div>
                         </div>
-                        
-                        {/* USD Value / Error */}
-                        <div className="font-mono text-sm">
-                          {isFailed ? (
-                            <div>
-                              <div className="text-red-400 font-semibold">Failed</div>
-                              {trade.error_message && (
-                                <div className="text-[10px] text-red-400/70 truncate max-w-[120px]" title={trade.error_message}>
-                                  {trade.error_message.length > 20 ? trade.error_message.slice(0, 20) + '...' : trade.error_message}
+                        <div className="grid grid-cols-2 gap-3 text-sm">
+                          <div>
+                            <div className="cyber-command mb-1 text-[10px] text-white/35">USD Value</div>
+                            <div className="font-mono font-semibold">
+                              {isFailed ? (
+                                <div>
+                                  <div className="text-red-300">Failed</div>
+                                  {trade.error_message && (
+                                    <div className="mt-1 line-clamp-2 text-[11px] font-normal leading-relaxed text-red-300/75" title={trade.error_message}>
+                                      {trade.error_message}
+                                    </div>
+                                  )}
                                 </div>
+                              ) : (
+                                formatUsd(displayUsdValue)
                               )}
                             </div>
-                          ) : (
-                            <span style={{ color: COLORS.text }}>{formatUsd(displayUsdValue)}</span>
-                          )}
+                          </div>
+                          <div>
+                            <div className="cyber-command mb-1 text-[10px] text-white/35">Profit</div>
+                            <div className={`font-mono font-semibold ${isBuy || pnl === null || isFailed ? 'text-white/45' : isPositive ? 'text-emerald-300' : 'text-red-300'}`}>
+                              {isFailed || isBuy || pnl === null ? '—' : signedUsd(pnl)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="cyber-command mb-1 text-[10px] text-white/35">Latency</div>
+                            <div className="font-mono text-white/70">{formatLatency(trade.latency_diff_ms)}</div>
+                          </div>
+                          <div>
+                            <div className="cyber-command mb-1 text-[10px] text-white/35">Source</div>
+                            {trade.star_trade_signature ? (
+                              <SolscanLink signature={trade.star_trade_signature} compact />
+                            ) : (
+                              <span className="text-white/35">—</span>
+                            )}
+                          </div>
                         </div>
-                        
-                        {/* Profit */}
-                        <div className={`font-mono text-sm font-medium ${isBuy || pnl === null || isFailed ? '' : isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {isFailed ? '—' : isBuy ? '—' : pnl !== null ? `${isPositive ? '+' : ''}${formatUsd(pnl)}` : '—'}
-                        </div>
-                        
-                        {/* Latency */}
-                        <div className="font-mono text-sm" style={{ color: COLORS.data }}>{formatLatency(trade.latency_diff_ms)}</div>
-                        
-                        {/* Age */}
-                        <div className="font-mono text-sm" style={{ color: COLORS.data }}>{timeAgo(trade.created_at)}</div>
-                        
-                        {/* Actions */}
-                        <div>
-                          {trade.star_trade_signature ? (
-                            <a 
-                              href={`https://solscan.io/tx/${trade.star_trade_signature}`} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-1 text-xs font-medium hover:underline"
-                              style={{ color: '#22D3EE' }}
-                            >
-                              TX <ExternalLink size={10} />
-                            </a>
-                          ) : (
-                            <span style={{ color: COLORS.data }}>—</span>
-                          )}
-                        </div>
-                      </motion.div>
+                      </article>
                     );
                   })
                 )}
-              
-                {/* Sentinel / Loading State - MOVED INSIDE SCROLLABLE CONTAINER */}
-                <div ref={lastElementRef} className="py-2 min-h-[40px]">
-                  {infiniteLoading && (
-                    <div className="flex flex-col">
-                       {[...Array(3)].map((_, i) => (
-                          <SkeletonRow key={`skeleton-${i}`} />
-                       ))}
-                    </div>
-                  )}
-                  {!hasMore && trades.length > 0 && (
-                    <div className="flex items-center justify-center gap-4 py-4 opacity-50">
-                      <div className="h-px w-12 bg-white/10" />
-                      <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">End of History</span>
-                      <div className="h-px w-12 bg-white/10" />
-                    </div>
-                  )}
-                </div>
+
+              </div>
+
+              <div ref={lastElementRef} className="min-h-[40px] py-2">
+                {infiniteLoading && (
+                  <CyberTradeSkeletonRows />
+                )}
+                {tradesPaginationError && (
+                  <div className="mx-3 border border-red-400/35 bg-red-500/10 px-4 py-3 text-sm text-red-200 md:mx-5">
+                    Could not load more copied trades. {tradesPaginationError}
+                  </div>
+                )}
+                {hasMore && !infiniteLoading && trades.length > 0 && (
+                  <div className="flex justify-center py-4">
+                    <button
+                      type="button"
+                      onClick={() => void loadMoreTrades()}
+                      className="cyber-control px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white/70 transition hover:border-emerald-300/60 hover:text-emerald-200"
+                    >
+                      Load more trades
+                    </button>
+                  </div>
+                )}
+                {!hasMore && trades.length > 0 && (
+                  <div className="flex items-center justify-center gap-4 py-4 opacity-50">
+                    <div className="h-px w-12 bg-white/10" />
+                    <span className="cyber-command text-[10px] text-white/35">End of history</span>
+                    <div className="h-px w-12 bg-white/10" />
+                  </div>
+                )}
               </div>
             </div>
           )}
-        </div>
-        
+        </section>
+
+        <AnimatePresence>
+          {showWithdrawReview && (
+            <motion.div
+              className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 px-3 py-3 sm:items-center"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <motion.div
+                className="cyber-panel w-full max-w-2xl border bg-[#050505] p-5"
+                initial={{ opacity: 0, y: 24, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 24, scale: 0.98 }}
+                transition={{ duration: 0.18 }}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="withdraw-review-title"
+              >
+                <div className="mb-4 flex items-start justify-between gap-4">
+                  <div>
+                    <div className="cyber-command mb-2 text-[10px] text-red-300">Review before closing</div>
+                    <h2 id="withdraw-review-title" className="text-xl font-semibold">Withdraw and close trader state</h2>
+                    <p className="mt-2 text-sm leading-relaxed text-white/55">
+                      This returns the current estimated value to your demo vault and removes this trader state. It cannot copy future trades after closing.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowWithdrawReview(false)}
+                    className="cyber-icon-button border border-white/15 p-2 text-white/55 transition hover:border-white/35 hover:text-white"
+                    aria-label="Close withdraw review"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="grid gap-2 border-y border-white/10 py-4 text-sm">
+                  <div className="grid grid-cols-[140px_1fr] gap-3">
+                    <span className="text-white/45">Trader</span>
+                    <span className="font-semibold">{starTraderProfile?.name || `${starTrader.slice(0, 6)}...${starTrader.slice(-4)}`}</span>
+                  </div>
+                  <div className="grid grid-cols-[140px_1fr] gap-3">
+                    <span className="text-white/45">Copy model</span>
+                    <span>{formatCopyBuyModelLabel(modelKey)} · {formatCopyBuyModelConfigBadge(modelKey, copyModelConfig)}</span>
+                  </div>
+                  <div className="grid grid-cols-[140px_1fr] gap-3">
+                    <span className="text-white/45">Estimated return</span>
+                    <span className="font-mono font-semibold">{formatUsd(portfolioValue)}</span>
+                  </div>
+                  <div className="grid grid-cols-[140px_1fr] gap-3">
+                    <span className="text-white/45">Open positions</span>
+                    <span>{positions.length} positions, including {dustPositions} near-zero positions</span>
+                  </div>
+                  <div className="grid grid-cols-[140px_1fr] gap-3">
+                    <span className="text-white/45">Result</span>
+                    <span>This setup and its copied trade history are removed from the vault.</span>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setShowWithdrawReview(false)}
+                    className="cyber-control px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-white/70"
+                  >
+                    Keep setup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleWithdraw}
+                    disabled={actionLoading}
+                    className="cyber-action-primary border border-red-400/60 bg-red-500/14 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-red-100 transition hover:bg-red-500/20 disabled:opacity-50"
+                  >
+                    <span className="relative z-10 inline-flex items-center justify-center gap-2">
+                      {actionLoading ? <Loader2 size={13} className="animate-spin" /> : <StopCircle size={13} />}
+                      Withdraw and close
+                    </span>
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
     </div>
   );
