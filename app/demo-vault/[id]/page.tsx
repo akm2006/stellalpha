@@ -1,16 +1,22 @@
 'use client';
 
 import PageLoader from '@/components/PageLoader';
+import { InfiniteScrollSentinel } from '@/components/InfiniteScrollSentinel';
+import { CyberHistorySkeletonRows } from '@/components/cyber/history-skeleton';
+import { MetricTile } from '@/components/cyber/metric-tile';
+import { StatusBadge } from '@/components/cyber/status-badge';
+import { InfoTooltip } from '@/components/cyber/tooltip';
+import { TraderAvatar } from '@/components/cyber/trader-avatar';
+import { CopyModelBadge } from '@/components/trading/copy-model-badge';
+import { SolscanLink } from '@/components/trading/solscan-link';
+import { TokenIcon } from '@/components/trading/token-icon';
 import {
   formatCopyBuyModelConfigBadge,
   formatCopyBuyModelLabel,
 } from '@/lib/copy-models/format';
 import { CopyBuyModelConfig, CopyBuyModelKey } from '@/lib/copy-models/types';
 
-
-import { createPortal } from 'react-dom';
-
-import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useInfiniteScroll } from '@/hooks/use-infinite-scroll';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
@@ -29,10 +35,8 @@ import {
   Play,
   StopCircle,
   Clock,
-  CheckCircle,
   X,
   Loader2,
-  Info,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -110,8 +114,6 @@ interface StarTraderSummary {
   name: string;
   image?: string;
 }
-
-const SOLSCAN_LOGO_SRC = 'https://solscan.io/_next/static/media/solscan-logo-light.1410e164.svg';
 
 // =============================================================================
 // FORMATTING UTILITIES
@@ -201,56 +203,6 @@ function formatDateTime(dateStr: string): string {
 // COMPONENTS
 // =============================================================================
 
-function TokenIcon({ symbol, logoURI }: { symbol: string; logoURI?: string | null }) {
-  const [imgError, setImgError] = useState(false);
-  
-  if (logoURI && !imgError) {
-    return (
-      <img 
-        src={logoURI}
-        alt={symbol}
-        className="w-7 h-7 rounded-full"
-        onError={() => setImgError(true)}
-      />
-    );
-  }
-  
-  return (
-    <div 
-      className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
-      style={{ backgroundColor: '#262626', color: '#fff' }}
-    >
-      {symbol?.charAt(0) || '?'}
-    </div>
-  );
-}
-
-function TraderAvatar({ address, image }: { address: string; image?: string }) {
-  const hue = address.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
-  const bgColor = `hsl(${hue}, 50%, 30%)`;
-  
-  if (image) {
-    return (
-      <img 
-        src={image} 
-        alt={address}
-        className="w-8 h-8 rounded-full object-cover shrink-0"
-        style={{ border: '1px solid rgba(255,255,255,0.1)' }}
-      />
-    );
-  }
-
-  return (
-    <div 
-      className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
-      style={{ backgroundColor: bgColor, color: '#fff' }}
-    >
-      {address.slice(0, 2).toUpperCase()}
-    </div>
-  );
-}
-
-// Portfolio Progress Bar - Professional Style
 function PortfolioBar({ percent }: { percent: number }) {
   return (
     <div className="flex items-center gap-3">
@@ -268,88 +220,6 @@ function PortfolioBar({ percent }: { percent: number }) {
   );
 }
 
-// Info Tooltip Component
-function InfoTooltip({ children }: { children: ReactNode }) {
-  const [showTooltip, setShowTooltip] = useState(false);
-  const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  
-  const updateTooltipPosition = () => {
-    if (buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      const tooltipWidth = 256; // w-64 = 16rem = 256px
-      let left = rect.left + rect.width / 2;
-      
-      // Clamp to viewport edges
-      const minLeft = tooltipWidth / 2 + 8;
-      const maxLeft = window.innerWidth - tooltipWidth / 2 - 8;
-      left = Math.max(minLeft, Math.min(maxLeft, left));
-      
-      setTooltipPosition({
-        top: rect.bottom + 10,
-        left
-      });
-    }
-  };
-  
-  const handleMouseEnter = () => {
-    updateTooltipPosition();
-    setShowTooltip(true);
-  };
-  
-  useEffect(() => {
-    if (showTooltip) {
-      updateTooltipPosition();
-      const handleScroll = () => updateTooltipPosition();
-      const handleResize = () => updateTooltipPosition();
-      window.addEventListener('scroll', handleScroll, true);
-      window.addEventListener('resize', handleResize);
-      return () => {
-        window.removeEventListener('scroll', handleScroll, true);
-        window.removeEventListener('resize', handleResize);
-      };
-    }
-  }, [showTooltip]);
-  
-  return (
-    <>
-      <div className="relative inline-flex items-center">
-        <button
-          ref={buttonRef}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={() => setShowTooltip(false)}
-          className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-white/20 hover:bg-white/5 transition-colors"
-          style={{ color: COLORS.data }}
-          type="button"
-        >
-          <Info size={12} />
-        </button>
-      </div>
-      {showTooltip && typeof window !== 'undefined' && createPortal(
-        <div 
-          className="fixed w-64 p-3 rounded border shadow-lg pointer-events-auto"
-          style={{ 
-            backgroundColor: COLORS.surface, 
-            borderColor: COLORS.structure,
-            zIndex: 99999,
-            top: `${tooltipPosition.top}px`,
-            left: `${tooltipPosition.left}px`,
-            transform: 'translate(-50%, 0)',
-            marginTop: '8px'
-          }}
-          onMouseEnter={() => setShowTooltip(true)}
-          onMouseLeave={() => setShowTooltip(false)}
-        >
-          <div className="text-xs leading-relaxed" style={{ color: COLORS.text }}>
-            {children}
-          </div>
-        </div>,
-        document.body
-      )}
-    </>
-  );
-}
-
 function signedUsd(amount: number | null | undefined) {
   if (amount === null || amount === undefined) return '—';
   return `${amount >= 0 ? '+' : ''}${formatUsd(amount)}`;
@@ -358,135 +228,6 @@ function signedUsd(amount: number | null | undefined) {
 function signedPercent(value: number | null | undefined) {
   if (value === null || value === undefined) return '—';
   return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
-}
-
-function getStatusTone(isSettled: boolean, isPaused: boolean, isInitialized: boolean) {
-  if (isSettled) {
-    return {
-      label: 'Settled',
-      icon: StopCircle,
-      className: 'border-zinc-500/40 bg-zinc-500/10 text-zinc-300',
-    };
-  }
-  if (isPaused) {
-    return {
-      label: 'Paused',
-      icon: Pause,
-      className: 'border-amber-400/45 bg-amber-400/10 text-amber-300',
-    };
-  }
-  if (isInitialized) {
-    return {
-      label: 'Active',
-      icon: CheckCircle,
-      className: 'border-emerald-400/45 bg-emerald-400/10 text-emerald-300',
-    };
-  }
-  return {
-    label: 'Pending',
-    icon: Clock,
-    className: 'border-orange-400/45 bg-orange-400/10 text-orange-300',
-  };
-}
-
-function CopyModelBadge({
-  modelKey,
-  summary,
-  config,
-}: {
-  modelKey: CopyBuyModelKey;
-  summary: string;
-  config: CopyBuyModelConfig;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="copy-style-badge inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em]">
-        <span>[</span>
-        <span>{formatCopyBuyModelLabel(modelKey).replace('Trader ', '')}</span>
-        <span className="text-cyan-200/70">· {formatCopyBuyModelConfigBadge(modelKey, config)}</span>
-        <span>]</span>
-      </span>
-      <InfoTooltip>
-        <strong>{formatCopyBuyModelLabel(modelKey)}</strong><br /><br />
-        {summary}<br /><br />
-        This model controls how demo buys are sized for this trader state. Sells still follow the copied-position sell logic.
-      </InfoTooltip>
-    </div>
-  );
-}
-
-function MetricTile({
-  label,
-  value,
-  helper,
-  tone = 'neutral',
-  children,
-}: {
-  label: string;
-  value: ReactNode;
-  helper?: ReactNode;
-  tone?: 'neutral' | 'positive' | 'negative' | 'warning';
-  children?: ReactNode;
-}) {
-  const valueClass =
-    tone === 'positive' ? 'text-emerald-300'
-      : tone === 'negative' ? 'text-red-300'
-        : tone === 'warning' ? 'text-amber-300'
-          : 'text-white';
-
-  return (
-    <div className="cyber-kpi cyber-panel-soft border px-4 py-4">
-      <div className="cyber-command mb-2 text-[10px] text-white/50">{label}</div>
-      <div className={`font-mono text-lg font-semibold tabular-nums ${valueClass}`}>{value}</div>
-      {helper && <div className="mt-2 text-xs leading-relaxed text-white/45">{helper}</div>}
-      {children}
-    </div>
-  );
-}
-
-function SolscanLink({ signature, compact = false }: { signature: string; compact?: boolean }) {
-  return (
-    <a
-      href={`https://solscan.io/tx/${signature}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      aria-label="Open transaction on Solscan"
-      title="Open on Solscan"
-      className={`cyber-control inline-flex items-center justify-center border-cyan-300/35 transition hover:border-emerald-300/70 hover:bg-emerald-300/10 ${compact ? 'min-w-[30px] px-1.5 py-1' : 'min-w-[44px] px-2 py-1'}`}
-    >
-      <img
-        src={SOLSCAN_LOGO_SRC}
-        alt=""
-        aria-hidden="true"
-        className={compact ? 'h-3.5 w-auto max-w-[38px] object-contain' : 'h-3.5 w-auto max-w-[44px] object-contain'}
-      />
-      <span className="sr-only">Open on Solscan</span>
-    </a>
-  );
-}
-
-function CyberTradeSkeletonRows() {
-  return (
-    <div className="grid gap-2 px-3 py-2 md:px-0" aria-label="Loading more copied trades">
-      {[...Array(3)].map((_, index) => (
-        <div
-          key={`trade-skeleton-${index}`}
-          className="cyber-row cyber-panel-soft grid gap-3 border border-white/[0.08] p-4 md:grid-cols-[88px_minmax(280px,2fr)_0.8fr_0.8fr_0.7fr_0.7fr_80px] md:items-center md:border-x-0 md:px-5 md:py-3"
-        >
-          <div className="cyber-skeleton-block h-7 w-16"><span /></div>
-          <div className="grid gap-2">
-            <div className="cyber-skeleton-block h-3 w-48 max-w-full"><span /></div>
-            <div className="cyber-skeleton-block h-2 w-28 max-w-full opacity-60"><span /></div>
-          </div>
-          <div className="cyber-skeleton-block h-3 w-20"><span /></div>
-          <div className="cyber-skeleton-block h-3 w-20"><span /></div>
-          <div className="cyber-skeleton-block h-3 w-14"><span /></div>
-          <div className="cyber-skeleton-block h-3 w-12"><span /></div>
-          <div className="cyber-skeleton-block h-6 w-10"><span /></div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 // =============================================================================
@@ -778,8 +519,6 @@ export default function TraderStateDetailPage() {
   
   const profitFactor = tradeStats.profitFactor || 0;
   const modelKey = (copyModelKey || 'current_ratio') as CopyBuyModelKey;
-  const statusTone = getStatusTone(isSettled, isPaused, isInitialized);
-  const StatusIcon = statusTone.icon;
   const dustPositions = positions.filter((position) => (position.currentValue ?? 0) < 0.01 && position.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v').length;
   const stalePriceCount = positions.filter((position) => position.priceStale || position.currentPrice === null).length;
   const currentValuePct = allocatedUsd > 0 ? Math.max(0, (portfolioValue / allocatedUsd) * 100) : 0;
@@ -823,10 +562,7 @@ export default function TraderStateDetailPage() {
             <div className="min-w-0">
               <div className="mb-3 flex flex-wrap items-center gap-3">
                 <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">Trader State Health</h1>
-                <span className={`inline-flex items-center gap-1.5 border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${statusTone.className}`}>
-                  <StatusIcon size={12} />
-                  {statusTone.label}
-                </span>
+                <StatusBadge isSettled={isSettled} isPaused={isPaused} isInitialized={isInitialized} />
                 <code className="border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[11px] text-white/55">
                   {traderStateId.slice(0, 8)}...{traderStateId.slice(-4)}
                 </code>
@@ -1414,34 +1150,22 @@ export default function TraderStateDetailPage() {
 
               </div>
 
-              <div ref={lastElementRef} className="min-h-[40px] py-2">
-                {infiniteLoading && (
-                  <CyberTradeSkeletonRows />
-                )}
-                {tradesPaginationError && (
-                  <div className="mx-3 border border-red-400/35 bg-red-500/10 px-4 py-3 text-sm text-red-200 md:mx-5">
-                    Could not load more copied trades. {tradesPaginationError}
-                  </div>
-                )}
-                {hasMore && !infiniteLoading && trades.length > 0 && (
-                  <div className="flex justify-center py-4">
-                    <button
-                      type="button"
-                      onClick={() => void loadMoreTrades()}
-                      className="cyber-control px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white/70 transition hover:border-emerald-300/60 hover:text-emerald-200"
-                    >
-                      Load more trades
-                    </button>
-                  </div>
-                )}
-                {!hasMore && trades.length > 0 && (
+              <InfiniteScrollSentinel
+                inputRef={lastElementRef}
+                loading={infiniteLoading}
+                hasMore={hasMore}
+                error={tradesPaginationError ? `Could not load more copied trades. ${tradesPaginationError}` : undefined}
+                onLoadMore={() => void loadMoreTrades()}
+                loadMoreLabel="Load more trades"
+                skeleton={<CyberHistorySkeletonRows ariaLabel="Loading more copied trades" />}
+                endMessage={trades.length > 0 ? (
                   <div className="flex items-center justify-center gap-4 py-4 opacity-50">
                     <div className="h-px w-12 bg-white/10" />
                     <span className="cyber-command text-[10px] text-white/35">End of history</span>
                     <div className="h-px w-12 bg-white/10" />
                   </div>
-                )}
-              </div>
+                ) : undefined}
+              />
             </div>
           )}
         </section>

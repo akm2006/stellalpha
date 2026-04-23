@@ -1,15 +1,23 @@
 'use client';
 
 import PageLoader from '@/components/PageLoader';
-
-
-import { useState, useEffect, useMemo, ReactNode, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { useRouter } from 'next/navigation';
-import { COLORS } from '@/lib/theme';
+import { Tooltip, InfoTooltip } from '@/components/cyber/tooltip';
+import { TraderAvatar } from '@/components/cyber/trader-avatar';
 import { useAuth } from '@/contexts/auth-context';
 import { useOnboarding } from '@/contexts/onboarding-context';
-import { Users, RefreshCw, Crown, Eye, UserPlus, UserCheck, Info } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Activity,
+  ArrowUpRight,
+  Crown,
+  RefreshCw,
+  Search,
+  TrendingUp,
+  UserCheck,
+  UserPlus,
+  Users,
+} from 'lucide-react';
 
 interface TraderStats {
   totalPnl: number;
@@ -35,9 +43,23 @@ interface StarTrader {
   stats: TraderStats;
 }
 
-// =============================================================================
-// HELPER FUNCTIONS
-// =============================================================================
+type SortKey = 'rank' | 'pnl7d' | 'winRate' | 'profitFactor' | 'lastActive' | 'followers';
+type FilterKey = 'all' | 'active' | 'following';
+
+const SORT_OPTIONS: Array<{ key: SortKey; label: string }> = [
+  { key: 'rank', label: 'Rank' },
+  { key: 'pnl7d', label: '7D PnL' },
+  { key: 'winRate', label: 'Win Rate' },
+  { key: 'profitFactor', label: 'Profit Factor' },
+  { key: 'lastActive', label: 'Last Active' },
+  { key: 'followers', label: 'Followers' },
+];
+
+const FILTER_OPTIONS: Array<{ key: FilterKey; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'active', label: 'Active' },
+  { key: 'following', label: 'Following' },
+];
 
 function formatUsd(amount: number): string {
   if (Math.abs(amount) >= 1000000) return '$' + (amount / 1000000).toFixed(2) + 'M';
@@ -45,17 +67,12 @@ function formatUsd(amount: number): string {
   return '$' + amount.toFixed(2);
 }
 
-function formatPercent(value: number): string {
-  return (value >= 0 ? '+' : '') + value.toFixed(1) + '%';
-}
-
-// Format relative time (e.g. "5m ago")
 function formatRelativeTime(timestamp: number): string {
-  if (!timestamp) return '—';
-  
+  if (!timestamp) return 'No recent trade';
+
   const now = Date.now();
   const diffInSeconds = Math.floor((now - timestamp) / 1000);
-  
+
   if (diffInSeconds < 60) return 'Just now';
   if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
   if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
@@ -63,698 +80,654 @@ function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(diffInSeconds / 604800)}w ago`;
 }
 
-// Generate volatile sparkline based on PnL direction with seeded randomness
-function generateSparklineFromPnl(pnl: number, seed: string) {
-  const data = [];
-  const steps = 14;
-  
-  let seedNum = seed.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  const seededRandom = () => {
-    seedNum = (seedNum * 9301 + 49297) % 233280;
-    return seedNum / 233280;
+function isRecentlyActive(timestamp: number, hours = 24) {
+  if (!timestamp) return false;
+  return Date.now() - timestamp <= hours * 60 * 60 * 1000;
+}
+
+function truncateWallet(wallet: string) {
+  return `${wallet.slice(0, 4)}...${wallet.slice(-4)}`;
+}
+
+function getActivityState(timestamp: number) {
+  if (!timestamp) {
+    return {
+      label: 'Quiet',
+      className: 'border-white/10 bg-white/[0.03] text-white/38',
+      emphasisClassName: 'text-white/38',
+      tooltip:
+        'Quiet means this trader has not made a recent detected on-chain trade. It can still be worth reviewing, but the feed is less active right now.',
+    };
+  }
+
+  const ageMs = Date.now() - timestamp;
+  if (ageMs <= 60 * 60 * 1000) {
+    return {
+      label: 'Live',
+      className: 'border-emerald-400/45 bg-emerald-400/10 text-emerald-300',
+      emphasisClassName: 'text-emerald-300',
+      tooltip:
+        'Live means this trader made a detected on-chain trade within the last hour. Use it when you want the freshest activity.',
+    };
+  }
+
+  if (ageMs <= 24 * 60 * 60 * 1000) {
+    return {
+      label: 'Active',
+      className: 'border-cyan-300/45 bg-cyan-300/10 text-cyan-200',
+      emphasisClassName: 'text-cyan-200',
+      tooltip:
+        'Active means this trader made a detected on-chain trade within the last 24 hours, but not within the last hour.',
+    };
+  }
+
+  return {
+    label: 'Quiet',
+    className: 'border-white/10 bg-white/[0.03] text-white/38',
+    emphasisClassName: 'text-white/38',
+    tooltip:
+      'Quiet means this trader has not made a recent detected on-chain trade. It can still be worth reviewing, but the feed is less active right now.',
   };
-  
-  const isPositive = pnl >= 0;
-  let value = 50;
-  
-  for (let i = 0; i <= steps; i++) {
-    const volatility = 8 + seededRandom() * 12;
-    const trend = isPositive ? 0.15 : -0.15;
-    const change = (seededRandom() - 0.5 + trend) * volatility;
-    
-    value = Math.max(10, Math.min(90, value + change));
-    data.push({ value });
-  }
-  
-  const lastIdx = data.length - 1;
-  if (isPositive && data[lastIdx].value < data[0].value + 5) {
-    data[lastIdx].value = data[0].value + 15 + seededRandom() * 20;
-  } else if (!isPositive && data[lastIdx].value > data[0].value - 5) {
-    data[lastIdx].value = data[0].value - 15 - seededRandom() * 20;
-  }
-  
-  return data;
 }
 
-// Sparkline with area glow effect (SVG-based)
-function Sparkline({ data, isPositive, id, className = "w-20" }: { data: { value: number }[]; isPositive: boolean; id: string; className?: string }) {
-  const color = isPositive ? '#10B981' : '#EF4444';
-  const gradientId = `gradient-${id}`;
-  
-  const values = data.map(d => d.value);
-  const minVal = Math.min(...values);
-  const maxVal = Math.max(...values);
-  const range = maxVal - minVal || 1;
-  
-  const scaledData = data.map(d => ({
-    value: ((d.value - minVal) / range) * 80 + 10
-  }));
-  
-  const width = 100; // Use abstract 100 coordinates
-  const height = 30; // Use abstract 30 coordinates
-  
-  const points = scaledData.map((d, i) => ({
-    x: (i / (scaledData.length - 1)) * width,
-    y: height - (d.value / 100) * height
-  }));
-  
-  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-  const areaPath = `${linePath} L ${width} ${height} L 0 ${height} Z`;
-  
-  return (
-    <div className={`h-full ${className} shrink-0`}>
-      <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-        <defs>
-          <linearGradient id={gradientId} x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor={color} stopOpacity="0.4" />
-            <stop offset="100%" stopColor={color} stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <path d={areaPath} fill={`url(#${gradientId})`} />
-        <path d={linePath} fill="none" stroke={color} strokeWidth="1.5" style={{ filter: `drop-shadow(0 0 2px ${color})` }} />
-      </svg>
-    </div>
-  );
-}
-
-// Trader Avatar with seeded HSL color
-function TraderAvatar({ address, image }: { address: string; image?: string }) {
-  const hue = address.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
-  const bgColor = `hsl(${hue}, 50%, 30%)`;
-  
-  if (image) {
-    return (
-      <img 
-        src={image} 
-        alt={address}
-        className="w-8 h-8 rounded-full object-cover shrink-0"
-        style={{ border: '1px solid rgba(255,255,255,0.1)' }}
-      />
-    );
-  }
+function ActivityPill({ timestamp }: { timestamp: number }) {
+  const state = getActivityState(timestamp);
 
   return (
-    <div 
-      className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
-      style={{ backgroundColor: bgColor, color: '#fff' }}
+    <Tooltip
+      label="Activity"
+      ariaLabel={`${state.label} activity status`}
+      trigger={
+        <span
+          className={`inline-flex items-center gap-1.5 border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${state.className}`}
+        >
+          <Activity size={11} />
+          {state.label}
+        </span>
+      }
+      triggerClassName="inline-flex"
     >
-      {address.slice(0, 2).toUpperCase()}
+      {state.tooltip}
+    </Tooltip>
+  );
+}
+
+function RankChip({ rank }: { rank: number }) {
+  return (
+    <div className="cyber-control inline-flex h-9 min-w-[2.75rem] items-center justify-center px-2 font-mono text-xs font-semibold text-white/72">
+      {rank === 1 ? <Crown size={14} className="text-amber-300" /> : `#${rank}`}
     </div>
   );
 }
 
-// Info Tooltip Component
-function InfoTooltip({ children }: { children: ReactNode }) {
-  const [showTooltip, setShowTooltip] = useState(false);
-  const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  
-  const updateTooltipPosition = () => {
-    if (buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      const tooltipWidth = 256; // w-64 = 16rem = 256px
-      let left = rect.left + rect.width / 2;
-      
-      // Clamp to viewport edges
-      const minLeft = tooltipWidth / 2 + 8;
-      const maxLeft = window.innerWidth - tooltipWidth / 2 - 8;
-      left = Math.max(minLeft, Math.min(maxLeft, left));
-      
-      setTooltipPosition({
-        top: rect.bottom + 10,
-        left
-      });
-    }
-  };
-  
-  const handleMouseEnter = () => {
-    updateTooltipPosition();
-    setShowTooltip(true);
-  };
-  
-  useEffect(() => {
-    if (showTooltip) {
-      updateTooltipPosition();
-      const handleScroll = () => updateTooltipPosition();
-      const handleResize = () => updateTooltipPosition();
-      window.addEventListener('scroll', handleScroll, true);
-      window.addEventListener('resize', handleResize);
-      return () => {
-        window.removeEventListener('scroll', handleScroll, true);
-        window.removeEventListener('resize', handleResize);
-      };
-    }
-  }, [showTooltip]);
-  
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
-    <>
-      <div className="relative inline-flex items-center">
-        <button
-          ref={buttonRef}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={() => setShowTooltip(false)}
-          className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-white/20 hover:bg-white/5 transition-colors"
-          style={{ color: COLORS.data }}
-          type="button"
-        >
-          <Info size={12} />
-        </button>
-      </div>
-      {showTooltip && typeof window !== 'undefined' && createPortal(
-        <div 
-          className="fixed w-64 p-3 rounded border shadow-lg pointer-events-auto"
-          style={{ 
-            backgroundColor: COLORS.surface, 
-            borderColor: COLORS.structure,
-            zIndex: 99999,
-            top: `${tooltipPosition.top}px`,
-            left: `${tooltipPosition.left}px`,
-            transform: 'translate(-50%, 0)',
-            marginTop: '8px'
-          }}
-          onMouseEnter={() => setShowTooltip(true)}
-          onMouseLeave={() => setShowTooltip(false)}
-        >
-          <div className="text-xs leading-relaxed" style={{ color: COLORS.text }}>
-            {children}
-          </div>
-          <div 
-            className="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1 w-2 h-2 rotate-45 border-r border-b"
-            style={{ backgroundColor: COLORS.surface, borderColor: COLORS.structure }}
-          />
-        </div>,
-        document.body
-      )}
-    </>
+    <div className="cyber-panel flex flex-col items-start gap-4 p-5 md:p-6">
+      <div className="cyber-command text-[10px] text-red-300">System Alert</div>
+      <div className="text-lg font-semibold text-white">Could not load star traders</div>
+      <p className="max-w-2xl text-sm leading-relaxed text-white/55">{message}</p>
+      <button type="button" onClick={onRetry} className="cyber-control px-4 py-2 text-sm font-semibold text-white">
+        Retry
+      </button>
+    </div>
   );
 }
 
-// =============================================================================
-// MAIN COMPONENT
-// =============================================================================
+function EmptyState() {
+  return (
+    <div className="cyber-panel flex flex-col items-center justify-center px-6 py-14 text-center">
+      <Users size={34} className="mb-4 text-white/28" />
+      <div className="mb-2 text-lg font-semibold text-white">No star traders available yet</div>
+      <p className="max-w-lg text-sm leading-relaxed text-white/50">
+        This page lists the tracked wallets you can compare and follow in Demo Vault. Once traders are available, you
+        will be able to sort them by performance or recent activity.
+      </p>
+    </div>
+  );
+}
 
 export default function StarTradersListPage() {
   const [traders, setTraders] = useState<StarTrader[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>('rank');
+  const [filterKey, setFilterKey] = useState<FilterKey>('all');
+  const [searchTerm, setSearchTerm] = useState('');
+
   const router = useRouter();
   const { user, isAuthenticated } = useAuth();
   const { step: onboardingStep, setStep } = useOnboarding();
-  
+
   const walletAddress = user?.wallet || null;
-  
-  useEffect(() => {
-    fetchTraders();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [walletAddress]);
-  
-  const fetchTraders = async () => {
-    setLoading(true);
+
+  const fetchTraders = async (background = false) => {
+    if (background && traders.length > 0) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+
+    setError(null);
+
     try {
-      const url = walletAddress 
-        ? `/api/star-traders?userWallet=${walletAddress}`
-        : '/api/star-traders';
+      const url = walletAddress ? `/api/star-traders?userWallet=${walletAddress}` : '/api/star-traders';
       const response = await fetch(url);
       const data = await response.json();
+
       if (data.error) {
         setError(data.error);
-      } else {
-        setTraders(data.traders || []);
+        return;
       }
+
+      setTraders(data.traders || []);
     } catch {
-      setError('Failed to load traders');
+      setError('The trader list could not be refreshed. Please try again.');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
-  
-  // Traders are already sorted by winRate from API
-  const rankedTraders = useMemo(() => traders, [traders]);
-  
-  // Compute aggregate stats
-  const aggregateStats = useMemo(() => {
-    const totalTraders = traders.length;
-    const totalPnl7d = traders.reduce((sum, t) => sum + (t.stats?.pnl7d ?? 0), 0);
-    const topProfitFactor = traders.length > 0 ? Math.max(...traders.map(t => t.stats?.profitFactor ?? 0)) : 0;
-    
-    // Only include traders with at least 5 trades in the average win rate calculation
-    // This prevents traders with 0 trades from dragging down the average
-    const MIN_TRADES_FOR_AVG = 5;
-    const tradersWithSufficientTrades = traders.filter(t => (t.stats?.tradesCount ?? 0) >= MIN_TRADES_FOR_AVG);
-    const avgWinRate = tradersWithSufficientTrades.length > 0 
-      ? tradersWithSufficientTrades.reduce((sum, t) => sum + (t.stats?.winRate ?? 0), 0) / tradersWithSufficientTrades.length 
-      : 0;
-    
-    return { totalTraders, totalPnl7d, topProfitFactor, avgWinRate };
+
+  useEffect(() => {
+    void fetchTraders(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletAddress]);
+
+  const baseRanks = useMemo(() => {
+    return new Map(traders.map((trader, index) => [trader.wallet, index + 1]));
   }, [traders]);
-  
+
+  const filteredTraders = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+
+    let next = [...traders];
+
+    if (normalizedSearch) {
+      next = next.filter((trader) =>
+        trader.name.toLowerCase().includes(normalizedSearch) ||
+        trader.wallet.toLowerCase().includes(normalizedSearch),
+      );
+    }
+
+    if (filterKey === 'active') {
+      next = next.filter((trader) => isRecentlyActive(trader.stats?.lastTradeTime));
+    } else if (filterKey === 'following') {
+      next = next.filter((trader) => trader.isFollowing);
+    }
+
+    switch (sortKey) {
+      case 'pnl7d':
+        next.sort((left, right) => (right.stats?.pnl7d ?? 0) - (left.stats?.pnl7d ?? 0));
+        break;
+      case 'winRate':
+        next.sort((left, right) => (right.stats?.winRate ?? 0) - (left.stats?.winRate ?? 0));
+        break;
+      case 'profitFactor':
+        next.sort((left, right) => (right.stats?.profitFactor ?? 0) - (left.stats?.profitFactor ?? 0));
+        break;
+      case 'lastActive':
+        next.sort((left, right) => (right.stats?.lastTradeTime ?? 0) - (left.stats?.lastTradeTime ?? 0));
+        break;
+      case 'followers':
+        next.sort((left, right) => (right.stats?.followerCount ?? 0) - (left.stats?.followerCount ?? 0));
+        break;
+      case 'rank':
+      default:
+        break;
+    }
+
+    return next;
+  }, [filterKey, searchTerm, sortKey, traders]);
+
+  const summary = useMemo(() => {
+    const activeRecently = traders.filter((trader) => isRecentlyActive(trader.stats?.lastTradeTime)).length;
+    const profitableThisWeek = traders.filter((trader) => (trader.stats?.pnl7d ?? 0) > 0).length;
+    const followingCount = traders.filter((trader) => trader.isFollowing).length;
+    const bestTrader = [...traders].sort((left, right) => (right.stats?.pnl7d ?? 0) - (left.stats?.pnl7d ?? 0))[0] ?? null;
+
+    return {
+      trackedCount: traders.length,
+      activeRecently,
+      profitableThisWeek,
+      followingCount,
+      bestTrader,
+    };
+  }, [traders]);
+
   const handleFollow = (traderWallet: string) => {
     if (!isAuthenticated) {
       router.push('/demo-vault');
       return;
     }
-    
-    // If in onboarding TOUR step, advance to ALLOCATE to allow navigation
+
     if (onboardingStep === 'TOUR') {
       setStep('ALLOCATE');
     }
 
     router.push(`/demo-vault?follow=${traderWallet}`);
   };
-  
+
   const handleView = (traderWallet: string) => {
     router.push(`/star-traders/${traderWallet}`);
   };
 
-  if (loading) {
+  const renderFollowButton = (trader: StarTrader, highlight = false, fullWidth = false) => {
+    if (trader.isFollowing) {
+      return (
+        <button
+          type="button"
+          className={`cyber-control inline-flex items-center justify-center gap-2 border-cyan-300/45 bg-cyan-300/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-cyan-300 ${
+            fullWidth ? 'w-full' : ''
+          }`.trim()}
+        >
+          <UserCheck size={14} />
+          Following
+        </button>
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          handleFollow(trader.wallet);
+        }}
+        className={`cyber-action-primary inline-flex items-center justify-center gap-2 border border-cyan-300/40 bg-cyan-300 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-black transition hover:brightness-105 active:scale-[0.98] ${
+          highlight ? 'ring-2 ring-emerald-400/70 ring-offset-2 ring-offset-black' : ''
+        } ${fullWidth ? 'w-full' : ''}`.trim()}
+      >
+        <UserPlus size={14} />
+        Follow
+      </button>
+    );
+  };
+
+  if (loading && traders.length === 0 && !error) {
     return <PageLoader />;
   }
 
   return (
-    <div className="min-h-screen animate-in fade-in duration-700" style={{ backgroundColor: COLORS.canvas, color: COLORS.text, fontFamily: 'Inter, system-ui, sans-serif' }}>
-      <style jsx global>{`
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .animate-fade-up {
-          animation: fadeUp 0.5s ease-out forwards;
-        }
-        .delay-100 { animation-delay: 100ms; }
-        .delay-200 { animation-delay: 200ms; }
-        .delay-300 { animation-delay: 300ms; }
-      `}</style>
-      <main className="w-full px-3 sm:px-4 py-4 pt-24">
-        
-        {/* Header */}
-        <div className="flex items-center justify-between mb-3 py-3 px-3 sm:px-4 border border-white/10 animate-fade-up" style={{ backgroundColor: COLORS.surface }}>
-          <div>
-            <h1 className="text-xl font-semibold" style={{ color: COLORS.text }}>Star Traders</h1>
-            <p className="text-sm" style={{ color: COLORS.data }}>
-              Copy-trade top performers. Follow to allocate funds.
-            </p>
-          </div>
-          <button
-            onClick={fetchTraders}
-            disabled={loading}
-            className="group px-4 py-2 text-sm font-medium flex items-center gap-2 border border-white/20 hover:bg-white/5 rounded transition-all duration-200 disabled:opacity-50 active:scale-[0.98]"
-            style={{ color: COLORS.text }}
-          >
-            <RefreshCw size={14} className={`transition-transform duration-500 ${loading ? 'animate-spin' : 'group-hover:rotate-180'}`} /> Refresh
-          </button>
-        </div>
-        
-        {/* Stats HUD */}
-        <div className="mb-3 animate-fade-up delay-100">
-          {/* Mobile: 2x2 Grid */}
-          <div className="grid grid-cols-2 gap-px bg-white/10 border border-white/10 rounded-lg overflow-hidden md:hidden">
-            <div className="px-4 py-3 bg-[#0A0A0A] text-center">
-              <div className="text-[10px] uppercase tracking-wider mb-1 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                Traders
-              </div>
-              <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{aggregateStats.totalTraders}</div>
-            </div>
-            <div className="px-4 py-3 bg-[#0A0A0A] text-center">
-              <div className="text-[10px] uppercase tracking-wider mb-1 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                PNL (7D)
-              </div>
-              <div className={`text-lg font-mono font-semibold ${aggregateStats.totalPnl7d >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {aggregateStats.totalPnl7d >= 0 ? '+' : ''}{formatUsd(aggregateStats.totalPnl7d)}
-              </div>
-            </div>
-            <div className="px-4 py-3 bg-[#0A0A0A] text-center">
-              <div className="text-[10px] uppercase tracking-wider mb-1 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                Top P. Factor
-              </div>
-              <div className={`text-lg font-mono font-semibold ${aggregateStats.topProfitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {aggregateStats.topProfitFactor.toFixed(2)}x
-              </div>
-            </div>
-            <div className="px-4 py-3 bg-[#0A0A0A] text-center">
-              <div className="text-[10px] uppercase tracking-wider mb-1 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                Avg Win Rate
-              </div>
-              <div className="text-lg font-mono font-semibold" style={{ color: COLORS.text }}>
-                {aggregateStats.avgWinRate.toFixed(0)}%
-              </div>
+    <div className="cyber-vault-shell min-h-screen pt-20">
+      <main className="cyber-vault-content px-4 pb-10 md:px-6">
+        <section className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_340px]">
+          <div className="cyber-panel overflow-hidden p-5 md:p-6">
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#00FF85]/70 to-transparent opacity-70" />
+            <div className="relative flex flex-col gap-5">
+                <div className="flex flex-col gap-2">
+                  <div className="cyber-command text-[10px] text-[#00E5D4]">Discovery Terminal</div>
+                  <p className="cyber-command text-[11px] leading-[1.9] text-white/72 md:text-[12px]">
+                    Select from high-performance{' '}
+                    <span className="border border-[#00FF85]/28 bg-[#00FF85]/8 px-2 py-0.5 text-[1em] font-semibold uppercase tracking-[0.18em] text-[#00FF85]">
+                      Star Traders
+                    </span>, view on-chain history and analysis before allocating.
+                  </p>
+                </div>
+                <div className="cyber-panel-soft mt-1 border p-3 md:p-4">
+                  <div className="flex flex-col gap-3">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto] lg:items-center">
+                      <label className="cyber-control flex w-full items-center gap-2 px-3 py-2 text-sm text-white/60">
+                        <Search size={14} className="text-white/35" />
+                        <input
+                          value={searchTerm}
+                          onChange={(event) => setSearchTerm(event.target.value)}
+                          placeholder="Search name or wallet"
+                          className="w-full bg-transparent text-sm text-white outline-none placeholder:text-white/30"
+                        />
+                      </label>
+
+                      <span className="text-xs text-white/35 lg:text-right">
+                        Showing {filteredTraders.length} of {traders.length}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => void fetchTraders(true)}
+                        disabled={loading || refreshing}
+                        className="cyber-control inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-white"
+                      >
+                        <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                        {refreshing ? 'Refreshing' : 'Refresh'}
+                      </button>
+                    </div>
+
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="cyber-command text-[10px] text-white/45">Sort By</span>
+                        {SORT_OPTIONS.map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => setSortKey(option.key)}
+                            className={`cyber-control px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.14em] ${
+                              sortKey === option.key
+                                ? 'border-emerald-300/80 text-black shadow-[0_0_0_1px_rgba(0,255,133,0.2),0_0_18px_rgba(0,255,133,0.18)]'
+                                : 'text-white/55'
+                            }`}
+                            style={
+                              sortKey === option.key
+                                ? {
+                                    backgroundColor: '#00FF85',
+                                    color: '#050505',
+                                    boxShadow:
+                                      '0 0 0 1px rgba(0,255,133,0.2), 0 0 18px rgba(0,255,133,0.18)',
+                                  }
+                                : undefined
+                            }
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="cyber-command text-[10px] text-white/45">Filter</span>
+                        {FILTER_OPTIONS.map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => setFilterKey(option.key)}
+                            className={`cyber-control px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.14em] ${
+                              filterKey === option.key
+                                ? 'border-cyan-300/80 text-black shadow-[0_0_0_1px_rgba(0,229,212,0.2),0_0_18px_rgba(0,229,212,0.18)]'
+                                : 'text-white/55'
+                            }`}
+                            style={
+                              filterKey === option.key
+                                ? {
+                                    backgroundColor: '#00E5D4',
+                                    color: '#050505',
+                                    boxShadow:
+                                      '0 0 0 1px rgba(0,229,212,0.2), 0 0 18px rgba(0,229,212,0.18)',
+                                  }
+                                : undefined
+                            }
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
             </div>
           </div>
 
-          {/* Desktop: Horizontal Flex */}
-          <div className="hidden md:block border border-white/10 overflow-x-auto" style={{ backgroundColor: COLORS.surface }}>
-            <div className="flex items-stretch divide-x divide-white/10 min-w-[500px]">
-              <div className="flex-1 px-2 sm:px-3 py-3 bg-white/[0.03] text-center transition-colors duration-300 hover:bg-white/[0.06]">
-                <div className="text-xs uppercase tracking-wider mb-1 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                  Traders
-                  <InfoTooltip>
-                    <strong>Total Traders</strong> shows the number of star traders currently available to follow.<br/><br/>
-                    Star traders are experienced traders whose trades you can automatically copy. Each trader has their own performance history and trading style.
-                  </InfoTooltip>
+          <section className="cyber-panel-soft border p-4 md:p-5">
+            <div className="cyber-command mb-3 text-[10px] text-[#00E5D4]">Current Lead</div>
+            {summary.bestTrader ? (
+              <div className="space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <TraderAvatar
+                      address={summary.bestTrader.wallet}
+                      image={summary.bestTrader.image}
+                      className="h-11 w-11"
+                    />
+                    <div className="min-w-0">
+                      <div className="truncate text-base font-semibold text-white">{summary.bestTrader.name}</div>
+                      <div className="truncate font-mono text-[11px] text-white/38">
+                        {truncateWallet(summary.bestTrader.wallet)}
+                      </div>
+                    </div>
+                  </div>
+                  <ActivityPill timestamp={summary.bestTrader.stats?.lastTradeTime ?? 0} />
                 </div>
-                <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>{aggregateStats.totalTraders}</div>
-              </div>
-              <div className="flex-1 px-2 sm:px-3 py-3 bg-white/[0.03] text-center transition-colors duration-300 hover:bg-white/[0.06]">
-                <div className="text-xs uppercase tracking-wider mb-1 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                  PNL (7D)
-                  <InfoTooltip>
-                    <strong>7-Day PNL</strong> is the total profit/loss generated by all star traders in the last 7 days.<br/><br/>
-                    This shows the combined trading performance across all tracked wallets. Green means net profit, red means net loss.
-                  </InfoTooltip>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="border border-white/10 bg-black/35 px-3 py-3">
+                    <div className="cyber-command text-[9px] text-white/35">7D PnL</div>
+                    <div className={`mt-2 font-mono text-lg font-semibold ${(summary.bestTrader.stats?.pnl7d ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                      {(summary.bestTrader.stats?.pnl7d ?? 0) >= 0 ? '+' : ''}
+                      {formatUsd(summary.bestTrader.stats?.pnl7d ?? 0)}
+                    </div>
+                  </div>
+                  <div className="border border-white/10 bg-black/35 px-3 py-3">
+                    <div className="cyber-command text-[9px] text-white/35">Win Rate</div>
+                    <div className="mt-2 font-mono text-lg font-semibold text-white">
+                      {summary.bestTrader.stats?.winRate ?? 0}%
+                    </div>
+                  </div>
                 </div>
-                <div className={`text-base sm:text-lg font-mono font-semibold ${aggregateStats.totalPnl7d >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {aggregateStats.totalPnl7d >= 0 ? '+' : ''}{formatUsd(aggregateStats.totalPnl7d)}
-                </div>
-              </div>
-              <div className="flex-1 px-2 sm:px-3 py-3 bg-white/[0.03] text-center">
-                <div className="text-xs uppercase tracking-wider mb-1 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                  Top Profit Factor
-                  <InfoTooltip>
-                    <strong>Profit Factor</strong> is the industry-standard metric for trading efficiency. It measures: <strong>For every $1 lost, how many $ were gained?</strong><br/><br/>
-                    A Profit Factor above 1.0 means the trader makes more money than they lose. Higher is better. Based on the last 1000 trades.
-                  </InfoTooltip>
-                </div>
-                <div className={`text-base sm:text-lg font-mono font-semibold ${aggregateStats.topProfitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {aggregateStats.topProfitFactor.toFixed(2)}x
-                </div>
-              </div>
-              <div className="flex-1 px-2 sm:px-3 py-3 bg-white/[0.03] text-center">
-                <div className="text-xs uppercase tracking-wider mb-1 flex items-center justify-center gap-1" style={{ color: COLORS.data }}>
-                  Avg Win Rate
-                  <InfoTooltip>
-                    <strong>Average Win Rate</strong> is the percentage of profitable trades across active star traders (minimum 5 trades required).<br/><br/>
-                    Traders with fewer than 5 trades are excluded. Calculated from the last 1000 trades per trader.
-                  </InfoTooltip>
-                </div>
-                <div className="text-base sm:text-lg font-mono font-semibold" style={{ color: COLORS.text }}>
-                  {aggregateStats.avgWinRate.toFixed(0)}%
+
+                <div className="flex items-center justify-between gap-3 text-xs text-white/45">
+                  <div className="inline-flex items-center gap-1.5">
+                    <Users size={12} />
+                    {summary.bestTrader.stats?.followerCount ?? 0} followers
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleView(summary.bestTrader.wallet)}
+                    className="inline-flex items-center gap-1.5 text-[#00E5D4] transition hover:text-white"
+                  >
+                    View analysis
+                    <ArrowUpRight size={13} />
+                  </button>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-        
-        {/* Leaderboard Table (Desktop) */}
-        <div className="hidden md:block border border-white/10 overflow-hidden animate-fade-up delay-200" style={{ backgroundColor: COLORS.surface }}>
-          <div className="px-3 sm:px-4 py-3 border-b border-white/10 bg-white/[0.02]">
-            <h2 className="text-sm font-medium" style={{ color: COLORS.text }}>All Traders</h2>
-          </div>
-          
-          <div className="overflow-x-auto">
-            {/* Table Header - Increased padding */}
-            <div className="grid grid-cols-[30px_0.32fr_0.39fr_0.27fr_0.20fr_0.15fr_0.15fr_120px] gap-1.5 px-6 py-2.5 text-xs uppercase tracking-wider border-b border-white/10 font-mono bg-white/[0.04] min-w-[600px]" style={{ color: COLORS.data }}>
-              <div>#</div>
-              <div>Trader</div>
-              <div>PnL (7D)</div>
-              <div className="flex items-center justify-start gap-1.5">
-                Profit Factor
-                <InfoTooltip>
-                  <strong>Profit Factor</strong> is the industry-standard metric for trading efficiency. It measures: <strong>For every $1 lost, how many $ were gained?</strong><br/><br/>
-                  A Profit Factor above 1.0 means the trader makes more money than they lose. Higher is better. Based on last 1000 trades.
-                </InfoTooltip>
-              </div>
-              <div>Win Rate</div>
-              <div className="flex items-center justify-start gap-1.5">
-                Last Trade
-                <InfoTooltip>
-                  <strong>Last Trade</strong> shows how long ago the trader made their most recent transaction.<br/><br/>
-                  Active traders are more likely to generate copy-trading opportunities.
-                </InfoTooltip>
-              </div>
-              <div>Follows</div>
-              <div></div>
-            </div>
-            
-            {/* Loading State */}
-            {loading && (
-              <div className="flex items-center justify-center py-16">
-                <div className="w-7 h-7 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
-              </div>
+            ) : (
+              <div className="text-sm text-white/45">No leading trader is available yet.</div>
             )}
-            
-            {/* Error State */}
-            {error && (
-              <div className="text-center py-16 px-4">
-                <div className="text-sm mb-3" style={{ color: '#EF4444' }}>{error}</div>
-                <button onClick={fetchTraders} className="text-sm px-4 py-2 rounded transition-colors" style={{ backgroundColor: COLORS.structure, color: COLORS.text }}>
-                  Try Again
+          </section>
+        </section>
+
+        {error && traders.length === 0 ? (
+          <ErrorState message={error} onRetry={() => void fetchTraders(false)} />
+        ) : (
+          <>
+            {error && traders.length > 0 && (
+              <div className="cyber-panel mb-4 flex items-center justify-between gap-3 px-4 py-3">
+                <p className="text-sm text-amber-200">
+                  Refresh failed. Showing the last loaded trader list.
+                </p>
+                <button type="button" onClick={() => void fetchTraders(false)} className="cyber-control px-3 py-2 text-xs font-semibold text-white">
+                  Retry
                 </button>
               </div>
             )}
-            
-            {/* Empty State */}
-            {!loading && !error && traders.length === 0 && (
-              <div className="text-center py-16 px-4" style={{ color: COLORS.data }}>
-                <Users size={44} className="mx-auto mb-4 opacity-50" />
-                <p className="text-sm mb-1">No traders yet</p>
-              </div>
-            )}
-            
-            {/* Table Rows */}
-            <div className="divide-y divide-white/5">
-              {rankedTraders.map((trader, index) => {
-                const rank = index + 1;
-                const pnl7d = trader.stats?.pnl7d ?? 0;
-                const pnl7dPercent = trader.stats?.pnl7dPercent ?? 0;
-                const isPositive = pnl7d >= 0;
-                const sparklineData = generateSparklineFromPnl(pnl7d, trader.wallet);
-                const profitFactor = trader.stats?.profitFactor ?? 0;
-                const winRate = trader.stats?.winRate ?? 0;
-                const tradesCount = trader.stats?.tradesCount ?? 0;
-                const followerCount = trader.stats?.followerCount ?? 0;
-                const isFollowing = trader.isFollowing;
-                
-                return (
-                  <div 
-                    key={trader.wallet} 
-                    className={`grid grid-cols-[30px_0.32fr_0.39fr_0.27fr_0.20fr_0.15fr_0.15fr_120px] gap-1.5 px-6 py-3 items-center hover:bg-white/[0.04] transition-colors duration-200 min-w-[600px] cursor-pointer group ${index % 2 === 1 ? 'bg-white/[0.02]' : ''}`}
-                    onClick={() => handleView(trader.wallet)}
-                  >
-                    {/* Rank */}
-                    <div className="font-mono text-sm">
-                      {rank === 1 ? (
-                        <Crown size={16} className="text-yellow-400" />
-                      ) : (
-                        <span style={{ color: COLORS.data }}>#{rank}</span>
-                      )}
-                    </div>
-                    
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <div className="transition-transform duration-300 group-hover:scale-105">
-                        <TraderAvatar address={trader.wallet} image={trader.image} />
-                      </div>
-                      <div className="flex flex-col min-w-0">
-                        <span className="font-semibold text-sm truncate group-hover:text-white transition-colors" style={{ color: COLORS.text }}>
-                          {trader.name}
-                        </span>
-                        <span className="font-mono text-[10px] truncate opacity-60" style={{ color: COLORS.data }}>
-                          {trader.wallet.slice(0, 4)}...{trader.wallet.slice(-4)}
-                        </span>
-                      </div>
-                    </div>
-                    
-                    {/* PnL (7D) with Sparkline */}
-                    <div className="flex items-center gap-1.5">
-                      <Sparkline data={sparklineData} isPositive={isPositive} id={trader.wallet} />
-                      <div className={`font-mono text-sm ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {isPositive ? '+' : ''}{formatUsd(pnl7d)} ({isPositive ? '+' : ''}{pnl7dPercent.toFixed(1)}%)
-                      </div>
-                    </div>
-                    
-                    {/* Profit Factor */}
-                    <div className={`font-mono text-sm ${profitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {profitFactor.toFixed(2)}x
-                    </div>
-                    
-                    {/* Win Rate */}
-                    <div className="font-mono text-sm" style={{ color: COLORS.text }}>
-                      {winRate}%
-                    </div>
-                    
-                    {/* Last Trade */}
-                    <div className="font-mono text-sm" style={{ color: COLORS.text }}>
-                      {formatRelativeTime(trader.stats?.lastTradeTime)}
-                    </div>
-                    
-                    {/* Followers */}
-                    <div className="font-mono text-sm" style={{ color: COLORS.text }}>
-                      {followerCount}
-                    </div>
-                    
-                    {/* Actions */}
-                    <div className="flex items-center justify-start gap-1.5">
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); handleView(trader.wallet); }}
-                        className="p-1.5 rounded border border-white/20 hover:bg-white/5 transition-all duration-200 hover:scale-110 active:scale-90"
-                        style={{ color: COLORS.text }}
-                        title="View"
-                      >
-                        <Eye size={14} />
-                      </button>
-                      
-                      {isFollowing ? (
-                        <button 
-                          className="px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 border border-cyan-400/50"
-                          style={{ backgroundColor: 'rgba(34, 211, 238, 0.15)', color: '#22D3EE' }}
-                        >
-                          <UserCheck size={12} />
-                          Following
-                        </button>
-                      ) : (
-                        <button 
-                          onClick={(e) => { e.stopPropagation(); handleFollow(trader.wallet); }}
-                          className={`px-3 py-1 rounded text-xs font-semibold uppercase flex items-center gap-1.5 transition-all duration-200 hover:opacity-90 hover:scale-[1.03] active:scale-[0.97] shadow-lg shadow-cyan-500/10 ${
-                            onboardingStep === 'TOUR' && index === 0 ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-black animate-pulse' : ''
-                          }`}
-                          style={{ backgroundColor: '#22D3EE', color: '#000' }}
-                        >
-                          <UserPlus size={12} />
-                          Follow
-                        </button>
-                      )}
-                    </div>
+
+            {traders.length === 0 ? (
+              <EmptyState />
+            ) : (
+              <>
+                {filteredTraders.length === 0 ? (
+                  <div className="cyber-panel px-6 py-12 text-center">
+                    <div className="mb-2 text-lg font-semibold text-white">No traders match this view</div>
+                    <p className="text-sm leading-relaxed text-white/50">
+                      Try clearing the search or switching the active filter.
+                    </p>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        {/* Mobile Card View (md:hidden) */}
-        <div className="md:hidden space-y-4 animate-fade-up delay-200">
-           <div className="px-1 py-2 flex items-center justify-between">
-              <h2 className="text-base font-semibold" style={{ color: COLORS.text }}>All Traders</h2>
-              <button
-                onClick={fetchTraders}
-                disabled={loading}
-                className="px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 border border-white/10 hover:bg-white/5 rounded-full transition-all"
-                style={{ color: COLORS.data, backgroundColor: COLORS.surface }}
-              >
-                 <RefreshCw size={12} className={`transition-transform duration-500 ${loading ? 'animate-spin' : ''}`} /> 
-                 Refresh
-              </button>
-           </div>
-           
-           {/* Loading State Mobile */}
-           {loading && (
-             <div className="flex items-center justify-center py-12">
-               <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: COLORS.brand, borderTopColor: 'transparent' }} />
-             </div>
-           )}
-
-           {/* Mobile List */}
-           {!loading && rankedTraders.map((trader, index) => {
-              const rank = index + 1;
-              const pnl7d = trader.stats?.pnl7d ?? 0;
-              const pnl7dPercent = trader.stats?.pnl7dPercent ?? 0;
-              const isPositive = pnl7d >= 0;
-              const sparklineData = generateSparklineFromPnl(pnl7d, trader.wallet);
-              const profitFactor = trader.stats?.profitFactor ?? 0;
-              const winRate = trader.stats?.winRate ?? 0;
-              const followerCount = trader.stats?.followerCount ?? 0;
-              const isFollowing = trader.isFollowing;
-
-              return (
-                 <div 
-                   key={trader.wallet}
-                   className="rounded-xl border border-white/10 bg-[#0A0A0A] p-5 relative overflow-hidden transition-all active:scale-[0.99] shadow-lg"
-                   onClick={() => handleView(trader.wallet)}
-                 >
-                    {/* Background subtle glow based on performance */}
-                    <div className={`absolute top-0 right-0 w-32 h-32 blur-[80px] rounded-full pointer-events-none opacity-20 ${isPositive ? 'bg-emerald-500' : 'bg-red-500'}`} />
-
-                    {/* Top Row: Rank/User & PNL */}
-                    <div className="flex items-start justify-between mb-5 relative z-10">
-                       <div className="flex items-center gap-3.5">
-                          {/* Rank Badge */}
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shadow-inner ${rank <= 3 ? 'bg-gradient-to-br from-yellow-400/20 to-orange-500/20 text-yellow-500 border border-yellow-500/30' : 'bg-white/5 text-slate-500 border border-white/5'}`}>
-                             {rank <= 3 ? <Crown size={14} /> : rank}
-                          </div>
-                          
-                          <div className="relative">
-                             <TraderAvatar address={trader.wallet} image={trader.image} />
-                             {/* Online Status Dot (Visual Flair) */}
-                             <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-[#0A0A0A]" />
-                          </div>
-                          
-                          <div className="flex flex-col">
-                             <h3 className="font-bold text-base text-white tracking-tight">{trader.name}</h3>
-                             <p className="font-mono text-[10px] text-slate-500">{trader.wallet.slice(0, 4)}...{trader.wallet.slice(-4)}</p>
-                          </div>
-                       </div>
-                       
-                       <div className="text-right">
-                          <div className={`text-lg font-mono font-bold tracking-tight ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                             {isPositive ? '+' : ''}{formatUsd(pnl7d)}
-                          </div>
-                          <div className={`text-xs font-medium ${isPositive ? 'text-emerald-500/70' : 'text-red-500/70'}`}>
-                             {isPositive ? '+' : ''}{pnl7dPercent.toFixed(1)}%
-                          </div>
-                       </div>
-                    </div>
-                    
-                    {/* Middle Row: Sparkline & Key Stats */}
-                    <div className="grid grid-cols-[1fr_auto] gap-4 mb-5 relative z-10 items-center">
-                        {/* Sparkline (More Integrated) */}
-                        <div className="h-10 w-full opacity-60">
-                            <Sparkline data={sparklineData} isPositive={isPositive} id={`mobile-${trader.wallet}`} className="w-full" />
+                ) : (
+                  <>
+                    <section className="cyber-panel hidden overflow-hidden border md:block">
+                      <div className="cyber-table-header grid grid-cols-[72px_minmax(220px,1.25fr)_150px_110px_130px_120px_90px_148px] gap-3 px-5 py-3 text-[11px] uppercase tracking-[0.18em] text-white/45">
+                        <div>Rank</div>
+                        <div>Trader</div>
+                        <div className="text-right">7D PnL</div>
+                        <div className="text-right">Win Rate</div>
+                        <div className="flex items-center justify-end gap-1.5 text-right">
+                          Profit Factor
+                          <InfoTooltip>
+                            Profit factor shows how much a trader gains for every dollar lost. Higher values usually indicate more efficient trade outcomes.
+                          </InfoTooltip>
                         </div>
-                        
-                        {/* Vertical Divider */}
-                        <div className="h-8 w-px bg-white/10 hidden sm:block" />
-
-                        {/* Stats Group */}
-                        <div className="flex items-center gap-4">
-                            <div>
-                                <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider mb-0.5">Win Rate</div>
-                                <div className="text-sm font-mono font-medium text-white">{winRate}%</div>
-                            </div>
-                            <div>
-                                <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider mb-0.5">P. Factor</div>
-                                <div className={`text-sm font-mono font-medium ${profitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                    {profitFactor.toFixed(2)}x
-                                </div>
-                            </div>
-                            <div>
-                                <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider mb-0.5">Last Active</div>
-                                <div className="text-sm font-mono font-medium text-white">
-                                    {formatRelativeTime(trader.stats?.lastTradeTime)}
-                                </div>
-                            </div>
+                        <div className="flex items-center justify-end gap-1.5 text-right">
+                          Last Active
+                          <InfoTooltip>
+                            Shows how recently the trader made an on-chain trade. Recent activity is useful when you want fresher opportunities.
+                          </InfoTooltip>
                         </div>
-                    </div>
-                    
-                    {/* Bottom Row: Actions */}
-                    <div className="grid grid-cols-[1fr_auto] gap-3 relative z-10">
-                         {isFollowing ? (
-                          <button 
-                            className="flex items-center justify-center gap-2 py-3 rounded-lg font-semibold text-sm bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 w-full"
+                        <div className="text-right">Followers</div>
+                        <div className="sr-only">Action</div>
+                      </div>
+
+                      <div className="grid gap-2 px-3 py-3 md:px-0">
+                        {filteredTraders.map((trader, index) => {
+                          const pnl7d = trader.stats?.pnl7d ?? 0;
+                          const pnl7dPercent = trader.stats?.pnl7dPercent ?? 0;
+                          const visibleRank = sortKey === 'rank' ? (baseRanks.get(trader.wallet) ?? index + 1) : index + 1;
+                          const activityState = getActivityState(trader.stats?.lastTradeTime);
+
+                          return (
+                            <div
+                              key={trader.wallet}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => handleView(trader.wallet)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  handleView(trader.wallet);
+                                }
+                              }}
+                              className="cyber-row grid cursor-pointer gap-3 border border-white/[0.08] px-5 py-4 md:grid-cols-[72px_minmax(220px,1.25fr)_150px_110px_130px_120px_90px_148px] md:items-center md:border-x-0"
+                            >
+                              <div className="flex items-center gap-2 font-mono text-sm text-white/60">
+                                <RankChip rank={visibleRank} />
+                              </div>
+
+                              <div className="flex min-w-0 items-center gap-3">
+                                <TraderAvatar address={trader.wallet} image={trader.image} className="h-9 w-9" />
+                                <div className="min-w-0">
+                                  <div className="flex min-w-0 items-center gap-2">
+                                    <div className="truncate text-sm font-semibold text-white">{trader.name}</div>
+                                    <ActivityPill timestamp={trader.stats?.lastTradeTime ?? 0} />
+                                  </div>
+                                  <div className="mt-1 truncate font-mono text-[11px] text-white/38">
+                                    {truncateWallet(trader.wallet)}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="text-right">
+                                <div className={`font-mono text-sm font-semibold tabular-nums ${pnl7d >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                                  {pnl7d >= 0 ? '+' : ''}
+                                  {formatUsd(pnl7d)}
+                                </div>
+                                <div className="mt-1 font-mono text-[11px] text-white/38">
+                                  {pnl7dPercent >= 0 ? '+' : ''}
+                                  {pnl7dPercent.toFixed(1)}%
+                                </div>
+                              </div>
+
+                              <div className="text-right font-mono text-sm text-white tabular-nums">
+                                {trader.stats?.winRate ?? 0}%
+                              </div>
+
+                              <div className={`text-right font-mono text-sm tabular-nums ${(trader.stats?.profitFactor ?? 0) >= 1 ? 'text-emerald-300' : 'text-red-300'}`}>
+                                {(trader.stats?.profitFactor ?? 0).toFixed(2)}x
+                              </div>
+
+                              <div className={`text-right font-mono text-sm tabular-nums ${activityState.emphasisClassName}`}>
+                                {formatRelativeTime(trader.stats?.lastTradeTime)}
+                              </div>
+
+                              <div className="text-right font-mono text-sm text-white tabular-nums">
+                                {trader.stats?.followerCount ?? 0}
+                              </div>
+
+                              <div className="flex justify-end">
+                                {renderFollowButton(
+                                  trader,
+                                  onboardingStep === 'TOUR' && visibleRank === 1 && !trader.isFollowing,
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+
+                    <section className="grid gap-3 md:hidden">
+                      {filteredTraders.map((trader, index) => {
+                        const pnl7d = trader.stats?.pnl7d ?? 0;
+                        const visibleRank = sortKey === 'rank' ? (baseRanks.get(trader.wallet) ?? index + 1) : index + 1;
+                        const activityState = getActivityState(trader.stats?.lastTradeTime);
+
+                        return (
+                          <div
+                            key={trader.wallet}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => handleView(trader.wallet)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                handleView(trader.wallet);
+                              }
+                            }}
+                            className="cyber-panel-soft cyber-hover-slice border p-4"
                           >
-                             <UserCheck size={16} />
-                             Following
-                          </button>
-                        ) : (
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); handleFollow(trader.wallet); }}
-                            className={`flex items-center justify-center gap-2 py-3 rounded-lg font-bold text-sm uppercase bg-[#22D3EE] text-black shadow-[0_0_20px_rgba(34,211,238,0.2)] active:scale-[0.98] transition-transform w-full ${
-                                onboardingStep === 'TOUR' && index === 0 ? 'animate-pulse ring-2 ring-emerald-400 ring-offset-2 ring-offset-black' : ''
-                            }`}
-                          >
-                             <UserPlus size={16} />
-                             Follow
-                          </button>
-                        )}
-                        
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleView(trader.wallet); }}
-                          className="flex items-center justify-center px-4 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition-colors"
-                        >
-                           <Eye size={18} className="text-slate-400" />
-                        </button>
-                    </div>
-                 </div>
-              );
-           })}
-        </div>
+                            <div className="mb-4 flex items-center justify-between gap-3">
+                              <RankChip rank={visibleRank} />
+                              <ActivityPill timestamp={trader.stats?.lastTradeTime ?? 0} />
+                            </div>
+
+                            <div className="mb-4 flex items-start justify-between gap-3">
+                              <div className="flex min-w-0 items-center gap-3">
+                                <TraderAvatar address={trader.wallet} image={trader.image} className="h-11 w-11" />
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-semibold text-white">{trader.name}</div>
+                                  <div className="truncate font-mono text-[11px] text-white/38">
+                                    {truncateWallet(trader.wallet)}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="border border-white/10 bg-black/45 px-3 py-2 text-right">
+                                <div className="cyber-command text-[9px] text-white/35">7D PnL</div>
+                                <div className={`mt-1 font-mono text-base font-semibold tabular-nums ${pnl7d >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                                  {pnl7d >= 0 ? '+' : ''}
+                                  {formatUsd(pnl7d)}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="mb-4 grid grid-cols-3 gap-2.5">
+                              <div className="border border-white/8 bg-white/[0.02] px-3 py-2">
+                                <div className="cyber-command mb-1 text-[9px] text-white/35">Win Rate</div>
+                                <div className="font-mono text-sm text-white">{trader.stats?.winRate ?? 0}%</div>
+                              </div>
+                              <div className="border border-white/8 bg-white/[0.02] px-3 py-2">
+                                <div className="cyber-command mb-1 text-[9px] text-white/35">Factor</div>
+                                <div className={`font-mono text-sm ${(trader.stats?.profitFactor ?? 0) >= 1 ? 'text-emerald-300' : 'text-red-300'}`}>
+                                  {(trader.stats?.profitFactor ?? 0).toFixed(2)}x
+                                </div>
+                              </div>
+                              <div className="border border-white/8 bg-white/[0.02] px-3 py-2">
+                                <div className="cyber-command mb-1 text-[9px] text-white/35">Followers</div>
+                                <div className="font-mono text-sm text-white">{trader.stats?.followerCount ?? 0}</div>
+                              </div>
+                            </div>
+
+                            <div className="mb-4 flex items-center justify-between text-xs text-white/42">
+                              <div className="inline-flex items-center gap-1.5">
+                                <TrendingUp size={12} />
+                                {((trader.stats?.pnl7dPercent ?? 0) >= 0) ? '+' : ''}
+                                {(trader.stats?.pnl7dPercent ?? 0).toFixed(1)}%
+                              </div>
+                              <div className={`inline-flex items-center gap-1.5 ${activityState.emphasisClassName}`}>
+                                <Activity size={12} />
+                                {formatRelativeTime(trader.stats?.lastTradeTime)}
+                              </div>
+                            </div>
+
+                            {renderFollowButton(
+                              trader,
+                              onboardingStep === 'TOUR' && visibleRank === 1 && !trader.isFollowing,
+                              true,
+                            )}
+                          </div>
+                        );
+                      })}
+                    </section>
+                  </>
+                )}
+              </>
+            )}
+          </>
+        )}
       </main>
     </div>
   );

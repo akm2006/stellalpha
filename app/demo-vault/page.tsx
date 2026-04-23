@@ -1,6 +1,9 @@
 'use client';
 
 import PageLoader from '@/components/PageLoader';
+import { InfoTooltip } from '@/components/cyber/tooltip';
+import { TraderAvatar } from '@/components/cyber/trader-avatar';
+import { CopyModelBadge } from '@/components/trading/copy-model-badge';
 import {
   COPY_BUY_MODEL_DEFINITIONS,
   parseCopyBuyModelSelection,
@@ -14,8 +17,7 @@ import {
   CopyBuyModelConfig,
   CopyBuyModelKey,
 } from '@/lib/copy-models/types';
-import { useState, useEffect, useCallback, useMemo, useRef, useId, ReactNode, CSSProperties } from 'react';
-import { createPortal } from 'react-dom';
+import { useState, useEffect, useCallback, useMemo, ReactNode, CSSProperties } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { useAppKitAccount } from '@reown/appkit/react';
@@ -257,291 +259,6 @@ function Sparkline({ data, isPositive, id, className = "w-20" }: { data: { value
         />
       </svg>
     </div>
-  );
-}
-
-
-function TraderAvatar({ address, image }: { address: string; image?: string }) {
-  const hue = address.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % 360;
-  const bgColor = `hsl(${hue}, 50%, 30%)`;
-  
-  if (image) {
-    return (
-      <img 
-        src={image} 
-        alt={address}
-        className="cyber-avatar w-8 h-8 rounded-full object-cover shrink-0"
-      />
-    );
-  }
-
-  return (
-    <div 
-      className="cyber-avatar w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
-      style={{ backgroundColor: bgColor, color: '#fff' }}
-    >
-      {address.slice(0, 2).toUpperCase()}
-    </div>
-  );
-}
-
-function Tooltip({
-  children,
-  trigger,
-  triggerClassName,
-  ariaLabel = 'More information',
-  label = 'Info',
-}: {
-  children: ReactNode;
-  trigger: ReactNode;
-  triggerClassName?: string;
-  ariaLabel?: string;
-  label?: string;
-}) {
-  const [showTooltip, setShowTooltip] = useState(false);
-  const [tooltipPosition, setTooltipPosition] = useState({
-    top: 0,
-    left: 0,
-    placement: 'bottom' as 'top' | 'bottom',
-  });
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const tooltipId = useId();
-
-  const clearCloseTimeout = () => {
-    if (closeTimeoutRef.current) {
-      clearTimeout(closeTimeoutRef.current);
-      closeTimeoutRef.current = null;
-    }
-  };
-  
-  const updateTooltipPosition = () => {
-    if (buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      const viewportPadding = 8;
-      const tooltipWidth = Math.min(320, window.innerWidth - viewportPadding * 2);
-      const tooltipHeightEstimate = 240;
-      let left = rect.left + rect.width / 2;
-      
-      // Clamp to viewport edges
-      const minLeft = tooltipWidth / 2 + viewportPadding;
-      const maxLeft = window.innerWidth - tooltipWidth / 2 - viewportPadding;
-      left = Math.max(minLeft, Math.min(maxLeft, left));
-
-      const belowTop = rect.bottom + 10;
-      const aboveTop = rect.top - 10;
-      const hasRoomBelow = belowTop + tooltipHeightEstimate <= window.innerHeight - viewportPadding;
-      const hasRoomAbove = aboveTop - tooltipHeightEstimate >= viewportPadding;
-      const placement = !hasRoomBelow && hasRoomAbove ? 'top' : 'bottom';
-      const top = placement === 'top'
-        ? aboveTop
-        : Math.max(viewportPadding, Math.min(belowTop, window.innerHeight - tooltipHeightEstimate - viewportPadding));
-      
-      setTooltipPosition({
-        top,
-        left,
-        placement,
-      });
-    }
-  };
-  
-  const handleMouseEnter = () => {
-    clearCloseTimeout();
-    updateTooltipPosition();
-    setShowTooltip(true);
-  };
-
-  const hideTooltip = () => {
-    clearCloseTimeout();
-    setShowTooltip(false);
-  };
-
-  const scheduleHideTooltip = () => {
-    clearCloseTimeout();
-    closeTimeoutRef.current = setTimeout(() => {
-      setShowTooltip(false);
-      closeTimeoutRef.current = null;
-    }, 120);
-  };
-
-  useEffect(() => {
-    return () => clearCloseTimeout();
-  }, []);
-  
-  useEffect(() => {
-    if (showTooltip) {
-      updateTooltipPosition();
-      const handleScroll = () => updateTooltipPosition();
-      const handleResize = () => updateTooltipPosition();
-      const handleKeyDown = (event: KeyboardEvent) => {
-        if (event.key === 'Escape') hideTooltip();
-      };
-      window.addEventListener('scroll', handleScroll, true);
-      window.addEventListener('resize', handleResize);
-      window.addEventListener('keydown', handleKeyDown);
-      return () => {
-        window.removeEventListener('scroll', handleScroll, true);
-        window.removeEventListener('resize', handleResize);
-        window.removeEventListener('keydown', handleKeyDown);
-      };
-    }
-  }, [showTooltip]);
-  
-  return (
-    <>
-      <div className="relative inline-flex items-center">
-        <button
-          ref={buttonRef}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={scheduleHideTooltip}
-          onFocus={handleMouseEnter}
-          onBlur={scheduleHideTooltip}
-          aria-describedby={showTooltip ? tooltipId : undefined}
-          aria-label={ariaLabel}
-          className={triggerClassName}
-          type="button"
-          onClick={(event) => event.stopPropagation()}
-        >
-          {trigger}
-        </button>
-      </div>
-      {showTooltip && typeof window !== 'undefined' && createPortal(
-        <div 
-          id={tooltipId}
-          role="tooltip"
-          data-label={label}
-          data-placement={tooltipPosition.placement}
-          className="cyber-tooltip fixed w-[min(20rem,calc(100vw-1rem))] max-h-[min(18rem,calc(100vh-1rem))] overflow-y-auto p-3 border shadow-lg pointer-events-auto"
-          style={{ 
-            backgroundColor: '#050505',
-            borderColor: 'rgba(0,255,133,0.42)',
-            boxShadow: '0 18px 44px rgba(0,0,0,0.72)',
-            zIndex: 99999,
-            top: `${tooltipPosition.top}px`,
-            left: `${tooltipPosition.left}px`,
-            transform: tooltipPosition.placement === 'top' ? 'translate(-50%, -100%)' : 'translate(-50%, 0)',
-          }}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={scheduleHideTooltip}
-        >
-          <div className="text-xs leading-relaxed" style={{ color: COLORS.text }}>
-            {children}
-          </div>
-        </div>,
-        document.body
-      )}
-    </>
-  );
-}
-
-// Info Tooltip Component
-function InfoTooltip({ children }: { children: ReactNode }) {
-  return (
-    <Tooltip
-      trigger={<Info size={12} />}
-      triggerClassName="inline-flex items-center justify-center w-4 h-4 rounded-full border border-white/20 text-slate-400 hover:bg-white/5 hover:text-[#00FF85] transition-colors focus-visible:ring-1 focus-visible:ring-[#00FF85]/60"
-      ariaLabel="More information"
-      label="Info"
-    >
-      {children}
-    </Tooltip>
-  );
-}
-
-function getCopyStyleBadgeLabel(modelKey: CopyBuyModelKey) {
-  switch (modelKey) {
-    case 'current_ratio':
-      return 'Ratio';
-    case 'fixed_available_pct':
-      return 'Fixed Cash';
-    case 'fixed_starting_pct':
-      return 'Fixed Start';
-    case 'target_buy_pct_with_cap':
-      return 'Target';
-    case 'hybrid_envelope_leader_ratio':
-      return 'Hybrid';
-  }
-}
-
-function CopyStyleBadge({
-  modelKey,
-  config,
-  compact = false,
-}: {
-  modelKey: CopyBuyModelKey;
-  config: CopyBuyModelConfig;
-  compact?: boolean;
-}) {
-  const normalizedModel = parseCopyBuyModelSelection(modelKey, config);
-  const label = formatCopyBuyModelLabel(normalizedModel.modelKey);
-  const badgeLabel = getCopyStyleBadgeLabel(normalizedModel.modelKey);
-  const definition = COPY_BUY_MODEL_DEFINITIONS.find((item) => item.key === normalizedModel.modelKey);
-  const configBadge = formatCopyBuyModelConfigBadge(normalizedModel.modelKey, normalizedModel.config);
-  const summary = formatCopyBuyModelConfigSummary(normalizedModel.modelKey, normalizedModel.config);
-
-  const tooltipBody = (() => {
-    switch (normalizedModel.modelKey) {
-      case 'current_ratio':
-        return (
-          <>
-            <strong>How buys work:</strong> this setup follows the trader wallet&apos;s buy size ratio for each detected buy.<br /><br />
-            <strong>Current config:</strong> live trader ratio, with no fixed percent cap in this model.<br /><br />
-            <span style={{ color: COLORS.data }}>Sells still follow the trader&apos;s sell ratio for the copied position.</span>
-          </>
-        );
-      case 'fixed_available_pct':
-        return (
-          <>
-            <strong>How buys work:</strong> each detected buy uses {configBadge} of this setup&apos;s free demo cash.<br /><br />
-            <strong>Current config:</strong> {summary}.<br /><br />
-            <span style={{ color: COLORS.data }}>This keeps every new buy small relative to the remaining cash balance.</span>
-          </>
-        );
-      case 'fixed_starting_pct':
-        return (
-          <>
-            <strong>How buys work:</strong> each detected buy uses {configBadge} of this setup&apos;s original allocated amount.<br /><br />
-            <strong>Current config:</strong> {summary}.<br /><br />
-            <span style={{ color: COLORS.data }}>This makes buy size stable, but it does not shrink as free cash falls.</span>
-          </>
-        );
-      case 'target_buy_pct_with_cap':
-        return (
-          <>
-            <strong>How buys work:</strong> this setup copies a smaller target share of the trader&apos;s buy, then applies a free-cash cap.<br /><br />
-            <strong>Current config:</strong> {summary}.<br /><br />
-            <span style={{ color: COLORS.data }}>The cap prevents one large trader buy from consuming too much of the setup balance.</span>
-          </>
-        );
-      case 'hybrid_envelope_leader_ratio':
-        return (
-          <>
-            <strong>How buys work:</strong> this setup first limits the buy to a {configBadge} cash envelope, then scales inside that envelope using the trader&apos;s sizing ratio.<br /><br />
-            <strong>Current config:</strong> {summary}.<br /><br />
-            <span style={{ color: COLORS.data }}>This preserves trader intent while keeping follower exposure small.</span>
-          </>
-        );
-    }
-  })();
-
-  return (
-    <Tooltip
-      ariaLabel={`${label} copy style details`}
-      trigger={
-        <span className={`copy-style-badge inline-flex max-w-full items-center gap-1 truncate rounded-none font-mono font-semibold uppercase tracking-[0.14em] ${compact ? 'px-2 py-1 text-[9px]' : 'px-2.5 py-1.5 text-[10px]'}`}>
-          <span className="text-[#00FF85]/70">[</span>
-          <span className="truncate">{badgeLabel}</span>
-          <span className="shrink-0 text-[#00FF85]/75">· {configBadge}</span>
-          <span className="text-[#00FF85]/70">]</span>
-        </span>
-      }
-      triggerClassName="max-w-full border-0 bg-transparent p-0 text-left"
-      label="Model Info"
-    >
-      <strong>{label}</strong><br />
-      {definition?.shortDescription || summary}<br /><br />
-      {tooltipBody}
-    </Tooltip>
   );
 }
 
@@ -1537,7 +1254,7 @@ export default function DemoVaultPage() {
 
                         {/* Copy Style */}
                         <div className="min-w-0">
-                          <CopyStyleBadge
+                          <CopyModelBadge
                             modelKey={ts.copy_model_key || 'current_ratio'}
                             config={ts.copy_model_config || {}}
                           />
@@ -1707,7 +1424,7 @@ export default function DemoVaultPage() {
                                          {statusText}
                                      </div>
                                      <div className="mt-1.5 max-w-[180px]">
-                                       <CopyStyleBadge
+                                       <CopyModelBadge
                                          modelKey={ts.copy_model_key || 'current_ratio'}
                                          config={ts.copy_model_config || {}}
                                          compact
