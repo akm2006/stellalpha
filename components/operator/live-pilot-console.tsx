@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { useEffect, useState, useTransition } from 'react';
 import { AuthRequired } from '@/components/auth-required';
 import { useAuth } from '@/contexts/auth-context';
+import { formatCopyBuyModelConfigSummary, formatCopyBuyModelLabel } from '@/lib/copy-models/format';
 import { COLORS } from '@/lib/theme';
 import type {
   LivePilotStatusResponse,
@@ -65,6 +66,13 @@ function walletReadinessChip(config: PilotWalletConfigSummary) {
   if (!config.isComplete) return statusChip('Config Incomplete', 'warn');
   if (!config.isEnabled) return statusChip('Disabled', 'neutral');
   return statusChip('Ready', 'good');
+}
+
+function formatLiveBuyModel(config: PilotWalletConfigSummary) {
+  return `${formatCopyBuyModelLabel(config.buyModelKey)} · ${formatCopyBuyModelConfigSummary(
+    config.buyModelKey,
+    config.buyModelConfig,
+  )}`;
 }
 
 function tradePair(trade: PilotTradeRow) {
@@ -492,10 +500,10 @@ export function LivePilotConsole() {
                             </td>
                             <td className="px-3 py-4">
                               <div className="space-y-1 text-xs leading-5" style={{ color: COLORS.data }}>
-                                <div>Fee reserve: {(walletStatus.config.feeReservePct * 100).toFixed(1)}%</div>
-                                <div>Min reserve: {walletStatus.config.minFeeReserveSol.toFixed(2)} SOL</div>
-                                <div>Sizing: Demo parity ratio</div>
-                                <div>Live floor: disabled</div>
+                                  <div>Fee reserve: {(walletStatus.config.feeReservePct * 100).toFixed(1)}%</div>
+                                  <div>Min reserve: {walletStatus.config.minFeeReserveSol.toFixed(2)} SOL</div>
+                                  <div>Sizing: {formatLiveBuyModel(walletStatus.config)}</div>
+                                  <div>Live floor: disabled</div>
                                 <div>
                                   Impact cap: {walletStatus.config.buyMaxPriceImpactPct > 0
                                     ? `${(walletStatus.config.buyMaxPriceImpactPct * 100).toFixed(1)}%`

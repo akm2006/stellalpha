@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { formatCopyBuyModelConfigSummary, formatCopyBuyModelLabel } from '@/lib/copy-models/format';
-import { getCopyModelRecommendationForTrader } from '@/lib/copy-models/recommendations';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/session';
+import { normalizeStarTraderStatsRow } from '@/lib/star-trader-stats';
 import {
-  getStarTraderFallbackImage,
-  getStarTraderFallbackName,
-  normalizeStarTraderStatsRow,
-} from '@/lib/star-trader-stats';
+  getStarTraderRecord,
+  resolveUserRecommendationFromRecord,
+  resolveStarTraderDisplayName,
+  resolveStarTraderImage,
+} from '@/lib/star-trader-management/repository';
 
 export async function GET(
   _request: NextRequest,
@@ -17,14 +18,8 @@ export async function GET(
     const { wallet } = await context.params;
     const session = await getSession();
     const userWallet = session.isLoggedIn ? session.user?.wallet : null;
-
-    const { data: trader, error: traderError } = await supabase
-      .from('star_traders')
-      .select('address, name, image_url, created_at')
-      .eq('address', wallet)
-      .single();
-
-    if (traderError || !trader) {
+    const { record: trader } = await getStarTraderRecord(wallet);
+    if (!trader) {
       return NextResponse.json({ error: 'Trader not found' }, { status: 404 });
     }
 
@@ -56,13 +51,13 @@ export async function GET(
       }
     }
     const stats = normalizeStarTraderStatsRow(statsRows?.[0]);
-    const recommendation = getCopyModelRecommendationForTrader(wallet);
+    const recommendation = resolveUserRecommendationFromRecord(trader);
 
     return NextResponse.json({
       trader: {
         wallet: trader.address,
-        name: trader.name || getStarTraderFallbackName(trader.address),
-        image: trader.image_url || getStarTraderFallbackImage(trader.address),
+        name: resolveStarTraderDisplayName(trader),
+        image: resolveStarTraderImage(trader),
         createdAt: trader.created_at,
         isFollowing,
         stats,

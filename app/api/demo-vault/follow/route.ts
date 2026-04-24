@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { formatCopyBuyModelLabel } from '@/lib/copy-models/format';
 import { parseCopyBuyModelSelection } from '@/lib/copy-models/catalog';
-import { getCopyModelRecommendationForTrader } from '@/lib/copy-models/recommendations';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/session';
+import { getRecommendedCopyModelForStarTrader } from '@/lib/star-trader-management/service';
 
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
       rawCopyModelKey,
       rawCopyModelConfig,
     );
-    const recommendation = getCopyModelRecommendationForTrader(starTrader);
+    const recommendation = await getRecommendedCopyModelForStarTrader(starTrader);
 
     let createdTraderStateId: string | null = null;
     let vaultBalanceDeducted = false;

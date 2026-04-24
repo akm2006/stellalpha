@@ -1,5 +1,10 @@
 import { PublicKey } from '@solana/web3.js';
-import type { LivePilotConfigSummary, PilotWalletConfigSummary } from '@/lib/live-pilot/types';
+import type {
+  LivePilotBuyModelConfig,
+  LivePilotBuyModelKey,
+  LivePilotConfigSummary,
+  PilotWalletConfigSummary,
+} from '@/lib/live-pilot/types';
 
 interface PilotWalletConfigInternal extends PilotWalletConfigSummary {
   secret: string | null;
@@ -85,6 +90,40 @@ function parseWalletBase(slot: 'A' | 'B', errors: string[]) {
   };
 }
 
+function parseWalletBuyModel(
+  slot: 'A' | 'B',
+  errors: string[],
+  missingFields: string[],
+): { buyModelKey: LivePilotBuyModelKey; buyModelConfig: LivePilotBuyModelConfig } {
+  const rawModelKey = process.env[`PILOT_WALLET_${slot}_BUY_MODEL_KEY`]?.trim() || 'current_ratio';
+
+  if (rawModelKey !== 'current_ratio' && rawModelKey !== 'fixed_available_pct') {
+    errors.push(
+      `PILOT_WALLET_${slot}_BUY_MODEL_KEY must be one of: current_ratio, fixed_available_pct`
+    );
+    missingFields.push('buyModel');
+    return {
+      buyModelKey: 'current_ratio' as const,
+      buyModelConfig: {} as LivePilotBuyModelConfig,
+    };
+  }
+
+  if (rawModelKey === 'current_ratio') {
+    return {
+      buyModelKey: 'current_ratio',
+      buyModelConfig: {},
+    };
+  }
+
+  const buyPct = parseNumber(`PILOT_WALLET_${slot}_BUY_MODEL_PCT`, 5, errors);
+  return {
+    buyModelKey: 'fixed_available_pct',
+    buyModelConfig: {
+      buyPct: Math.max(0.1, Math.min(100, buyPct)),
+    },
+  };
+}
+
 function parseWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWalletConfigInternal | null {
   const base = parseWalletBase(slot, errors);
   if (!base) {
@@ -92,6 +131,8 @@ function parseWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWalletConfig
   }
 
   const secret = process.env[`PILOT_WALLET_${slot}_SECRET`]?.trim() || null;
+  const missingFields = [...base.missingFields];
+  const { buyModelKey, buyModelConfig } = parseWalletBuyModel(slot, errors, missingFields);
 
   return {
     slot: base.slot,
@@ -100,6 +141,8 @@ function parseWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWalletConfig
     starTrader: base.starTrader,
     cashMode: 'sol',
     mode: 'copy',
+    buyModelKey,
+    buyModelConfig,
     isEnabled: parseBoolean(process.env[`PILOT_WALLET_${slot}_ENABLED`], true),
     hasSecret: Boolean(secret),
     secret,
@@ -110,8 +153,8 @@ function parseWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWalletConfig
     buyMaxPriceImpactPct: parseNumber('PILOT_BUY_MAX_PRICE_IMPACT_PCT', 0, errors),
     buyMaxRequotes: parseInteger('PILOT_BUY_MAX_REQUOTES', 1, errors),
     sellSlippageRetryBps: parseInteger('PILOT_SELL_SLIPPAGE_RETRY_BPS', 200, errors),
-    isComplete: base.missingFields.length === 0,
-    missingFields: base.missingFields,
+    isComplete: missingFields.length === 0,
+    missingFields,
   };
 }
 
@@ -120,6 +163,8 @@ function parsePublicWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWallet
   if (!base) {
     return null;
   }
+  const missingFields = [...base.missingFields];
+  const { buyModelKey, buyModelConfig } = parseWalletBuyModel(slot, errors, missingFields);
 
   return {
     slot: base.slot,
@@ -128,6 +173,8 @@ function parsePublicWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWallet
     starTrader: base.starTrader,
     cashMode: 'sol',
     mode: 'copy',
+    buyModelKey,
+    buyModelConfig,
     isEnabled: parseBoolean(process.env[`PILOT_WALLET_${slot}_ENABLED`], true),
     hasSecret: false,
     feeReservePct: parseNumber('PILOT_FEE_RESERVE_PCT', 0.1, errors),
@@ -137,8 +184,8 @@ function parsePublicWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWallet
     buyMaxPriceImpactPct: parseNumber('PILOT_BUY_MAX_PRICE_IMPACT_PCT', 0, errors),
     buyMaxRequotes: parseInteger('PILOT_BUY_MAX_REQUOTES', 1, errors),
     sellSlippageRetryBps: parseInteger('PILOT_SELL_SLIPPAGE_RETRY_BPS', 200, errors),
-    isComplete: base.missingFields.length === 0,
-    missingFields: base.missingFields,
+    isComplete: missingFields.length === 0,
+    missingFields,
   };
 }
 

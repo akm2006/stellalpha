@@ -1,4 +1,5 @@
 import { PublicKey } from '@solana/web3.js';
+import type { FixedAvailablePctCopyModelConfig } from '@/lib/copy-models/types';
 import { RawTrade } from '@/lib/trade-parser';
 import {
   buildPilotControlSnapshot,
@@ -41,6 +42,28 @@ function toBlockTimestampIso(timestampSeconds: number) {
   return new Date(timestampSeconds * 1000).toISOString();
 }
 
+function resolveLiveBuyCopyRatio(args: {
+  buyModelKey: 'current_ratio' | 'fixed_available_pct';
+  buyModelConfig: Record<string, never> | FixedAvailablePctCopyModelConfig;
+  signalFinalRatio: number;
+}) {
+  switch (args.buyModelKey) {
+    case 'current_ratio':
+      return {
+        copyRatio: Math.min(Math.max(args.signalFinalRatio || 0, 0), 1),
+        skipReason: null as string | null,
+      };
+    case 'fixed_available_pct': {
+      const buyPct = Number((args.buyModelConfig as FixedAvailablePctCopyModelConfig).buyPct || 0);
+      const copyRatio = Math.min(Math.max(buyPct / 100, 0), 1);
+      return {
+        copyRatio,
+        skipReason: copyRatio > 0 ? null : 'zero_model_spend',
+      };
+    }
+  }
+}
+
 export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number): Promise<PilotIntentResult> {
   const config = getLivePilotPublicConfig();
   const pilotWallet = findPilotWalletForStarTrader(config, trade.wallet);
@@ -76,7 +99,7 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
 
     let deployableSol: number | null = null;
     let skipReason: string | null = null;
-    let copyRatio = Math.min(Math.max(signal?.finalRatio || 0, 0), 1);
+    let copyRatio = 0;
     let leaderPositionBefore: number | null = null;
     let leaderPositionAfter: number | null = null;
     let copiedPositionBefore: number | null = null;
@@ -127,8 +150,15 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       leaderPositionAfter = leaderBuy.leaderPositionAfter;
       copiedPositionBefore = leaderBuy.copiedPositionBefore;
 
-      if (copyRatio <= 0) {
-        skipReason = 'zero_copy_ratio';
+      const liveBuySizing = resolveLiveBuyCopyRatio({
+        buyModelKey: pilotWallet.buyModelKey,
+        buyModelConfig: pilotWallet.buyModelConfig,
+        signalFinalRatio: signal?.finalRatio || 0,
+      });
+      copyRatio = liveBuySizing.copyRatio;
+
+      if (liveBuySizing.skipReason) {
+        skipReason = liveBuySizing.skipReason;
       } else if (signal?.isStaleBuy) {
         skipReason = 'stale_buy';
       } else {
@@ -216,7 +246,7 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
     } else {
       console.log(
         `[LIVE_PILOT] Queued pilot intent for ${pilotWallet.alias} / ${trade.signature.slice(0, 12)}... `
-        + `(ratio=${(copyRatio * 100).toFixed(2)}%, deployable=${(deployableSol || 0).toFixed(4)} SOL)`
+        + `(model=${pilotWallet.buyModelKey}, ratio=${(copyRatio * 100).toFixed(2)}%, deployable=${(deployableSol || 0).toFixed(4)} SOL)`
       );
     }
 
