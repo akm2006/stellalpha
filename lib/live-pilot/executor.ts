@@ -203,7 +203,13 @@ function getSellChunkFraction(attemptNumber: number) {
 
 export function isNoRouteFailure(message: string) {
   const lower = message.toLowerCase();
-  return lower.includes('no route') || lower.includes('no quote') || lower.includes('route not found');
+  return (
+    lower.includes('no route')
+    || lower.includes('no quote')
+    || lower.includes('route not found')
+    || lower.includes('failed to get quotes')
+    || lower.includes('failed to get quote')
+  );
 }
 
 export function getSellSlippageBps(wallet: LivePilotWalletConfig, attemptNumber: number) {
