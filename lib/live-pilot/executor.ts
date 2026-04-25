@@ -328,8 +328,7 @@ export function classifyJupiterFailure(
   },
 ) {
   const lower = message.toLowerCase();
-  const noRoute = lower.includes('no route') || lower.includes('no quote') || lower.includes('route not found');
-  if (noRoute) {
+  if (isNoRouteFailure(message)) {
     if (options?.retryNoRoute) {
       return { terminalStatus: 'failed' as const, reason: 'retryable_no_route', retryable: true };
     }
@@ -578,6 +577,14 @@ async function buildExecutionPlan(
       kind: 'skip',
       reason: 'missing_input_mint',
       message: 'Sell intent is missing token_in_mint',
+    };
+  }
+
+  if (await isPilotMintQuarantined(inputMint)) {
+    return {
+      kind: 'skip',
+      reason: 'mint_quarantined',
+      message: `${getTokenSymbol(inputMint)} is quarantined for live-pilot sells`,
     };
   }
 
