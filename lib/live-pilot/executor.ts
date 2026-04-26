@@ -56,6 +56,7 @@ const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_MAX_MS = 8_000;
 const FAST_BUY_REQUOTE_DELAY_MS = 250;
 export const LIVE_PILOT_TECHNICAL_MIN_SOL = 0;
+const BUY_RETRY_SLIPPAGE_LADDER_BPS = [1000, 1500, 2000];
 const SELL_SLIPPAGE_LADDER_BPS = [1000, 3000, 5000, 8000];
 const SELL_EXIT_CHUNK_LADDER = [
   { numerator: 1n, denominator: 1n, label: '100%' },
@@ -224,6 +225,17 @@ export function getSellSlippageBps(wallet: LivePilotWalletConfig, attemptNumber:
   const ladder = buildSellSlippageLadderBps(wallet);
   const normalizedAttempt = Math.max(attemptNumber, 1);
   return ladder[Math.min(normalizedAttempt - 1, ladder.length - 1)] ?? ladder[0] ?? null;
+}
+
+export function getBuySlippageBps(attemptNumber: number) {
+  const normalizedAttempt = Math.max(attemptNumber, 1);
+  if (normalizedAttempt <= 1) {
+    return null;
+  }
+
+  return BUY_RETRY_SLIPPAGE_LADDER_BPS[
+    Math.min(normalizedAttempt - 2, BUY_RETRY_SLIPPAGE_LADDER_BPS.length - 1)
+  ] ?? null;
 }
 
 export function buildSellSlippageLadderBps(wallet: LivePilotWalletConfig) {
@@ -497,6 +509,29 @@ export async function getTokenBalance(
   };
 }
 
+export function shouldSkipStaleBuyAtExecution(trade: PilotTradeRow, nowMs: number = Date.now()) {
+  if (trade.leader_type !== 'buy' || trade.attempt_count > 1) {
+    return {
+      stale: false,
+      ageMs: 0,
+    };
+  }
+
+  const leaderTimestamp = trade.leader_block_timestamp ? new Date(trade.leader_block_timestamp).getTime() : null;
+  if (!leaderTimestamp || !Number.isFinite(leaderTimestamp)) {
+    return {
+      stale: false,
+      ageMs: 0,
+    };
+  }
+
+  const ageMs = nowMs - leaderTimestamp;
+  return {
+    stale: ageMs > BUY_STALENESS_THRESHOLD_MS,
+    ageMs,
+  };
+}
+
 async function closeZeroTokenAccountsForMint(args: {
   connection: Connection;
   owner: Keypair;
@@ -603,16 +638,13 @@ async function buildExecutionPlan(
   }
 
   if (trade.leader_type === 'buy') {
-    const leaderTimestamp = trade.leader_block_timestamp ? new Date(trade.leader_block_timestamp).getTime() : null;
-    if (leaderTimestamp && Number.isFinite(leaderTimestamp)) {
-      const tradeAgeMs = Date.now() - leaderTimestamp;
-      if (tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
-        return {
-          kind: 'skip',
-          reason: 'stale_buy',
-          message: `Buy intent is ${Math.round(tradeAgeMs / 1000)}s old at execution time`,
-        };
-      }
+    const staleBuy = shouldSkipStaleBuyAtExecution(trade);
+    if (staleBuy.stale) {
+      return {
+        kind: 'skip',
+        reason: 'stale_buy',
+        message: `Buy intent is ${Math.round(staleBuy.ageMs / 1000)}s old before first execution attempt`,
+      };
     }
 
     const outputMint = trade.token_out_mint || '';
@@ -665,7 +697,7 @@ async function buildExecutionPlan(
       inputAmountRaw: uiToRaw(desiredInputSol, 9).toString(),
       quotedInputDecimals: 9,
       maxAttempts: getPilotTradeMaxAttempts(wallet, trade),
-      slippageBps: null,
+      slippageBps: getBuySlippageBps(trade.attempt_count),
       chunkFraction: null,
     };
   }
@@ -1122,9 +1154,11 @@ export async function maybeQueueResidualExitTrade(args: {
     wallet_alias: wallet.alias,
     wallet_public_key: wallet.publicKey,
     trigger_kind: trade.trigger_kind,
-    trigger_reason: trade.trigger_kind === 'liquidation' ? 'residual_liquidation' : 'residual_exit',
+    trigger_reason: trade.trigger_kind === 'liquidation'
+      ? `residual_liquidation:${trade.id}`
+      : `residual_exit:${trade.id}`,
     star_trader: trade.star_trader,
-    star_trade_signature: trade.star_trade_signature,
+    star_trade_signature: null,
     leader_type: trade.leader_type,
     token_in_mint: trade.token_in_mint,
     token_out_mint: trade.token_out_mint,

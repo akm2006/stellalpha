@@ -170,6 +170,23 @@ export async function listActiveLiquidationTrades(walletAlias: string) {
   return (data || []) as PilotTradeRow[];
 }
 
+export async function listRecentCopyExitTradesForWallet(walletAlias: string, sinceIso: string) {
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .select('*')
+    .eq('wallet_alias', walletAlias)
+    .eq('trigger_kind', 'copy')
+    .eq('leader_type', 'sell')
+    .gte('created_at', sinceIso)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to list recent copy exit trades for ${walletAlias}: ${error.message}`);
+  }
+
+  return (data || []) as PilotTradeRow[];
+}
+
 export async function updatePilotTrade(tradeId: string, patch: PilotTradePatch) {
   const { data, error } = await supabase
     .from('pilot_trades')

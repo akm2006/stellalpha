@@ -54,7 +54,7 @@ async function upsertCopyPositionState(
   metadata: TransitionMetadata,
   snapshot: CopyPositionLifecycleSnapshot,
 ) {
-  const payload = {
+  const payload: Record<string, string | number | null> = {
     scope_type: metadata.scopeType,
     scope_key: metadata.scopeKey,
     star_trader: metadata.starTrader,
@@ -64,10 +64,16 @@ async function upsertCopyPositionState(
     copied_open_amount: snapshot.copiedOpenAmount,
     copied_cost_usd: snapshot.copiedCostUsd,
     avg_cost_usd: snapshot.avgCostUsd,
-    last_leader_trade_signature: metadata.tradeSignature,
-    last_leader_trade_at: metadata.tradeTimestampIso,
     updated_at: new Date().toISOString(),
   };
+
+  if (metadata.tradeSignature) {
+    payload.last_leader_trade_signature = metadata.tradeSignature;
+  }
+
+  if (metadata.tradeTimestampIso) {
+    payload.last_leader_trade_at = metadata.tradeTimestampIso;
+  }
 
   const { data, error } = await supabase
     .from('copy_position_states')
@@ -99,6 +105,27 @@ export async function getCopyPositionState(key: CopyPositionStateKey) {
   }
 
   return (data || null) as CopyPositionStateRow | null;
+}
+
+export async function listLeaderClosedCopiedOpenPilotStates(args: {
+  scopeKey: string;
+  starTrader: string;
+}) {
+  const { data, error } = await supabase
+    .from('copy_position_states')
+    .select('*')
+    .eq('scope_type', 'pilot')
+    .eq('scope_key', args.scopeKey)
+    .eq('star_trader', args.starTrader)
+    .lte('leader_open_amount', 0.000000001)
+    .gt('copied_open_amount', 0.000000001)
+    .order('updated_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to list residual copy positions for ${args.scopeKey}: ${error.message}`);
+  }
+
+  return (data || []) as CopyPositionStateRow[];
 }
 
 export async function recordObservedLeaderBuy(args: TransitionMetadata & { leaderBuyAmount: number }) {

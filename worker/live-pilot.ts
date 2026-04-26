@@ -19,6 +19,7 @@ import {
 import { executePilotTrade, createLivePilotConnection } from '@/lib/live-pilot/executor';
 import { getLivePilotConfig, findPilotWalletByAlias } from '@/lib/live-pilot/config';
 import { enqueueLiquidationIntentsForWallet } from '@/lib/live-pilot/liquidation';
+import { enqueueResidualExitIntentsForWallet } from '@/lib/live-pilot/residual-exits';
 import { subscribeToLivePilotQueueWake, unsubscribeFromLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
 import { recoverSubmittedPilotTrades } from '@/lib/live-pilot/recovery';
 
@@ -177,6 +178,41 @@ async function runLiquidationSweep(
   }
 }
 
+async function runResidualExitSweep(
+  config: ReturnType<typeof getLivePilotConfig>,
+  controlSnapshot: ReturnType<typeof buildPilotControlSnapshot>,
+) {
+  for (const wallet of config.wallets.filter((entry) => entry.isEnabled && entry.isComplete && entry.hasSecret)) {
+    const walletControl = controlSnapshot.wallets.find((row) => row.scope_key === wallet.alias);
+    const liquidationRequested =
+      controlSnapshot.global.liquidation_requested
+      || controlSnapshot.global.kill_switch_active
+      || walletControl?.liquidation_requested
+      || walletControl?.kill_switch_active;
+
+    if (
+      liquidationRequested
+      || controlSnapshot.global.is_paused
+      || walletControl?.is_paused
+    ) {
+      continue;
+    }
+
+    try {
+      const result = await enqueueResidualExitIntentsForWallet({
+        wallet,
+        connection,
+      });
+
+      if (result.created > 0) {
+        console.log(`[LIVE_PILOT] ${wallet.alias}: queued ${result.created} residual copy exit trade(s)`);
+      }
+    } catch (error) {
+      console.error(`[LIVE_PILOT] Failed residual exit sweep for ${wallet.alias}:`, error);
+    }
+  }
+}
+
 async function processQueuedPilotTrades() {
   if (isProcessingQueue || isShuttingDown) {
     return;
@@ -199,6 +235,7 @@ async function processQueuedPilotTrades() {
     );
 
     await runLiquidationSweep(config, controlSnapshot);
+    await runResidualExitSweep(config, controlSnapshot);
 
     const queuedTrades = await listQueuedPilotTrades(QUEUE_BATCH_SIZE);
     if (queuedTrades.length === 0) {
