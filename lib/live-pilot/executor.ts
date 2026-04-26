@@ -3,9 +3,11 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  TransactionMessage,
   VersionedTransaction,
 } from '@solana/web3.js';
 import {
+  createCloseAccountInstruction,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
@@ -486,6 +488,97 @@ async function getTokenBalance(
     rawAmount: rawAmount.toString(),
     uiAmount: rawToUi(rawAmount, decimals),
     decimals,
+  };
+}
+
+async function closeZeroTokenAccountsForMint(args: {
+  connection: Connection;
+  owner: Keypair;
+  mintAddress: string;
+}) {
+  const { connection, owner, mintAddress } = args;
+  const ownerAddress = owner.publicKey.toBase58();
+  const programIds = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID];
+  const responses = await Promise.all(
+    programIds.map((programId) =>
+      connection.getParsedTokenAccountsByOwner(owner.publicKey, { programId }, 'confirmed')
+        .then((response) => ({ programId, response }))
+    )
+  );
+
+  const closeTargets = responses.flatMap(({ programId, response }) =>
+    response.value
+      .filter((entry) => {
+        const parsedInfo = (entry.account.data as any)?.parsed?.info;
+        return parsedInfo?.mint === mintAddress && parsedInfo?.tokenAmount?.amount === '0';
+      })
+      .map((entry) => ({
+        pubkey: entry.pubkey,
+        programId,
+        lamports: entry.account.lamports,
+      }))
+  );
+
+  if (closeTargets.length === 0) {
+    return {
+      closed: 0,
+      reclaimedSol: 0,
+      signatures: [] as string[],
+    };
+  }
+
+  const signatures: string[] = [];
+  let reclaimedLamports = 0;
+  for (let index = 0; index < closeTargets.length; index += 8) {
+    const chunk = closeTargets.slice(index, index + 8);
+    const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+    const instructions = chunk.map((target) =>
+      createCloseAccountInstruction(
+        target.pubkey,
+        owner.publicKey,
+        owner.publicKey,
+        [],
+        target.programId,
+      )
+    );
+    const message = new TransactionMessage({
+      payerKey: owner.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions,
+    }).compileToV0Message();
+    const transaction = new VersionedTransaction(message);
+    transaction.sign([owner]);
+
+    const signature = await connection.sendTransaction(transaction, {
+      maxRetries: 3,
+      skipPreflight: false,
+    });
+    const confirmation = await connection.confirmTransaction({
+      signature,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    }, 'confirmed');
+
+    if (confirmation.value.err) {
+      throw new Error(`Close token account transaction failed: ${signature}`);
+    }
+
+    signatures.push(signature);
+    reclaimedLamports += chunk.reduce((sum, target) => sum + target.lamports, 0);
+  }
+
+  await sendLivePilotAlert('Token account rent reclaimed', [
+    `wallet=${ownerAddress}`,
+    `mint=${mintAddress}`,
+    `accounts=${closeTargets.length}`,
+    `reclaimedSol=${(reclaimedLamports / 1e9).toFixed(6)}`,
+    ...signatures.map((signature) => formatSolscanTxUrl(signature)),
+  ]).catch(() => undefined);
+
+  return {
+    closed: closeTargets.length,
+    reclaimedSol: reclaimedLamports / 1e9,
+    signatures,
   };
 }
 
@@ -1290,6 +1383,19 @@ export async function executePilotTrade(
           last_error: null,
         }),
       ]);
+      if (trade.leader_type === 'sell' && trade.token_in_mint) {
+        await closeZeroTokenAccountsForMint({
+          connection,
+          owner: keypair,
+          mintAddress: trade.token_in_mint,
+        }).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`[LIVE_PILOT] Failed to close zero token accounts for ${trade.token_in_mint}:`, message);
+          void updatePilotRuntimeState(wallet.alias, {
+            last_error: `Confirmed sell but failed to reclaim token-account rent: ${message}`,
+          }).catch(() => undefined);
+        });
+      }
       const residualTrade = await maybeQueueResidualExitTrade({
         trade,
         wallet,
