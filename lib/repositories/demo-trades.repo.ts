@@ -7,6 +7,15 @@ export async function queueTrade(tradeData: any) {
   });
 }
 
+export async function getDemoTradeByStateSignature(traderStateId: string, signature: string) {
+  return supabase
+    .from('demo_trades')
+    .select('id, status, error_message')
+    .eq('trader_state_id', traderStateId)
+    .eq('star_trade_signature', signature)
+    .maybeSingle();
+}
+
 export async function getOldestQueuedTrade(traderStateId: string) {
   return supabase
     .from('demo_trades')
@@ -47,7 +56,7 @@ export async function deleteQueuedTradesBySignature(signature: string) {
 export async function getProcessingTrades(traderStateId: string) {
   return supabase
     .from('demo_trades')
-    .select('id, processor_id')
+    .select('id, processor_id, token_in_amount, token_out_amount, copied_position_after, realized_pnl')
     .eq('trader_state_id', traderStateId)
     .eq('status', 'processing');
 }

@@ -11,7 +11,10 @@ import {
   updatePilotRuntimeState,
 } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import { isPilotMintQuarantined } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
-import { createPilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import {
+  createPilotTrade,
+  getCopyPilotTradeByWalletSignature,
+} from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import {
   BUY_STALENESS_THRESHOLD_MS,
   computeCopyTradeSignal,
@@ -82,6 +85,18 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
 
   await ensurePilotControlState([pilotWallet.alias]);
   await ensurePilotRuntimeState([pilotWallet]);
+
+  const existingIntent = await getCopyPilotTradeByWalletSignature(pilotWallet.alias, trade.signature);
+  if (existingIntent) {
+    console.log(`[LIVE_PILOT] Existing copy intent found for ${pilotWallet.alias} / ${trade.signature.slice(0, 12)}...`);
+    return {
+      considered: true,
+      created: false,
+      duplicate: true,
+      status: existingIntent.status === 'skipped' ? 'skipped' : undefined,
+      skipReason: existingIntent.skip_reason || undefined,
+    };
+  }
 
   const runtimePatchBase = {
     star_trader: trade.wallet,

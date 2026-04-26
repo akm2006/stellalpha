@@ -21,6 +21,7 @@ import {
   insertDemoPosition 
 } from '@/lib/repositories/demo-positions.repo';
 import {
+  reconcileCopiedPositionAmount,
   recordSuccessfulCopiedBuy,
   recordSuccessfulCopiedSell,
 } from '@/lib/repositories/copy-position-states.repo';
@@ -51,6 +52,18 @@ function getProcessorStartedAt(processorId: string | null | undefined): number |
   return Number.isFinite(startedAt) ? startedAt : null;
 }
 
+function hasExecutionMutationEvidence(trade: {
+  token_in_amount?: number | string | null;
+  token_out_amount?: number | string | null;
+  copied_position_after?: number | string | null;
+  realized_pnl?: number | string | null;
+}) {
+  return trade.token_in_amount !== null && trade.token_in_amount !== undefined
+    || trade.token_out_amount !== null && trade.token_out_amount !== undefined
+    || trade.copied_position_after !== null && trade.copied_position_after !== undefined
+    || trade.realized_pnl !== null && trade.realized_pnl !== undefined;
+}
+
 async function reclaimStaleProcessingTrades(traderStateId: string) {
   const { data: processingTrades, error } = await getProcessingTrades(traderStateId);
 
@@ -65,6 +78,21 @@ async function reclaimStaleProcessingTrades(traderStateId: string) {
     if (!startedAt) continue;
 
     if (Date.now() - startedAt <= PROCESSING_STALE_MS) {
+      continue;
+    }
+
+    if (hasExecutionMutationEvidence(trade)) {
+      const { error: completeError } = await updateDemoTrade(trade.id, {
+        status: 'completed',
+        processor_id: null,
+      });
+      if (completeError) {
+        console.error(`[CONSUMER] Failed to complete stale already-mutated trade ${trade.id.slice(0, 8)}:`, completeError.message);
+        continue;
+      }
+
+      reclaimed++;
+      console.warn(`[CONSUMER] Completed stale processing trade ${trade.id.slice(0, 8)} because execution outputs were already written`);
       continue;
     }
 
@@ -341,7 +369,8 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
     tradeRatio = Math.min(Math.max(tradeRatio, 0), 1);
 
     const copiedPositionBefore = Number(tradeRow.copied_position_before || 0);
-    copyAmount = Math.min(copiedPositionBefore * tradeRatio, sourceBalance);
+    const effectiveCopiedPositionBefore = Math.min(copiedPositionBefore, sourceBalance);
+    copyAmount = Math.min(effectiveCopiedPositionBefore * tradeRatio, sourceBalance);
     copyAmount = Math.min(copyAmount, sourceBalance);
 
     if (copyAmount <= 0) {
@@ -490,7 +519,13 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
         copiedBuyAmount: tokenReceived,
         copiedCostUsd: usdSpent,
       });
-      copiedPositionAfter = lifecycle.copiedPositionAfter;
+      const reconciled = await reconcileCopiedPositionAmount({
+        ...transitionMetadata,
+        mint: destMint,
+        tokenSymbol: getTokenSymbol(destMint),
+        copiedOpenAmount: newAmount,
+      });
+      copiedPositionAfter = Number(reconciled.copied_open_amount ?? lifecycle.copiedPositionAfter);
 
     } else if (isSell) {
       // ============ SELL LOGIC (Realize PnL - WAC Method) ============
@@ -540,7 +575,13 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
         tokenSymbol: getTokenSymbol(sourceMint),
         copiedSellAmount: copyAmount,
       });
-      copiedPositionAfter = lifecycle.copiedPositionAfter;
+      const reconciled = await reconcileCopiedPositionAmount({
+        ...transitionMetadata,
+        mint: sourceMint,
+        tokenSymbol: getTokenSymbol(sourceMint),
+        copiedOpenAmount: remainingAmount,
+      });
+      copiedPositionAfter = Number(reconciled.copied_open_amount ?? lifecycle.copiedPositionAfter);
 
     } else {
       // Token → Token swap (rare)

@@ -102,6 +102,22 @@ export async function getPilotTradeById(tradeId: string) {
   return (data || null) as PilotTradeRow | null;
 }
 
+export async function getCopyPilotTradeByWalletSignature(walletAlias: string, signature: string) {
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .select('*')
+    .eq('wallet_alias', walletAlias)
+    .eq('trigger_kind', 'copy')
+    .eq('star_trade_signature', signature)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to fetch live-pilot copy trade for ${walletAlias}/${signature}: ${error.message}`);
+  }
+
+  return (data || null) as PilotTradeRow | null;
+}
+
 export async function claimQueuedPilotTrade(tradeId: string, nextAttemptCount: number) {
   const { data, error } = await supabase
     .from('pilot_trades')

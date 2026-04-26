@@ -142,3 +142,18 @@ export async function recordSuccessfulCopiedSell(args: TransitionMetadata & { co
   const row = await upsertCopyPositionState(args, transition.next);
   return { row, ...transition };
 }
+
+export async function reconcileCopiedPositionAmount(args: TransitionMetadata & { copiedOpenAmount: number }) {
+  const current = toRowSnapshot(await getCopyPositionState(args));
+  const copiedOpenAmount = Math.max(Number(args.copiedOpenAmount || 0), 0);
+  const avgCostUsd = copiedOpenAmount > 0 ? current.avgCostUsd : 0;
+  const copiedCostUsd = copiedOpenAmount > 0 ? copiedOpenAmount * current.avgCostUsd : 0;
+  const row = await upsertCopyPositionState(args, {
+    ...current,
+    copiedOpenAmount,
+    copiedCostUsd,
+    avgCostUsd,
+  });
+
+  return row;
+}

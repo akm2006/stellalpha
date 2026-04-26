@@ -5,7 +5,10 @@ import {
 } from '@/lib/copy-models/catalog';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { getActiveFollowers } from '@/lib/repositories/demo-trader-states.repo';
-import { queueTrade } from '@/lib/repositories/demo-trades.repo';
+import {
+  getDemoTradeByStateSignature,
+  queueTrade,
+} from '@/lib/repositories/demo-trades.repo';
 import {
   recordObservedLeaderBuy,
   recordObservedLeaderSell,
@@ -103,6 +106,18 @@ export async function queueCopyTrades(trade: RawTrade, receivedAt: number): Prom
           tradeSignature: trade.signature,
           tradeTimestampIso: new Date(trade.timestamp * 1000).toISOString(),
         };
+
+        const { data: existingTrade, error: existingTradeError } = await getDemoTradeByStateSignature(
+          traderStateId,
+          trade.signature,
+        );
+        if (existingTradeError) {
+          throw new Error(`Failed to inspect existing queued trade for ${traderStateId}: ${existingTradeError.message}`);
+        }
+        if (existingTrade) {
+          console.log(`  TS ${traderStateId.slice(0, 8)}: Existing demo trade found (${existingTrade.status})`);
+          return;
+        }
 
         let status: 'queued' | 'skipped' = 'queued';
         let errorMessage: string | null = null;

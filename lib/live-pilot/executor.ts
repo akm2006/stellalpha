@@ -22,9 +22,14 @@ import {
   updatePilotTradeAttempt,
 } from '@/lib/live-pilot/repositories/pilot-trade-attempts.repo';
 import { updatePilotRuntimeState } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
-import { createPilotTrade, updatePilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import {
+  createPilotTrade,
+  updatePilotTrade,
+  updatePilotTradeIfStatus,
+} from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import {
   getCopyPositionState,
+  reconcileCopiedPositionAmount,
   recordSuccessfulCopiedBuy,
   recordSuccessfulCopiedSell,
 } from '@/lib/repositories/copy-position-states.repo';
@@ -116,6 +121,7 @@ type ExecutionPlan =
     maxAttempts: number;
     slippageBps: number | null;
     positionDriftMessage?: string | null;
+    postSellCopiedPositionAfterUi?: number | null;
     chunkFraction?: {
       numerator: bigint;
       denominator: bigint;
@@ -451,7 +457,7 @@ export async function executeSignedOrder(requestId: string, signedTransaction: s
   return payload || {};
 }
 
-async function getTokenBalance(
+export async function getTokenBalance(
   connection: Connection,
   ownerAddress: string,
   mintAddress: string,
@@ -711,9 +717,10 @@ async function buildExecutionPlan(
     };
   }
 
-  const desiredAmountUi = copiedPositionBefore * copyRatio;
+  const effectiveCopiedPositionBefore = Math.min(copiedPositionBefore, tokenBalance.uiAmount);
+  const desiredAmountUi = effectiveCopiedPositionBefore * copyRatio;
   const desiredAmountRaw = copyRatio >= 0.999
-    ? uiToRaw(copiedPositionBefore, tokenBalance.decimals)
+    ? BigInt(tokenBalance.rawAmount)
     : uiToRaw(desiredAmountUi, tokenBalance.decimals);
 
   if (desiredAmountRaw <= BigInt(0)) {
@@ -741,8 +748,10 @@ async function buildExecutionPlan(
     };
   }
 
-  const positionDriftMessage = copiedPositionBefore - tokenBalance.uiAmount > 1e-9
-    ? `Copied position ${copiedPositionBefore.toFixed(6)} ${getTokenSymbol(inputMint)} exceeded on-chain balance ${tokenBalance.uiAmount.toFixed(6)}; clamping sell size`
+  const positionDriftAmount = copiedPositionBefore - tokenBalance.uiAmount;
+  const hasPositionDrift = Math.abs(positionDriftAmount) > Math.max(1e-9, Math.abs(copiedPositionBefore) * 0.001);
+  const positionDriftMessage = hasPositionDrift
+    ? `Copied position ${copiedPositionBefore.toFixed(6)} ${getTokenSymbol(inputMint)} differs from on-chain balance ${tokenBalance.uiAmount.toFixed(6)}; using on-chain balance for sell sizing`
     : null;
 
   return {
@@ -755,6 +764,7 @@ async function buildExecutionPlan(
     maxAttempts: getPilotTradeMaxAttempts(wallet, trade),
     slippageBps: getSellSlippageBps(wallet, trade.attempt_count),
     positionDriftMessage,
+    postSellCopiedPositionAfterUi: rawToUi(BigInt(tokenBalance.rawAmount) - clampedAttemptedAmountRaw, tokenBalance.decimals),
     chunkFraction,
   };
 }
@@ -940,8 +950,9 @@ export async function recordConfirmedCopyPositionMutation(args: {
   wallet: LivePilotWalletConfig;
   inputAmount: number | null;
   outputAmount: number | null;
+  copiedPositionAfterOverride?: number | null;
 }) {
-  const { trade, wallet, inputAmount, outputAmount } = args;
+  const { trade, wallet, inputAmount, outputAmount, copiedPositionAfterOverride } = args;
   const tradeTimestampIso = trade.leader_block_timestamp || new Date().toISOString();
 
   if (trade.leader_type === 'buy' && trade.token_out_mint) {
@@ -965,16 +976,30 @@ export async function recordConfirmedCopyPositionMutation(args: {
   }
 
   if (trade.token_in_mint) {
-    const lifecycle = await recordSuccessfulCopiedSell({
-      scopeType: 'pilot',
+    const metadata = {
+      scopeType: 'pilot' as const,
       scopeKey: wallet.alias,
       starTrader: trade.star_trader || wallet.starTrader || '',
       mint: trade.token_in_mint,
       tokenSymbol: getTokenSymbol(trade.token_in_mint),
       tradeSignature: trade.star_trade_signature,
       tradeTimestampIso,
+    };
+    const lifecycle = await recordSuccessfulCopiedSell({
+      ...metadata,
       copiedSellAmount: Math.max(inputAmount || 0, 0),
     });
+
+    if (Number.isFinite(copiedPositionAfterOverride)) {
+      const reconciled = await reconcileCopiedPositionAmount({
+        ...metadata,
+        copiedOpenAmount: Math.max(Number(copiedPositionAfterOverride || 0), 0),
+      });
+
+      return {
+        copiedPositionAfter: Number(reconciled.copied_open_amount || 0),
+      };
+    }
 
     return {
       copiedPositionAfter: lifecycle.copiedPositionAfter,
@@ -983,6 +1008,61 @@ export async function recordConfirmedCopyPositionMutation(args: {
 
   return {
     copiedPositionAfter: trade.copied_position_after,
+  };
+}
+
+export async function confirmSubmittedPilotTradeWithLifecycle(args: {
+  trade: PilotTradeRow;
+  wallet: LivePilotWalletConfig;
+  attemptId: string;
+  confirmedAt: string;
+  confirmationSlot: number | null;
+  inputAmount: number | null;
+  outputAmount: number | null;
+  copiedPositionAfterOverride?: number | null;
+}) {
+  const {
+    trade,
+    wallet,
+    attemptId,
+    confirmedAt,
+    confirmationSlot,
+    inputAmount,
+    outputAmount,
+    copiedPositionAfterOverride,
+  } = args;
+
+  const claimedTrade = await updatePilotTradeIfStatus(trade.id, 'submitted', {
+    status: 'confirmed',
+    tx_confirmed_at: confirmedAt,
+    confirmation_slot: confirmationSlot,
+    winning_attempt_id: attemptId,
+    next_retry_at: null,
+    error_message: null,
+  });
+
+  if (!claimedTrade) {
+    return {
+      claimed: false as const,
+      copiedPositionAfter: trade.copied_position_after,
+    };
+  }
+
+  const lifecycle = await recordConfirmedCopyPositionMutation({
+    trade: claimedTrade,
+    wallet,
+    inputAmount,
+    outputAmount,
+    copiedPositionAfterOverride,
+  });
+
+  await updatePilotTrade(claimedTrade.id, {
+    copied_position_after: lifecycle.copiedPositionAfter,
+  });
+
+  return {
+    claimed: true as const,
+    copiedPositionAfter: lifecycle.copiedPositionAfter,
   };
 }
 
@@ -1189,6 +1269,8 @@ export async function executePilotTrade(
     status: 'building',
   });
 
+  let onchainConfirmedSignature: string | null = null;
+
   try {
     const orderResponse = await requestSwapOrder(plan, wallet.publicKey);
     const priceImpactPct = normalizePriceImpact(orderResponse.priceImpactPct ?? orderResponse.priceImpact);
@@ -1357,26 +1439,25 @@ export async function executePilotTrade(
 
     const confirmation = await waitForPilotConfirmation(connection, txSignature);
     if (confirmation.state === 'confirmed') {
+      onchainConfirmedSignature = txSignature;
       const confirmedAt = new Date().toISOString();
-      const lifecycle = await recordConfirmedCopyPositionMutation({
+      const confirmationResult = await confirmSubmittedPilotTradeWithLifecycle({
         trade,
         wallet,
+        attemptId: attempt.id,
+        confirmedAt,
+        confirmationSlot: confirmation.slot,
         inputAmount: actualInputAmount,
         outputAmount: actualOutputAmount,
+        copiedPositionAfterOverride: trade.leader_type === 'sell'
+          ? plan.postSellCopiedPositionAfterUi ?? null
+          : null,
       });
       await Promise.all([
         updatePilotTradeAttempt(attempt.id, {
           status: 'confirmed',
           tx_confirmed_at: confirmedAt,
           confirmation_slot: confirmation.slot,
-        }),
-        updatePilotTrade(trade.id, {
-          status: 'confirmed',
-          tx_confirmed_at: confirmedAt,
-          confirmation_slot: confirmation.slot,
-          winning_attempt_id: attempt.id,
-          copied_position_after: lifecycle.copiedPositionAfter,
-          next_retry_at: null,
         }),
         updatePilotRuntimeState(wallet.alias, {
           last_confirmed_tx_signature: txSignature,
@@ -1396,13 +1477,17 @@ export async function executePilotTrade(
           }).catch(() => undefined);
         });
       }
-      const residualTrade = await maybeQueueResidualExitTrade({
-        trade,
-        wallet,
-        connection,
-        attemptedInputRaw: quotedInputRaw,
-      });
-      await maybeAlertTradeConfirmed(trade, wallet.alias, txSignature);
+      const residualTrade = confirmationResult.claimed
+        ? await maybeQueueResidualExitTrade({
+          trade,
+          wallet,
+          connection,
+          attemptedInputRaw: quotedInputRaw,
+        })
+        : null;
+      if (confirmationResult.claimed) {
+        await maybeAlertTradeConfirmed(trade, wallet.alias, txSignature);
+      }
       if (residualTrade) {
         await sendLivePilotAlert('Residual exit queued', [
           `wallet=${wallet.alias}`,
@@ -1423,6 +1508,36 @@ export async function executePilotTrade(
   } catch (error: any) {
     const code = String(error?.code ?? 'execution_error');
     const message = error?.message || 'Unknown live-pilot execution error';
+
+    if (onchainConfirmedSignature) {
+      const bookkeepingMessage = `Confirmed on-chain but bookkeeping failed: ${message}`;
+      await updatePilotTradeAttempt(attempt.id, {
+        status: 'confirmed',
+        tx_signature: onchainConfirmedSignature,
+        error_code: 'post_confirmation_bookkeeping_failed',
+        error_message: bookkeepingMessage,
+      }).catch(() => undefined);
+      await updatePilotTrade(trade.id, {
+        error_message: bookkeepingMessage,
+        next_retry_at: null,
+      }).catch(() => undefined);
+      await updatePilotRuntimeState(wallet.alias, {
+        last_confirmed_tx_signature: onchainConfirmedSignature,
+        last_error: bookkeepingMessage,
+      }).catch(() => undefined);
+      await sendLivePilotAlert('Confirmed trade bookkeeping failed', [
+        `wallet=${wallet.alias}`,
+        `trade=${trade.id}`,
+        formatSolscanTxUrl(onchainConfirmedSignature),
+        bookkeepingMessage,
+      ]).catch(() => undefined);
+
+      return {
+        outcome: 'confirmed',
+        signature: onchainConfirmedSignature,
+      };
+    }
+
     const retryable =
       isRetryableExecutionCode(code)
       || isRetryableSellExecutionFailure(trade, code, message)

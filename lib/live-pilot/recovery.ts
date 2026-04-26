@@ -8,11 +8,12 @@ import {
   executeSignedOrder,
   getTradeRetryDelayMs,
   getPilotTradeMaxAttempts,
+  confirmSubmittedPilotTradeWithLifecycle,
+  getTokenBalance,
   isAmbiguousExecuteError,
   isExecuteRetryWindowOpen,
   isNoRouteFailure,
   maybeQueueResidualExitTrade,
-  recordConfirmedCopyPositionMutation,
   quarantineFailedMint,
   isRetryableBuyExecutionFailure,
   isRetryableExecutionCode,
@@ -445,6 +446,7 @@ export async function recoverSubmittedPilotTrades(args: {
 
     let outcome: RecoveryAttemptOutcome = 'pending';
     let encounteredError = false;
+    let onchainConfirmedSignature: string | null = null;
 
     try {
       await updatePilotRuntimeState(wallet.alias, {
@@ -516,44 +518,49 @@ export async function recoverSubmittedPilotTrades(args: {
             outcome = 'failed';
           }
         } else if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+          onchainConfirmedSignature = signature;
           const confirmedAt = new Date().toISOString();
-          const lifecycle = await recordConfirmedCopyPositionMutation({
+          const copiedPositionAfterOverride = trade.leader_type === 'sell' && trade.token_in_mint
+            ? await getTokenBalance(connection, wallet.publicKey, trade.token_in_mint)
+              .then((balance) => balance.uiAmount)
+              .catch(() => null)
+            : null;
+          const confirmationResult = await confirmSubmittedPilotTradeWithLifecycle({
             trade,
             wallet,
+            attemptId: attempt.id,
+            confirmedAt,
+            confirmationSlot: status.slot ?? null,
             inputAmount: attempt.actual_input_amount ?? attempt.quoted_input_amount,
             outputAmount: attempt.actual_output_amount ?? attempt.quoted_output_amount,
+            copiedPositionAfterOverride,
           });
           await updatePilotTradeAttempt(attempt.id, {
             status: 'confirmed',
             tx_confirmed_at: confirmedAt,
             confirmation_slot: status.slot ?? null,
           });
-          await updatePilotTradeIfStatus(trade.id, 'submitted', {
-            status: 'confirmed',
-            tx_confirmed_at: confirmedAt,
-            confirmation_slot: status.slot ?? null,
-            winning_attempt_id: attempt.id,
-            copied_position_after: lifecycle.copiedPositionAfter,
-            next_retry_at: null,
-            error_message: null,
-          });
           await updatePilotRuntimeState(wallet.alias, {
             last_confirmed_tx_signature: signature,
             last_error: null,
             last_reconcile_at: confirmedAt,
           });
-          const residualTrade = await maybeQueueResidualExitTrade({
-            trade,
-            wallet,
-            connection,
-            attemptedInputRaw: attempt.quoted_input_amount_raw,
-          });
-          await sendLivePilotAlert('Trade confirmed in recovery', [
-            `wallet=${wallet.alias}`,
-            `trade=${trade.id}`,
-            `signature=${signature}`,
-            formatSolscanTxUrl(signature),
-          ]).catch(() => undefined);
+          const residualTrade = confirmationResult.claimed
+            ? await maybeQueueResidualExitTrade({
+              trade,
+              wallet,
+              connection,
+              attemptedInputRaw: attempt.quoted_input_amount_raw,
+            })
+            : null;
+          if (confirmationResult.claimed) {
+            await sendLivePilotAlert('Trade confirmed in recovery', [
+              `wallet=${wallet.alias}`,
+              `trade=${trade.id}`,
+              `signature=${signature}`,
+              formatSolscanTxUrl(signature),
+            ]).catch(() => undefined);
+          }
           if (residualTrade) {
             await sendLivePilotAlert('Residual exit queued', [
               `wallet=${wallet.alias}`,
@@ -585,13 +592,33 @@ export async function recoverSubmittedPilotTrades(args: {
         }
       }
     } catch (error) {
-      encounteredError = true;
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[LIVE_PILOT] Recovery error for trade ${trade.id}:`, error);
-      await updatePilotRuntimeState(wallet.alias, {
-        last_error: message,
-        last_reconcile_at: new Date().toISOString(),
-      });
+      if (onchainConfirmedSignature) {
+        const bookkeepingMessage = `Confirmed on-chain but recovery bookkeeping failed: ${message}`;
+        await updatePilotTradeAttempt(attempt.id, {
+          status: 'confirmed',
+          tx_signature: onchainConfirmedSignature,
+          error_code: 'post_confirmation_bookkeeping_failed',
+          error_message: bookkeepingMessage,
+        }).catch(() => undefined);
+        await updatePilotTrade(trade.id, {
+          error_message: bookkeepingMessage,
+          next_retry_at: null,
+        }).catch(() => undefined);
+        await updatePilotRuntimeState(wallet.alias, {
+          last_confirmed_tx_signature: onchainConfirmedSignature,
+          last_error: bookkeepingMessage,
+          last_reconcile_at: new Date().toISOString(),
+        }).catch(() => undefined);
+        outcome = 'confirmed';
+      } else {
+        encounteredError = true;
+        await updatePilotRuntimeState(wallet.alias, {
+          last_error: message,
+          last_reconcile_at: new Date().toISOString(),
+        });
+      }
     } finally {
       if (outcome !== 'pending' || encounteredError) {
         await releasePilotRuntimeLock(wallet.alias, lockOwner);
