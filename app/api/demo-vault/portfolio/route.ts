@@ -9,8 +9,6 @@ import { supabase } from '@/lib/supabase';
 import { getTokensMetadata } from '@/lib/jupiter-tokens';
 import { getSession } from '@/lib/session';
 
-const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
-
 // USDC and wrapped SOL mints
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -144,9 +142,7 @@ export async function GET(request: NextRequest) {
     
     // 3. Fetch live prices from Jupiter
     const mints = positions.map(p => p.token_mint);
-    const priceMap = await fetchDemoVaultPriceMap(mints, {
-      apiKey: JUPITER_API_KEY,
-    });
+    const priceMap = await fetchDemoVaultPriceMap(mints);
     
     // 4. Fetch token metadata
     const tokenMeta = await getTokensMetadata(mints);

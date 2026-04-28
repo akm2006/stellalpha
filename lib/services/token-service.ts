@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { getTokenMetadata } from '@/lib/jupiter-tokens';
+import { jupiterFetch } from '@/lib/jupiter/client';
 
 export const WSOL = "So11111111111111111111111111111111111111112";
 
@@ -14,11 +15,10 @@ export async function getSolPrice(): Promise<number> {
   }
 
   try {
-    const headers: Record<string, string> = {};
-    const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
-    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-
-    const response = await fetch(`https://api.jup.ag/price/v3?ids=${WSOL}`, { headers });
+    const response = await jupiterFetch(`https://api.jup.ag/price/v3?ids=${WSOL}`, {}, {
+      scope: 'price',
+      operation: 'sol-price',
+    });
     if (response.ok) {
       const data = await response.json();
       const price = data[WSOL]?.usdPrice;

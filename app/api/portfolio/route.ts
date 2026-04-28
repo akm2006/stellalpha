@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTokensMetadata } from '@/lib/jupiter-tokens';
+import { jupiterFetch } from '@/lib/jupiter/client';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
-const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
 const HELIUS_RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -41,7 +41,13 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
+    const response = await jupiterFetch(url, {
+      ...options,
+      signal: controller.signal,
+    }, {
+      scope: 'price',
+      operation: 'portfolio-price',
+    });
     return response;
   } finally {
     clearTimeout(timeoutId);
@@ -56,8 +62,7 @@ async function fetchJupiterPrices(mints: string[]): Promise<Record<string, numbe
   if (mints.length === 0) return {};
   
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-  
+
   const allPrices: Record<string, number> = {};
   
   // Split mints into batches

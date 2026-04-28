@@ -3,6 +3,7 @@ import { formatCopyBuyModelLabel } from '@/lib/copy-models/format';
 import { parseCopyBuyModelSelection } from '@/lib/copy-models/catalog';
 import { supabase } from '@/lib/supabase';
 import { getSession } from '@/lib/session';
+import { jupiterFetch } from '@/lib/jupiter/client';
 import { getRecommendedCopyModelForStarTrader } from '@/lib/star-trader-management/service';
 
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -419,7 +420,6 @@ export async function DELETE(request: NextRequest) {
       .eq('trader_state_id', traderState.id);
     
     // Fetch current prices to calculate actual return value
-    const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
     let totalReturnValue = 0;
     
     if (positions && positions.length > 0) {
@@ -437,12 +437,15 @@ export async function DELETE(request: NextRequest) {
         const nonStableMints = mints.filter((mint) => !STABLECOIN_MINTS.has(mint));
 
         if (nonStableMints.length > 0) {
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-
-          const pricesResponse = await fetch(
+          const pricesResponse = await jupiterFetch(
             `https://api.jup.ag/price/v3?ids=${nonStableMints.join(',')}`,
-            { headers }
+            {
+              headers: { 'Content-Type': 'application/json' },
+            },
+            {
+              scope: 'price',
+              operation: 'demo-vault-return-price',
+            },
           );
 
           if (pricesResponse.ok) {

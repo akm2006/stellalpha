@@ -32,11 +32,11 @@ import {
   recordSuccessfulCopiedBuy,
   recordSuccessfulCopiedSell,
 } from '@/lib/repositories/copy-position-states.repo';
+import { jupiterFetch } from '@/lib/jupiter/client';
 import { getTokenDecimals, getTokenSymbol, WSOL } from '@/lib/services/token-service';
 import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
-const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
 const HELIUS_GATEKEEPER_ENABLED = ['1', 'true', 'yes', 'on']
   .includes((process.env.HELIUS_GATEKEEPER_ENABLED || '').trim().toLowerCase());
 const HELIUS_RPC_URL =
@@ -140,18 +140,6 @@ type ExecutionOutcome =
   | { outcome: 'submitted'; signature: string | null; recoveryPending?: boolean }
   | { outcome: 'confirmed'; signature: string }
   | { outcome: 'failed'; message: string };
-
-function buildJupiterHeaders() {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-
-  if (JUPITER_API_KEY) {
-    headers['x-api-key'] = JUPITER_API_KEY;
-  }
-
-  return headers;
-}
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -416,8 +404,13 @@ async function requestSwapOrder(
     url.searchParams.set('slippageBps', String(plan.slippageBps));
   }
 
-  const response = await fetch(url.toString(), {
-    headers: buildJupiterHeaders(),
+  const response = await jupiterFetch(url.toString(), {
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  }, {
+    scope: 'live',
+    operation: 'swap-order',
   });
 
   let payload: JupiterOrderResponse | null = null;
@@ -439,13 +432,18 @@ async function requestSwapOrder(
 export async function executeSignedOrder(requestId: string, signedTransaction: string) {
   let response: Response;
   try {
-    response = await fetch(`${JUPITER_SWAP_BASE_URL}/execute`, {
+    response = await jupiterFetch(`${JUPITER_SWAP_BASE_URL}/execute`, {
       method: 'POST',
-      headers: buildJupiterHeaders(),
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({
         requestId,
         signedTransaction,
       }),
+    }, {
+      scope: 'live',
+      operation: 'swap-execute',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1265,32 +1263,13 @@ export async function executePilotTrade(
     const derivedTxSignature = deriveTransactionSignature(transaction);
     const txBuiltAt = new Date().toISOString();
 
-    await Promise.all([
-      updatePilotTradeAttempt(attempt.id, {
-        jupiter_request_id: orderResponse.requestId || null,
-        jupiter_router: orderResponse.router || orderResponse.routerName || null,
-        last_valid_block_height: orderResponse.lastValidBlockHeight ?? null,
-        quoted_input_amount: quotedInputAmount,
-        quoted_output_amount: quotedOutputAmount,
-        quoted_input_amount_raw: quotedInputRaw,
-        price_impact_pct: priceImpactPct,
-        prioritization_fee_lamports: normalizeRawAmount(orderResponse.prioritizationFeeLamports),
-        signed_transaction: signedTransaction,
-        tx_signature: derivedTxSignature,
-        execute_retry_count: 1,
-        execute_last_attempt_at: new Date().toISOString(),
-      }),
-      updatePilotTrade(trade.id, {
-        quote_received_at: quoteReceivedAt,
-        quoted_input_amount: quotedInputAmount,
-        quoted_output_amount: quotedOutputAmount,
-        quoted_input_amount_raw: quotedInputRaw,
-        price_impact_pct: priceImpactPct,
-        tx_built_at: txBuiltAt,
-        next_retry_at: null,
-        error_message: null,
-      }),
-    ]);
+    await updatePilotTradeAttempt(attempt.id, {
+      jupiter_request_id: orderResponse.requestId || null,
+      signed_transaction: signedTransaction,
+      tx_signature: derivedTxSignature,
+      execute_retry_count: 1,
+      execute_last_attempt_at: new Date().toISOString(),
+    });
 
     let executeResponse: JupiterExecuteResponse;
     try {
@@ -1308,11 +1287,24 @@ export async function executePilotTrade(
           status: 'submitted',
           tx_signature: derivedTxSignature,
           tx_submitted_at: pendingAt,
+          jupiter_router: orderResponse.router || orderResponse.routerName || null,
+          last_valid_block_height: orderResponse.lastValidBlockHeight ?? null,
+          quoted_input_amount: quotedInputAmount,
+          quoted_output_amount: quotedOutputAmount,
+          quoted_input_amount_raw: quotedInputRaw,
+          price_impact_pct: priceImpactPct,
+          prioritization_fee_lamports: normalizeRawAmount(orderResponse.prioritizationFeeLamports),
           error_code: (error as JupiterApiError | undefined)?.code ?? 'execute_ambiguous',
           error_message: ambiguousMessage,
         }),
         updatePilotTrade(trade.id, {
           status: 'submitted',
+          quote_received_at: quoteReceivedAt,
+          quoted_input_amount: quotedInputAmount,
+          quoted_output_amount: quotedOutputAmount,
+          quoted_input_amount_raw: quotedInputRaw,
+          price_impact_pct: priceImpactPct,
+          tx_built_at: txBuiltAt,
           tx_submitted_at: pendingAt,
           tx_signature: derivedTxSignature,
           error_message: ambiguousMessage,
@@ -1358,6 +1350,13 @@ export async function executePilotTrade(
         status: 'submitted',
         tx_signature: txSignature,
         tx_submitted_at: txSubmittedAt,
+        jupiter_router: orderResponse.router || orderResponse.routerName || null,
+        last_valid_block_height: orderResponse.lastValidBlockHeight ?? null,
+        quoted_input_amount: quotedInputAmount,
+        quoted_output_amount: quotedOutputAmount,
+        quoted_input_amount_raw: quotedInputRaw,
+        price_impact_pct: priceImpactPct,
+        prioritization_fee_lamports: normalizeRawAmount(orderResponse.prioritizationFeeLamports),
         actual_input_amount: actualInputAmount,
         actual_output_amount: actualOutputAmount,
         error_code: null,
@@ -1365,6 +1364,12 @@ export async function executePilotTrade(
       }),
       updatePilotTrade(trade.id, {
         status: 'submitted',
+        quote_received_at: quoteReceivedAt,
+        quoted_input_amount: quotedInputAmount,
+        quoted_output_amount: quotedOutputAmount,
+        quoted_input_amount_raw: quotedInputRaw,
+        price_impact_pct: priceImpactPct,
+        tx_built_at: txBuiltAt,
         tx_submitted_at: txSubmittedAt,
         tx_signature: txSignature,
         actual_input_amount: actualInputAmount,

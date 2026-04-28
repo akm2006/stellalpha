@@ -71,13 +71,29 @@ export async function listRecentPilotTrades(limit: number = 25) {
 
 export type PilotTradePatch = Partial<Omit<PilotTradeRow, 'id' | 'wallet_alias' | 'wallet_public_key' | 'trigger_kind' | 'created_at' | 'updated_at'>>;
 
-export async function listQueuedPilotTrades(limit: number = 25) {
+export async function listQueuedPilotTrades(
+  limit: number = 25,
+  filters: {
+    triggerKind?: PilotTradeTriggerKind;
+    triggerReason?: string;
+  } = {},
+) {
   const nowIso = new Date().toISOString();
-  const { data, error } = await supabase
+  let query = supabase
     .from('pilot_trades')
     .select('*')
     .eq('status', 'queued')
-    .or(`next_retry_at.is.null,next_retry_at.lte.${nowIso}`)
+    .or(`next_retry_at.is.null,next_retry_at.lte.${nowIso}`);
+
+  if (filters.triggerKind) {
+    query = query.eq('trigger_kind', filters.triggerKind);
+  }
+
+  if (filters.triggerReason) {
+    query = query.eq('trigger_reason', filters.triggerReason);
+  }
+
+  const { data, error } = await query
     .order('created_at', { ascending: true })
     .limit(limit);
 

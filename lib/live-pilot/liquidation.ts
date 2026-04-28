@@ -7,10 +7,10 @@ import { listActivePilotMintQuarantines } from '@/lib/live-pilot/repositories/pi
 import { listActiveLiquidationTrades, createPilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import { updatePilotRuntimeState } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import { getCopyPositionState } from '@/lib/repositories/copy-position-states.repo';
+import { jupiterFetch } from '@/lib/jupiter/client';
 import { getSolPrice, getTokenSymbol } from '@/lib/services/token-service';
 
 const DUST_SOL_VALUE_THRESHOLD = 0.001;
-const JUPITER_API_KEY = process.env.JUPITER_API_KEY?.trim() || '';
 const WSOL = 'So11111111111111111111111111111111111111112';
 
 interface TokenHolding {
@@ -75,13 +75,11 @@ async function fetchUsdPrices(mints: string[]) {
     return {} as Record<string, number>;
   }
 
-  const headers: Record<string, string> = {};
-  if (JUPITER_API_KEY) {
-    headers['x-api-key'] = JUPITER_API_KEY;
-  }
-
   try {
-    const response = await fetch(`https://api.jup.ag/price/v3?ids=${mints.join(',')}`, { headers });
+    const response = await jupiterFetch(`https://api.jup.ag/price/v3?ids=${mints.join(',')}`, {}, {
+      scope: 'price',
+      operation: 'liquidation-price',
+    });
     if (!response.ok) {
       return {} as Record<string, number>;
     }

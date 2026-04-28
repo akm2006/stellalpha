@@ -1,3 +1,5 @@
+import { jupiterFetch, type JupiterApiScope } from '@/lib/jupiter/client';
+
 const JUPITER_PRICE_BATCH_SIZE = 50;
 
 export const DEMO_VAULT_STABLECOIN_MINTS = new Set([
@@ -60,7 +62,7 @@ export function normalizeDemoVaultPositions(
 
 export async function fetchDemoVaultPriceMap(
   mints: string[],
-  options: { apiKey?: string; fetchImpl?: typeof fetch } = {}
+  options: { apiKey?: string; fetchImpl?: typeof fetch; jupiterScope?: JupiterApiScope } = {}
 ): Promise<Map<string, DemoVaultPriceInfo>> {
   const fetchImpl = options.fetchImpl || fetch;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -86,7 +88,12 @@ export async function fetchDemoVaultPriceMap(
   for (const mintBatch of chunk(nonStableMints, JUPITER_PRICE_BATCH_SIZE)) {
     try {
       const url = `https://api.jup.ag/price/v3?ids=${mintBatch.join(',')}`;
-      const response = await fetchImpl(url, { headers });
+      const response = options.fetchImpl
+        ? await fetchImpl(url, { headers })
+        : await jupiterFetch(url, { headers }, {
+          scope: options.jupiterScope || 'price',
+          operation: 'demo-vault-price',
+        });
 
       if (!response.ok) {
         for (const mint of mintBatch) {

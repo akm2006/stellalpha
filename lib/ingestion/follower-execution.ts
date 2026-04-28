@@ -33,6 +33,7 @@ import {
   STABLECOIN_MINTS,
   WSOL
 } from '@/lib/services/token-service';
+import { jupiterFetch } from '@/lib/jupiter/client';
 
 // ============ VERCEL OPTIMIZATION: Batch limit to prevent timeouts ============
 // Vercel Pro has 60s limit, but we aim for <10s per batch for reliability
@@ -41,7 +42,6 @@ export const MAX_TRADES_PER_BATCH = 5;
 // Track active queue processors to prevent duplicate processing
 export const activeQueueProcessors = new Set<string>();
 
-const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
 const PROCESSING_STALE_MS = 5 * 60 * 1000;
 
 function getProcessorStartedAt(processorId: string | null | undefined): number | null {
@@ -408,11 +408,13 @@ export async function executeQueuedTrade(traderStateId: string, tradeRow: any, t
   quoteUrl.searchParams.append('slippageBps', slippageBps);
   // Also request auto-slippage if available, or just rely on the wider 4% band
 
-  const quoteResponse = await fetch(quoteUrl.toString(), {
+  const quoteResponse = await jupiterFetch(quoteUrl.toString(), {
     headers: {
-      'x-api-key': JUPITER_API_KEY || '',
       'Content-Type': 'application/json'
-    }
+    },
+  }, {
+    scope: 'demo',
+    operation: 'demo-quote',
   });
 
   timer.checkpoint('Jupiter: Quote request');

@@ -1,4 +1,3 @@
-import { PublicKey } from '@solana/web3.js';
 import type { FixedAvailablePctCopyModelConfig } from '@/lib/copy-models/types';
 import { RawTrade } from '@/lib/trade-parser';
 import {
@@ -26,8 +25,6 @@ import {
   recordObservedLeaderBuy,
   recordObservedLeaderSell,
 } from '@/lib/repositories/copy-position-states.repo';
-
-const LIVE_PILOT_TECHNICAL_MIN_SOL = 0;
 
 export interface PilotIntentResult {
   considered: boolean;
@@ -107,12 +104,12 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
     const controlRows = await listPilotControlStates();
     const control = buildPilotControlSnapshot(controlRows, [pilotWallet.alias]);
     const walletControl = control.wallets[0];
-    const connection = createPrivateRpcConnection();
-    const signal = trade.type === 'buy'
-      ? await computeCopyTradeSignal(trade, receivedAt, connection)
+    const tradeAgeMs = receivedAt - trade.timestamp * 1000;
+    const needsBuySignal = trade.type === 'buy' && pilotWallet.buyModelKey === 'current_ratio';
+    const signal = needsBuySignal
+      ? await computeCopyTradeSignal(trade, receivedAt, createPrivateRpcConnection())
       : null;
 
-    let deployableSol: number | null = null;
     let skipReason: string | null = null;
     let copyRatio = 0;
     let leaderPositionBefore: number | null = null;
@@ -128,25 +125,6 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       skipReason = 'global_paused';
     } else if (walletControl.is_paused) {
       skipReason = 'wallet_paused';
-    }
-
-    if (trade.type === 'buy' && !skipReason) {
-      if (!connection) {
-        skipReason = 'rpc_unavailable';
-      } else {
-        try {
-          const lamports = await connection.getBalance(new PublicKey(pilotWallet.publicKey), 'confirmed');
-          const walletBalanceSol = lamports / 1e9;
-          const reserveSol = Math.max(
-            walletBalanceSol * pilotWallet.feeReservePct,
-            pilotWallet.minFeeReserveSol,
-          );
-          deployableSol = Math.max(0, walletBalanceSol - reserveSol);
-        } catch (error: any) {
-          console.warn(`[LIVE_PILOT] Failed to fetch pilot wallet balance for ${pilotWallet.alias}:`, error?.message || error);
-          skipReason = 'balance_unavailable';
-        }
-      }
     }
 
     if (!skipReason && trade.type === 'buy') {
@@ -174,19 +152,12 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
 
       if (liveBuySizing.skipReason) {
         skipReason = liveBuySizing.skipReason;
-      } else if (signal?.isStaleBuy) {
+      } else if (tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
         skipReason = 'stale_buy';
       } else {
         const outputMint = trade.tokenOutMint || null;
         if (outputMint && await isPilotMintQuarantined(outputMint)) {
           skipReason = 'mint_quarantined';
-        }
-
-        const desiredInputSol = (deployableSol || 0) * copyRatio;
-        if (!skipReason && (deployableSol || 0) <= 0) {
-          skipReason = 'insufficient_deployable_sol';
-        } else if (!skipReason && desiredInputSol < LIVE_PILOT_TECHNICAL_MIN_SOL) {
-          skipReason = 'technically_too_small';
         }
       }
     }
@@ -236,7 +207,7 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       leader_block_timestamp: toBlockTimestampIso(trade.timestamp),
       received_at: toIso(receivedAt),
       intent_created_at: toIso(intentCreatedAt),
-      deployable_sol_at_intent: deployableSol,
+      deployable_sol_at_intent: null,
       sol_price_at_intent: signal?.solPrice ?? null,
       status,
       skip_reason: skipReason,
@@ -256,12 +227,12 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
     if (status === 'skipped') {
       console.log(
         `[LIVE_PILOT] Skipped intent for ${pilotWallet.alias} / ${trade.signature.slice(0, 12)}... `
-        + `(${skipReason}, age=${Math.round((signal?.tradeAgeMs ?? receivedAt - trade.timestamp * 1000) / 1000)}s, stale-threshold=${BUY_STALENESS_THRESHOLD_MS / 1000}s)`
+        + `(${skipReason}, age=${Math.round(tradeAgeMs / 1000)}s, stale-threshold=${BUY_STALENESS_THRESHOLD_MS / 1000}s)`
       );
     } else {
       console.log(
         `[LIVE_PILOT] Queued pilot intent for ${pilotWallet.alias} / ${trade.signature.slice(0, 12)}... `
-        + `(model=${pilotWallet.buyModelKey}, ratio=${(copyRatio * 100).toFixed(2)}%, deployable=${(deployableSol || 0).toFixed(4)} SOL)`
+        + `(model=${pilotWallet.buyModelKey}, ratio=${(copyRatio * 100).toFixed(2)}%)`
       );
     }
 

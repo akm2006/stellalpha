@@ -1,8 +1,7 @@
 // Jupiter Token API v2 with Supabase caching
 
 import { supabase } from './supabase';
-
-const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
+import { jupiterFetch } from '@/lib/jupiter/client';
 
 interface TokenMeta {
   symbol: string;
@@ -57,12 +56,13 @@ for (const [mint, meta] of Object.entries(COMMON_TOKENS)) {
 // Search for a token by mint address using Jupiter Tokens API v2
 async function fetchFromJupiter(mint: string): Promise<TokenMeta | null> {
   try {
-    const headers: Record<string, string> = {};
-    if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-    
-    const response = await fetch(
+    const response = await jupiterFetch(
       `https://api.jup.ag/tokens/v2/search?query=${encodeURIComponent(mint)}`,
-      { headers }
+      {},
+      {
+        scope: 'token',
+        operation: 'token-search',
+      },
     );
     
     if (!response.ok) return null;
@@ -97,9 +97,6 @@ async function fetchManyFromJupiter(mints: string[]): Promise<Record<string, Tok
     console.log(`[Portfolio] Limiting metadata fetch to 200 tokens (${mints.length} requested)`);
   }
   
-  const headers: Record<string, string> = {};
-  if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
-  
   const BATCH_SIZE = 15; // Smaller batches to avoid rate limits
   const TIMEOUT_MS = 8000;
   const MAX_RETRIES = 1; // Fewer retries to avoid hammering
@@ -110,7 +107,12 @@ async function fetchManyFromJupiter(mints: string[]): Promise<Record<string, Tok
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
-      const response = await fetch(url, { headers, signal: controller.signal });
+      const response = await jupiterFetch(url, {
+        signal: controller.signal,
+      }, {
+        scope: 'token',
+        operation: 'token-batch-search',
+      });
       return response;
     } finally {
       clearTimeout(timeoutId);

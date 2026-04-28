@@ -98,8 +98,6 @@ export async function DELETE(request: NextRequest) {
   }
 }
 
-const JUPITER_API_KEY = process.env.JUPITER_API_KEY;
-
 // GET: Fetch user's demo vault with trader states
 export async function GET(request: NextRequest) {
   const session = await getSession();
@@ -175,9 +173,7 @@ export async function GET(request: NextRequest) {
     });
     
     // Fetch prices only for active positions and use the same chunking path as the detail view.
-    const prices = await fetchDemoVaultPriceMap(Array.from(allMints), {
-      apiKey: JUPITER_API_KEY,
-    });
+    const prices = await fetchDemoVaultPriceMap(Array.from(allMints));
     
     // Calculate totals per trader state using LIVE prices
     const tradersWithTotals = (traderStates || []).map(ts => {

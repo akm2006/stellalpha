@@ -279,6 +279,110 @@ async function runTokenAccountRentSweep(
   }
 }
 
+async function processQueuedTradeBatch(
+  config: ReturnType<typeof getLivePilotConfig>,
+  controlSnapshot: ReturnType<typeof buildPilotControlSnapshot>,
+  walletControlMap: Map<string, ReturnType<typeof buildPilotControlSnapshot>['wallets'][number]>,
+  queuedTrades: Awaited<ReturnType<typeof listQueuedPilotTrades>>,
+) {
+  for (const trade of queuedTrades) {
+    const wallet = findPilotWalletByAlias(config, trade.wallet_alias);
+    if (!wallet || !wallet.isEnabled) {
+      await skipQueuedTrade(
+        trade.id,
+        'wallet_not_ready',
+        `Pilot wallet ${trade.wallet_alias} is not enabled in config`,
+      );
+      continue;
+    }
+
+    if (!wallet.isComplete) {
+      await skipQueuedTrade(
+        trade.id,
+        'wallet_not_ready',
+        `Pilot wallet ${trade.wallet_alias} is missing required config fields: ${wallet.missingFields.join(', ')}`,
+      );
+      continue;
+    }
+
+    const walletControl = walletControlMap.get(wallet.alias);
+    const isLiquidationTrade = trade.trigger_kind === 'liquidation';
+
+    if (!isLiquidationTrade && (controlSnapshot.global.kill_switch_active || walletControl?.kill_switch_active)) {
+      await skipQueuedTrade(
+        trade.id,
+        'kill_switch_active',
+        `Kill switch is active for wallet ${wallet.alias}`,
+      );
+      continue;
+    }
+
+    if (!isLiquidationTrade && controlSnapshot.global.is_paused) {
+      await skipQueuedTrade(
+        trade.id,
+        'global_paused',
+        'Global pause is active for live-pilot execution',
+      );
+      continue;
+    }
+
+    if (!isLiquidationTrade && walletControl?.is_paused) {
+      await skipQueuedTrade(
+        trade.id,
+        'wallet_paused',
+        `Wallet ${wallet.alias} is paused for live-pilot execution`,
+      );
+      continue;
+    }
+
+    const lockAcquired = await acquireExecutionLock(wallet.alias);
+    if (!lockAcquired) {
+      await deferQueuedTrade(
+        trade.id,
+        'wallet_busy',
+        `Wallet ${wallet.alias} was busy for more than ${LOCK_WAIT_TIMEOUT_MS}ms`,
+        WALLET_BUSY_RETRY_DELAY_MS,
+      );
+      continue;
+    }
+
+    let keepLock = false;
+
+    try {
+      const claimedTrade = await claimQueuedPilotTrade(trade.id, trade.attempt_count + 1);
+      if (!claimedTrade) {
+        continue;
+      }
+
+      const outcome = await executePilotTrade(claimedTrade, wallet, connection);
+      keepLock = outcome.outcome === 'submitted';
+
+      const summary =
+        outcome.outcome === 'skipped'
+          ? `${claimedTrade.id} skipped (${outcome.reason})`
+        : outcome.outcome === 'confirmed'
+            ? `${claimedTrade.id} confirmed (${outcome.signature})`
+          : outcome.outcome === 'submitted'
+              ? `${claimedTrade.id} submitted (${outcome.signature || 'pending_execute'})`
+            : outcome.outcome === 'requeued'
+                ? `${claimedTrade.id} requeued`
+                : `${claimedTrade.id} failed`;
+
+      console.log(`[LIVE_PILOT] ${wallet.alias}: ${summary}`);
+    } catch (error) {
+      console.error(`[LIVE_PILOT] Failed to process queued trade ${trade.id}:`, error);
+      await updatePilotTradeIfStatus(trade.id, 'building', {
+        status: 'failed',
+        error_message: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
+    } finally {
+      if (!keepLock) {
+        await releasePilotRuntimeLock(wallet.alias, lockOwner).catch(() => undefined);
+      }
+    }
+  }
+}
+
 async function processQueuedPilotTrades() {
   if (isProcessingQueue || isShuttingDown) {
     return;
@@ -300,113 +404,26 @@ async function processQueuedPilotTrades() {
       controlSnapshot.wallets.map((row) => [row.scope_key, row])
     );
 
+    const freshCopyTrades = await listQueuedPilotTrades(QUEUE_BATCH_SIZE, {
+      triggerKind: 'copy',
+      triggerReason: 'leader_trade',
+    });
+
+    if (freshCopyTrades.length > 0) {
+      await processQueuedTradeBatch(config, controlSnapshot, walletControlMap, freshCopyTrades);
+      scheduleQueueDrain();
+      return;
+    }
+
     await runLiquidationSweep(config, controlSnapshot);
     await runTokenAccountRentSweep(config, controlSnapshot);
     await runResidualExitSweep(config, controlSnapshot);
 
     const queuedTrades = await listQueuedPilotTrades(QUEUE_BATCH_SIZE);
-    if (queuedTrades.length === 0) {
-      return;
+    if (queuedTrades.length > 0) {
+      await processQueuedTradeBatch(config, controlSnapshot, walletControlMap, queuedTrades);
+      scheduleQueueDrain();
     }
-
-    for (const trade of queuedTrades) {
-      const wallet = findPilotWalletByAlias(config, trade.wallet_alias);
-      if (!wallet || !wallet.isEnabled) {
-        await skipQueuedTrade(
-          trade.id,
-          'wallet_not_ready',
-          `Pilot wallet ${trade.wallet_alias} is not enabled in config`,
-        );
-        continue;
-      }
-
-      if (!wallet.isComplete) {
-        await skipQueuedTrade(
-          trade.id,
-          'wallet_not_ready',
-          `Pilot wallet ${trade.wallet_alias} is missing required config fields: ${wallet.missingFields.join(', ')}`,
-        );
-        continue;
-      }
-
-      const walletControl = walletControlMap.get(wallet.alias);
-      const isLiquidationTrade = trade.trigger_kind === 'liquidation';
-
-      if (!isLiquidationTrade && (controlSnapshot.global.kill_switch_active || walletControl?.kill_switch_active)) {
-        await skipQueuedTrade(
-          trade.id,
-          'kill_switch_active',
-          `Kill switch is active for wallet ${wallet.alias}`,
-        );
-        continue;
-      }
-
-      if (!isLiquidationTrade && controlSnapshot.global.is_paused) {
-        await skipQueuedTrade(
-          trade.id,
-          'global_paused',
-          'Global pause is active for live-pilot execution',
-        );
-        continue;
-      }
-
-      if (!isLiquidationTrade && walletControl?.is_paused) {
-        await skipQueuedTrade(
-          trade.id,
-          'wallet_paused',
-          `Wallet ${wallet.alias} is paused for live-pilot execution`,
-        );
-        continue;
-      }
-
-      const lockAcquired = await acquireExecutionLock(wallet.alias);
-      if (!lockAcquired) {
-        await deferQueuedTrade(
-          trade.id,
-          'wallet_busy',
-          `Wallet ${wallet.alias} was busy for more than ${LOCK_WAIT_TIMEOUT_MS}ms`,
-          WALLET_BUSY_RETRY_DELAY_MS,
-        );
-        continue;
-      }
-
-      let keepLock = false;
-
-      try {
-        const claimedTrade = await claimQueuedPilotTrade(trade.id, trade.attempt_count + 1);
-        if (!claimedTrade) {
-          continue;
-        }
-
-        const outcome = await executePilotTrade(claimedTrade, wallet, connection);
-        keepLock = outcome.outcome === 'submitted';
-
-        const summary =
-          outcome.outcome === 'skipped'
-            ? `${claimedTrade.id} skipped (${outcome.reason})`
-          : outcome.outcome === 'confirmed'
-              ? `${claimedTrade.id} confirmed (${outcome.signature})`
-            : outcome.outcome === 'submitted'
-                ? `${claimedTrade.id} submitted (${outcome.signature || 'pending_execute'})`
-              : outcome.outcome === 'requeued'
-                  ? `${claimedTrade.id} requeued`
-                  : `${claimedTrade.id} failed`;
-
-        console.log(`[LIVE_PILOT] ${wallet.alias}: ${summary}`);
-      } catch (error) {
-        console.error(`[LIVE_PILOT] Failed to process queued trade ${trade.id}:`, error);
-        await updatePilotTradeIfStatus(trade.id, 'building', {
-          status: 'failed',
-          error_message: error instanceof Error ? error.message : String(error),
-        }).catch(() => undefined);
-      } finally {
-        if (!keepLock) {
-          await releasePilotRuntimeLock(wallet.alias, lockOwner).catch(() => undefined);
-        }
-      }
-    }
-
-    scheduleQueueDrain();
   } finally {
     isProcessingQueue = false;
   }
