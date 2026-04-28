@@ -16,12 +16,13 @@ import {
   listQueuedPilotTrades,
   updatePilotTradeIfStatus,
 } from '@/lib/live-pilot/repositories/pilot-trades.repo';
-import { executePilotTrade, createLivePilotConnection } from '@/lib/live-pilot/executor';
+import { executePilotTrade, createLivePilotConnection, loadPilotWalletKeypair } from '@/lib/live-pilot/executor';
 import { getLivePilotConfig, findPilotWalletByAlias } from '@/lib/live-pilot/config';
 import { enqueueLiquidationIntentsForWallet } from '@/lib/live-pilot/liquidation';
 import { enqueueResidualExitIntentsForWallet } from '@/lib/live-pilot/residual-exits';
 import { subscribeToLivePilotQueueWake, unsubscribeFromLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
 import { recoverSubmittedPilotTrades } from '@/lib/live-pilot/recovery';
+import { closeZeroTokenAccounts } from '@/lib/live-pilot/token-account-rent';
 
 const QUEUE_POLL_INTERVAL_MS = 250;
 const RECOVERY_INTERVAL_MS = 5_000;
@@ -30,12 +31,15 @@ const LOCK_WAIT_INTERVAL_MS = 250;
 const QUEUE_BATCH_SIZE = 10;
 const WALLET_BUSY_RETRY_DELAY_MS = 2_500;
 const CONTROL_CACHE_TTL_MS = 1_000;
+const TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const TOKEN_ACCOUNT_RENT_SWEEP_MAX_ACCOUNTS = 32;
 
 let isShuttingDown = false;
 let isProcessingQueue = false;
 let isRunningRecovery = false;
 let isQueueDrainScheduled = false;
 let queueWakeChannel: RealtimeChannel | null = null;
+const tokenAccountRentSweepNextAt = new Map<string, number>();
 
 type PilotControlSnapshot = ReturnType<typeof buildPilotControlSnapshot>;
 
@@ -213,6 +217,68 @@ async function runResidualExitSweep(
   }
 }
 
+async function runTokenAccountRentSweep(
+  config: ReturnType<typeof getLivePilotConfig>,
+  controlSnapshot: ReturnType<typeof buildPilotControlSnapshot>,
+) {
+  const now = Date.now();
+
+  for (const wallet of config.wallets.filter((entry) => entry.isEnabled && entry.isComplete && entry.hasSecret)) {
+    if (!wallet.secret) {
+      continue;
+    }
+
+    const nextSweepAt = tokenAccountRentSweepNextAt.get(wallet.alias) || 0;
+    if (nextSweepAt > now) {
+      continue;
+    }
+
+    const walletControl = controlSnapshot.wallets.find((row) => row.scope_key === wallet.alias);
+    const maintenanceBlocked =
+      controlSnapshot.global.is_paused
+      || controlSnapshot.global.kill_switch_active
+      || controlSnapshot.global.liquidation_requested
+      || walletControl?.is_paused
+      || walletControl?.kill_switch_active
+      || walletControl?.liquidation_requested;
+
+    if (maintenanceBlocked) {
+      continue;
+    }
+
+    const lockAcquired = await acquireExecutionLock(wallet.alias);
+    if (!lockAcquired) {
+      tokenAccountRentSweepNextAt.set(wallet.alias, now + WALLET_BUSY_RETRY_DELAY_MS);
+      continue;
+    }
+
+    try {
+      const keypair = loadPilotWalletKeypair(wallet.secret);
+      const result = await closeZeroTokenAccounts({
+        connection,
+        owner: keypair,
+        maxAccounts: TOKEN_ACCOUNT_RENT_SWEEP_MAX_ACCOUNTS,
+        alertTitle: 'Live-pilot token account rent sweep',
+        alertContext: [`walletAlias=${wallet.alias}`],
+      });
+
+      tokenAccountRentSweepNextAt.set(wallet.alias, Date.now() + TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS);
+
+      if (result.closed > 0) {
+        console.log(
+          `[LIVE_PILOT] ${wallet.alias}: closed ${result.closed} zero-balance token account(s), `
+          + `reclaimed ${result.reclaimedSol.toFixed(6)} SOL`,
+        );
+      }
+    } catch (error) {
+      tokenAccountRentSweepNextAt.set(wallet.alias, Date.now() + TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS);
+      console.error(`[LIVE_PILOT] Failed token-account rent sweep for ${wallet.alias}:`, error);
+    } finally {
+      await releasePilotRuntimeLock(wallet.alias, lockOwner).catch(() => undefined);
+    }
+  }
+}
+
 async function processQueuedPilotTrades() {
   if (isProcessingQueue || isShuttingDown) {
     return;
@@ -235,6 +301,7 @@ async function processQueuedPilotTrades() {
     );
 
     await runLiquidationSweep(config, controlSnapshot);
+    await runTokenAccountRentSweep(config, controlSnapshot);
     await runResidualExitSweep(config, controlSnapshot);
 
     const queuedTrades = await listQueuedPilotTrades(QUEUE_BATCH_SIZE);
