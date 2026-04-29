@@ -96,6 +96,8 @@ let lastYellowstoneMessageTime = Date.now();
 let isReconnecting = false;
 let isDrainingParsedQueue = false;
 let isShuttingDown = false;
+let parsedQueueBackoffUntil = 0;
+let parsedQueueBackoffMs = 5_000;
 let backoffMs = 1000;
 let yellowstoneAbortController: AbortController | null = null;
 let yellowstoneStreamTask: Promise<void> | null = null;
@@ -105,6 +107,8 @@ const recentBlockMetaBySlot = new Map<number, CachedBlockMeta>();
 const observedTransactionSlots = new Map<number, number>();
 
 const MAX_BACKOFF = 30000;
+const PARSED_QUEUE_FAILURE_BACKOFF_INITIAL_MS = 5_000;
+const PARSED_QUEUE_FAILURE_BACKOFF_MAX_MS = 60_000;
 const STARTUP_RECONCILE_LIMIT = 25;
 const YELLOWSTONE_STALE_THRESHOLD_MS = 60 * 1000;
 const BLOCK_META_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -213,8 +217,14 @@ async function drainParsedTxQueue() {
     return;
   }
 
+  if (Date.now() < parsedQueueBackoffUntil) {
+    return;
+  }
+
   const queueRecords = await readParsedTxMessages(PARSED_TX_BATCH_SIZE);
   if (queueRecords.length === 0) {
+    parsedQueueBackoffUntil = 0;
+    parsedQueueBackoffMs = PARSED_QUEUE_FAILURE_BACKOFF_INITIAL_MS;
     return;
   }
 
@@ -283,12 +293,21 @@ async function drainParsedTxQueue() {
       await archiveParsedTxMessages(
         fetchResult.archivedMessageIds.filter((msgId) => !nonTradeArchiveIds.includes(msgId))
       );
+      parsedQueueBackoffUntil = 0;
+      parsedQueueBackoffMs = PARSED_QUEUE_FAILURE_BACKOFF_INITIAL_MS;
     } catch (error) {
       console.error('[WORKER] Orchestrator error on parsed batch:', error);
     }
   } finally {
     isDrainingParsedQueue = false;
   }
+}
+
+function recordParsedQueueFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  parsedQueueBackoffUntil = Date.now() + parsedQueueBackoffMs;
+  console.error(`[WORKER] Parsed tx queue error; backing off ${parsedQueueBackoffMs}ms:`, message);
+  parsedQueueBackoffMs = Math.min(parsedQueueBackoffMs * 2, PARSED_QUEUE_FAILURE_BACKOFF_MAX_MS);
 }
 
 // ── Carbon parser counters (logged periodically) ─────────────────────────────
@@ -700,7 +719,7 @@ async function startWorker() {
 
   setInterval(syncTrackedWallets, 60 * 1000);
   setInterval(() => {
-    drainParsedTxQueue().catch(console.error);
+    drainParsedTxQueue().catch(recordParsedQueueFailure);
   }, PARSED_TX_REQUEST_INTERVAL_MS);
   setInterval(pruneYellowstoneCaches, 60 * 1000);
 

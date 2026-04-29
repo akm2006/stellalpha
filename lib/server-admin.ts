@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { createSupabaseFetch } from '@/lib/supabase-fetch';
 
 // NOTE: This client should ONLY be used in server-side API routes.
 // It bypasses Row Level Security (RLS) if the Service Role Key is used.
@@ -15,5 +16,8 @@ export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
   auth: {
     autoRefreshToken: false,
     persistSession: false,
+  },
+  global: {
+    fetch: createSupabaseFetch(),
   },
 });

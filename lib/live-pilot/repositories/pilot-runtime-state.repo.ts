@@ -1,10 +1,40 @@
 import { supabase } from '@/lib/supabase';
+import { hasPostgresConnection, pgMaybeOne, pgOne, pgQuery } from '@/lib/db/postgres';
 import type { PilotRuntimeStateRow, PilotWalletConfigSummary } from '@/lib/live-pilot/types';
 
 const LOCK_STALE_AFTER_MS = 90_000;
 
 export async function ensurePilotRuntimeState(wallets: Pick<PilotWalletConfigSummary, 'alias' | 'starTrader' | 'mode'>[]) {
   if (wallets.length === 0) {
+    return;
+  }
+
+  if (hasPostgresConnection()) {
+    await pgQuery(
+      `
+        insert into public.pilot_runtime_state (
+          wallet_alias,
+          star_trader,
+          mode
+        )
+        select *
+        from jsonb_to_recordset($1::jsonb) as rows(
+          wallet_alias text,
+          star_trader text,
+          mode text
+        )
+        on conflict (wallet_alias) do nothing
+      `,
+      [
+        JSON.stringify(
+          wallets.map((wallet) => ({
+            wallet_alias: wallet.alias,
+            star_trader: wallet.starTrader || null,
+            mode: wallet.mode,
+          })),
+        ),
+      ],
+    );
     return;
   }
 
@@ -29,6 +59,18 @@ export async function listPilotRuntimeStates(walletAliases: string[]) {
     return [] as PilotRuntimeStateRow[];
   }
 
+  if (hasPostgresConnection()) {
+    return pgQuery<PilotRuntimeStateRow>(
+      `
+        select *
+        from public.pilot_runtime_state
+        where wallet_alias = any($1::text[])
+        order by wallet_alias asc
+      `,
+      [walletAliases],
+    );
+  }
+
   const { data, error } = await supabase
     .from('pilot_runtime_state')
     .select('*')
@@ -43,6 +85,17 @@ export async function listPilotRuntimeStates(walletAliases: string[]) {
 }
 
 export async function getPilotRuntimeState(walletAlias: string) {
+  if (hasPostgresConnection()) {
+    return pgMaybeOne<PilotRuntimeStateRow>(
+      `
+        select *
+        from public.pilot_runtime_state
+        where wallet_alias = $1
+      `,
+      [walletAlias],
+    );
+  }
+
   const { data, error } = await supabase
     .from('pilot_runtime_state')
     .select('*')
@@ -57,6 +110,38 @@ export async function getPilotRuntimeState(walletAlias: string) {
 }
 
 export async function updatePilotRuntimeState(walletAlias: string, patch: Partial<Omit<PilotRuntimeStateRow, 'wallet_alias' | 'updated_at'>>) {
+  if (hasPostgresConnection()) {
+    return pgOne<PilotRuntimeStateRow>(
+      `
+        update public.pilot_runtime_state
+        set star_trader = coalesce($2, star_trader),
+            mode = coalesce($3, mode),
+            lock_owner = case when $4::boolean then $5 else lock_owner end,
+            last_seen_star_trade_signature = coalesce($6, last_seen_star_trade_signature),
+            last_submitted_tx_signature = coalesce($7, last_submitted_tx_signature),
+            last_confirmed_tx_signature = coalesce($8, last_confirmed_tx_signature),
+            last_error = case when $9::boolean then $10 else last_error end,
+            last_reconcile_at = coalesce($11::timestamptz, last_reconcile_at),
+            updated_at = now()
+        where wallet_alias = $1
+        returning *
+      `,
+      [
+        walletAlias,
+        patch.star_trader ?? null,
+        patch.mode ?? null,
+        Object.prototype.hasOwnProperty.call(patch, 'lock_owner'),
+        patch.lock_owner ?? null,
+        patch.last_seen_star_trade_signature ?? null,
+        patch.last_submitted_tx_signature ?? null,
+        patch.last_confirmed_tx_signature ?? null,
+        Object.prototype.hasOwnProperty.call(patch, 'last_error'),
+        patch.last_error ?? null,
+        patch.last_reconcile_at ?? null,
+      ],
+    );
+  }
+
   const { data, error } = await supabase
     .from('pilot_runtime_state')
     .update({
@@ -80,6 +165,23 @@ export async function tryAcquirePilotRuntimeLock(walletAlias: string, lockOwner:
     lock_owner: lockOwner,
     updated_at: new Date().toISOString(),
   };
+
+  if (hasPostgresConnection()) {
+    return pgMaybeOne<PilotRuntimeStateRow>(
+      `
+        update public.pilot_runtime_state
+        set lock_owner = $2,
+            updated_at = now()
+        where wallet_alias = $1
+          and (
+            lock_owner is null
+            or updated_at < $3::timestamptz
+          )
+        returning *
+      `,
+      [walletAlias, lockOwner, staleBeforeIso],
+    );
+  }
 
   const unlockedAttempt = await supabase
     .from('pilot_runtime_state')
@@ -113,6 +215,20 @@ export async function tryAcquirePilotRuntimeLock(walletAlias: string, lockOwner:
 }
 
 export async function releasePilotRuntimeLock(walletAlias: string, lockOwner: string) {
+  if (hasPostgresConnection()) {
+    return pgMaybeOne<PilotRuntimeStateRow>(
+      `
+        update public.pilot_runtime_state
+        set lock_owner = null,
+            updated_at = now()
+        where wallet_alias = $1
+          and lock_owner = $2
+        returning *
+      `,
+      [walletAlias, lockOwner],
+    );
+  }
+
   const { data, error } = await supabase
     .from('pilot_runtime_state')
     .update({
@@ -133,6 +249,19 @@ export async function releasePilotRuntimeLock(walletAlias: string, lockOwner: st
 
 export async function clearPilotRuntimeLocks(walletAliases: string[]) {
   if (walletAliases.length === 0) {
+    return;
+  }
+
+  if (hasPostgresConnection()) {
+    await pgQuery(
+      `
+        update public.pilot_runtime_state
+        set lock_owner = null,
+            updated_at = now()
+        where wallet_alias = any($1::text[])
+      `,
+      [walletAliases],
+    );
     return;
   }
 

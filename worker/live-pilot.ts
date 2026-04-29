@@ -24,8 +24,10 @@ import { subscribeToLivePilotQueueWake, unsubscribeFromLivePilotQueueWake } from
 import { recoverSubmittedPilotTrades } from '@/lib/live-pilot/recovery';
 import { closeZeroTokenAccounts } from '@/lib/live-pilot/token-account-rent';
 
-const QUEUE_POLL_INTERVAL_MS = 250;
+const QUEUE_POLL_INTERVAL_MS = 1_000;
 const RECOVERY_INTERVAL_MS = 5_000;
+const FAILURE_BACKOFF_INITIAL_MS = 5_000;
+const FAILURE_BACKOFF_MAX_MS = 60_000;
 const LOCK_WAIT_TIMEOUT_MS = 2_000;
 const LOCK_WAIT_INTERVAL_MS = 250;
 const QUEUE_BATCH_SIZE = 10;
@@ -40,6 +42,10 @@ let isRunningRecovery = false;
 let isQueueDrainScheduled = false;
 let queueWakeChannel: RealtimeChannel | null = null;
 const tokenAccountRentSweepNextAt = new Map<string, number>();
+let queueBackoffUntil = 0;
+let queueBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
+let recoveryBackoffUntil = 0;
+let recoveryBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
 
 type PilotControlSnapshot = ReturnType<typeof buildPilotControlSnapshot>;
 
@@ -57,7 +63,7 @@ function wait(ms: number) {
 }
 
 function scheduleQueueDrain() {
-  if (isShuttingDown || isQueueDrainScheduled) {
+  if (isShuttingDown || isQueueDrainScheduled || Date.now() < queueBackoffUntil) {
     return;
   }
 
@@ -65,7 +71,7 @@ function scheduleQueueDrain() {
   setTimeout(() => {
     isQueueDrainScheduled = false;
     processQueuedPilotTrades().catch((error) => {
-      console.error('[LIVE_PILOT] Scheduled queue drain error:', error);
+      recordLoopFailure('queue', error);
     });
   }, 0);
 }
@@ -180,6 +186,32 @@ async function runLiquidationSweep(
       await releasePilotRuntimeLock(wallet.alias, lockOwner).catch(() => undefined);
     }
   }
+}
+
+function recordLoopSuccess(loop: 'queue' | 'recovery') {
+  if (loop === 'queue') {
+    queueBackoffUntil = 0;
+    queueBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
+    return;
+  }
+
+  recoveryBackoffUntil = 0;
+  recoveryBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
+}
+
+function recordLoopFailure(loop: 'queue' | 'recovery', error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (loop === 'queue') {
+    queueBackoffUntil = Date.now() + queueBackoffMs;
+    console.error(`[LIVE_PILOT] Queue loop error; backing off ${queueBackoffMs}ms:`, message);
+    queueBackoffMs = Math.min(queueBackoffMs * 2, FAILURE_BACKOFF_MAX_MS);
+    return;
+  }
+
+  recoveryBackoffUntil = Date.now() + recoveryBackoffMs;
+  console.error(`[LIVE_PILOT] Recovery loop error; backing off ${recoveryBackoffMs}ms:`, message);
+  recoveryBackoffMs = Math.min(recoveryBackoffMs * 2, FAILURE_BACKOFF_MAX_MS);
 }
 
 async function runResidualExitSweep(
@@ -388,6 +420,10 @@ async function processQueuedPilotTrades() {
     return;
   }
 
+  if (Date.now() < queueBackoffUntil) {
+    return;
+  }
+
   isProcessingQueue = true;
 
   try {
@@ -424,6 +460,8 @@ async function processQueuedPilotTrades() {
       await processQueuedTradeBatch(config, controlSnapshot, walletControlMap, queuedTrades);
       scheduleQueueDrain();
     }
+
+    recordLoopSuccess('queue');
   } finally {
     isProcessingQueue = false;
   }
@@ -431,6 +469,10 @@ async function processQueuedPilotTrades() {
 
 async function runRecoveryLoop() {
   if (isRunningRecovery || isShuttingDown) {
+    return;
+  }
+
+  if (Date.now() < recoveryBackoffUntil) {
     return;
   }
 
@@ -458,6 +500,8 @@ async function runRecoveryLoop() {
     if (summary.requeued > 0) {
       scheduleQueueDrain();
     }
+
+    recordLoopSuccess('recovery');
   } finally {
     isRunningRecovery = false;
   }
@@ -506,13 +550,13 @@ async function startWorker() {
 
   setInterval(() => {
     processQueuedPilotTrades().catch((error) => {
-      console.error('[LIVE_PILOT] Queue loop error:', error);
+      recordLoopFailure('queue', error);
     });
   }, QUEUE_POLL_INTERVAL_MS);
 
   setInterval(() => {
     runRecoveryLoop().catch((error) => {
-      console.error('[LIVE_PILOT] Recovery loop error:', error);
+      recordLoopFailure('recovery', error);
     });
   }, RECOVERY_INTERVAL_MS);
 }

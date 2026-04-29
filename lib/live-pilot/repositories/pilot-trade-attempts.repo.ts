@@ -1,4 +1,10 @@
 import { supabase } from '@/lib/supabase';
+import {
+  buildUpdateAssignments,
+  hasPostgresConnection,
+  pgOne,
+  pgQuery,
+} from '@/lib/db/postgres';
 import type { PilotTradeAttemptRow } from '@/lib/live-pilot/types';
 
 const NON_BREAKER_ERROR_CODES = new Set([
@@ -49,6 +55,71 @@ export interface CreatePilotTradeAttemptInput {
 export type PilotTradeAttemptPatch = Partial<Omit<PilotTradeAttemptRow, 'id' | 'pilot_trade_id' | 'attempt_number' | 'created_at' | 'updated_at'>>;
 
 export async function createPilotTradeAttempt(attempt: CreatePilotTradeAttemptInput) {
+  if (hasPostgresConnection()) {
+    return pgOne<PilotTradeAttemptRow>(
+      `
+        insert into public.pilot_trade_attempts (
+          pilot_trade_id,
+          attempt_number,
+          execution_mode,
+          slippage_bps,
+          jupiter_request_id,
+          jupiter_router,
+          last_valid_block_height,
+          quoted_input_amount,
+          quoted_output_amount,
+          quoted_input_amount_raw,
+          price_impact_pct,
+          prioritization_fee_lamports,
+          signed_transaction,
+          execute_retry_count,
+          execute_last_attempt_at,
+          tx_signature,
+          tx_submitted_at,
+          tx_confirmed_at,
+          confirmation_slot,
+          actual_input_amount,
+          actual_output_amount,
+          status,
+          error_code,
+          error_message
+        )
+        values (
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          $9, $10, $11, $12, $13, coalesce($14, 0), $15, $16,
+          $17, $18, $19, $20, $21, $22, $23, $24
+        )
+        returning *
+      `,
+      [
+        attempt.pilot_trade_id,
+        attempt.attempt_number,
+        attempt.execution_mode,
+        attempt.slippage_bps ?? null,
+        attempt.jupiter_request_id ?? null,
+        attempt.jupiter_router ?? null,
+        attempt.last_valid_block_height ?? null,
+        attempt.quoted_input_amount ?? null,
+        attempt.quoted_output_amount ?? null,
+        attempt.quoted_input_amount_raw ?? null,
+        attempt.price_impact_pct ?? null,
+        attempt.prioritization_fee_lamports ?? null,
+        attempt.signed_transaction ?? null,
+        attempt.execute_retry_count ?? 0,
+        attempt.execute_last_attempt_at ?? null,
+        attempt.tx_signature ?? null,
+        attempt.tx_submitted_at ?? null,
+        attempt.tx_confirmed_at ?? null,
+        attempt.confirmation_slot ?? null,
+        attempt.actual_input_amount ?? null,
+        attempt.actual_output_amount ?? null,
+        attempt.status,
+        attempt.error_code ?? null,
+        attempt.error_message ?? null,
+      ],
+    );
+  }
+
   const { data, error } = await supabase
     .from('pilot_trade_attempts')
     .insert(attempt)
@@ -63,6 +134,19 @@ export async function createPilotTradeAttempt(attempt: CreatePilotTradeAttemptIn
 }
 
 export async function updatePilotTradeAttempt(attemptId: string, patch: PilotTradeAttemptPatch) {
+  if (hasPostgresConnection()) {
+    const { assignments, values } = buildUpdateAssignments(patch);
+    return pgOne<PilotTradeAttemptRow>(
+      `
+        update public.pilot_trade_attempts
+        set ${[...assignments, 'updated_at = now()'].join(', ')}
+        where id = $1
+        returning *
+      `,
+      [attemptId, ...values],
+    );
+  }
+
   const { data, error } = await supabase
     .from('pilot_trade_attempts')
     .update({
@@ -81,6 +165,18 @@ export async function updatePilotTradeAttempt(attemptId: string, patch: PilotTra
 }
 
 export async function listRecentPilotTradeAttempts(limit: number = 25) {
+  if (hasPostgresConnection()) {
+    return pgQuery<PilotTradeAttemptRow>(
+      `
+        select *
+        from public.pilot_trade_attempts
+        order by created_at desc
+        limit $1
+      `,
+      [limit],
+    );
+  }
+
   const { data, error } = await supabase
     .from('pilot_trade_attempts')
     .select('*')
@@ -95,6 +191,19 @@ export async function listRecentPilotTradeAttempts(limit: number = 25) {
 }
 
 export async function listSubmittedPilotTradeAttempts(limit: number = 50) {
+  if (hasPostgresConnection()) {
+    return pgQuery<PilotTradeAttemptRow>(
+      `
+        select *
+        from public.pilot_trade_attempts
+        where status = 'submitted'
+        order by updated_at asc
+        limit $1
+      `,
+      [limit],
+    );
+  }
+
   const { data, error } = await supabase
     .from('pilot_trade_attempts')
     .select('*')
@@ -116,6 +225,24 @@ export async function countRecentFailedPilotTradeAttempts(
     leaderType?: string;
   },
 ) {
+  if (hasPostgresConnection()) {
+    const rows = await pgQuery<{ count: number }>(
+      `
+        select count(*)::int as count
+        from public.pilot_trade_attempts attempts
+        join public.pilot_trades trades
+          on trades.id = attempts.pilot_trade_id
+        where trades.wallet_alias = $1
+          and attempts.status = 'failed'
+          and attempts.created_at >= $2::timestamptz
+          and ($3::text is null or trades.leader_type = $3)
+          and not (coalesce(attempts.error_code, '') = any($4::text[]))
+      `,
+      [walletAlias, sinceIso, options?.leaderType ?? null, Array.from(NON_BREAKER_ERROR_CODES)],
+    );
+    return rows[0]?.count || 0;
+  }
+
   const { data: trades, error: tradesError } = await supabase
     .from('pilot_trades')
     .select('id, leader_type')

@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import { hasPostgresConnection, pgMaybeOne, pgOne, pgQuery } from '@/lib/db/postgres';
 import {
   applyObservedLeaderBuy,
   applyObservedLeaderSell,
@@ -54,6 +55,7 @@ async function upsertCopyPositionState(
   metadata: TransitionMetadata,
   snapshot: CopyPositionLifecycleSnapshot,
 ) {
+  const now = new Date().toISOString();
   const payload: Record<string, string | number | null> = {
     scope_type: metadata.scopeType,
     scope_key: metadata.scopeKey,
@@ -64,7 +66,7 @@ async function upsertCopyPositionState(
     copied_open_amount: snapshot.copiedOpenAmount,
     copied_cost_usd: snapshot.copiedCostUsd,
     avg_cost_usd: snapshot.avgCostUsd,
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   };
 
   if (metadata.tradeSignature) {
@@ -73,6 +75,52 @@ async function upsertCopyPositionState(
 
   if (metadata.tradeTimestampIso) {
     payload.last_leader_trade_at = metadata.tradeTimestampIso;
+  }
+
+  if (hasPostgresConnection()) {
+    return pgOne<CopyPositionStateRow>(
+      `
+        insert into public.copy_position_states (
+          scope_type,
+          scope_key,
+          star_trader,
+          mint,
+          token_symbol,
+          leader_open_amount,
+          copied_open_amount,
+          copied_cost_usd,
+          avg_cost_usd,
+          last_leader_trade_signature,
+          last_leader_trade_at,
+          updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::timestamptz, $12::timestamptz)
+        on conflict (scope_type, scope_key, star_trader, mint) do update
+        set token_symbol = coalesce(excluded.token_symbol, public.copy_position_states.token_symbol),
+            leader_open_amount = excluded.leader_open_amount,
+            copied_open_amount = excluded.copied_open_amount,
+            copied_cost_usd = excluded.copied_cost_usd,
+            avg_cost_usd = excluded.avg_cost_usd,
+            last_leader_trade_signature = coalesce(excluded.last_leader_trade_signature, public.copy_position_states.last_leader_trade_signature),
+            last_leader_trade_at = coalesce(excluded.last_leader_trade_at, public.copy_position_states.last_leader_trade_at),
+            updated_at = excluded.updated_at
+        returning *
+      `,
+      [
+        metadata.scopeType,
+        metadata.scopeKey,
+        metadata.starTrader,
+        metadata.mint,
+        metadata.tokenSymbol,
+        snapshot.leaderOpenAmount,
+        snapshot.copiedOpenAmount,
+        snapshot.copiedCostUsd,
+        snapshot.avgCostUsd,
+        metadata.tradeSignature,
+        metadata.tradeTimestampIso,
+        now,
+      ],
+    );
   }
 
   const { data, error } = await supabase
@@ -91,6 +139,21 @@ async function upsertCopyPositionState(
 }
 
 export async function getCopyPositionState(key: CopyPositionStateKey) {
+  if (hasPostgresConnection()) {
+    return pgMaybeOne<CopyPositionStateRow>(
+      `
+        select *
+        from public.copy_position_states
+        where scope_type = $1
+          and scope_key = $2
+          and star_trader = $3
+          and mint = $4
+        limit 1
+      `,
+      [key.scopeType, key.scopeKey, key.starTrader, key.mint],
+    );
+  }
+
   const { data, error } = await supabase
     .from('copy_position_states')
     .select('*')
@@ -111,6 +174,22 @@ export async function listLeaderClosedCopiedOpenPilotStates(args: {
   scopeKey: string;
   starTrader: string;
 }) {
+  if (hasPostgresConnection()) {
+    return pgQuery<CopyPositionStateRow>(
+      `
+        select *
+        from public.copy_position_states
+        where scope_type = 'pilot'
+          and scope_key = $1
+          and star_trader = $2
+          and leader_open_amount <= 0.000000001
+          and copied_open_amount > 0.000000001
+        order by updated_at desc
+      `,
+      [args.scopeKey, args.starTrader],
+    );
+  }
+
   const { data, error } = await supabase
     .from('copy_position_states')
     .select('*')
