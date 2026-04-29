@@ -54,6 +54,7 @@ const EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
 const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_MAX_MS = 8_000;
 const FAST_BUY_REQUOTE_DELAY_MS = 250;
+const BUY_RETRY_MIN_REMAINING_MS = 750;
 export const LIVE_PILOT_TECHNICAL_MIN_SOL = 0;
 const BUY_RETRY_SLIPPAGE_LADDER_BPS = [1000, 1500, 2000];
 const SELL_SLIPPAGE_LADDER_BPS = [1000, 3000, 5000, 8000];
@@ -506,11 +507,15 @@ export async function getTokenBalance(
   };
 }
 
-export function shouldSkipStaleBuyAtExecution(trade: PilotTradeRow, nowMs: number = Date.now()) {
-  if (trade.leader_type !== 'buy' || trade.attempt_count > 1) {
+export function shouldSkipStaleBuyAtExecution(
+  trade: Pick<PilotTradeRow, 'leader_type' | 'leader_block_timestamp'>,
+  nowMs: number = Date.now(),
+) {
+  if (trade.leader_type !== 'buy') {
     return {
       stale: false,
       ageMs: 0,
+      remainingMs: BUY_STALENESS_THRESHOLD_MS,
     };
   }
 
@@ -519,6 +524,7 @@ export function shouldSkipStaleBuyAtExecution(trade: PilotTradeRow, nowMs: numbe
     return {
       stale: false,
       ageMs: 0,
+      remainingMs: BUY_STALENESS_THRESHOLD_MS,
     };
   }
 
@@ -526,7 +532,26 @@ export function shouldSkipStaleBuyAtExecution(trade: PilotTradeRow, nowMs: numbe
   return {
     stale: ageMs > BUY_STALENESS_THRESHOLD_MS,
     ageMs,
+    remainingMs: Math.max(0, BUY_STALENESS_THRESHOLD_MS - ageMs),
   };
+}
+
+function buildStaleBuyMessage(trade: Pick<PilotTradeRow, 'leader_type' | 'leader_block_timestamp'>, stage: string) {
+  const staleBuy = shouldSkipStaleBuyAtExecution(trade);
+  return `Buy intent is ${Math.round(staleBuy.ageMs / 1000)}s old before ${stage}; hard cutoff is ${BUY_STALENESS_THRESHOLD_MS / 1000}s`;
+}
+
+export function hasBuyRetryBudget(
+  trade: Pick<PilotTradeRow, 'leader_type' | 'leader_block_timestamp'>,
+  retryDelayMs: number,
+  nowMs: number = Date.now(),
+) {
+  if (trade.leader_type !== 'buy') {
+    return true;
+  }
+
+  const staleBuy = shouldSkipStaleBuyAtExecution(trade, nowMs);
+  return !staleBuy.stale && staleBuy.remainingMs > retryDelayMs + BUY_RETRY_MIN_REMAINING_MS;
 }
 
 async function buildExecutionPlan(
@@ -544,12 +569,20 @@ async function buildExecutionPlan(
   }
 
   if (trade.leader_type === 'buy') {
+    if (!trade.leader_block_timestamp) {
+      return {
+        kind: 'skip',
+        reason: 'missing_leader_timestamp',
+        message: 'Buy intent is missing leader_block_timestamp, so freshness cannot be verified',
+      };
+    }
+
     const staleBuy = shouldSkipStaleBuyAtExecution(trade);
     if (staleBuy.stale) {
       return {
         kind: 'skip',
         reason: 'stale_buy',
-        message: `Buy intent is ${Math.round(staleBuy.ageMs / 1000)}s old before first execution attempt`,
+        message: buildStaleBuyMessage(trade, 'execution planning'),
       };
     }
 
@@ -1212,7 +1245,39 @@ export async function executePilotTrade(
   let onchainConfirmedSignature: string | null = null;
 
   try {
+    const staleBeforeOrder = shouldSkipStaleBuyAtExecution(trade);
+    if (staleBeforeOrder.stale) {
+      const message = buildStaleBuyMessage(trade, 'Jupiter order request');
+      await Promise.all([
+        updatePilotTradeAttempt(attempt.id, {
+          status: 'failed',
+          error_code: 'stale_buy',
+          error_message: message,
+        }),
+        updatePilotTrade(trade.id, {
+          status: 'skipped',
+          skip_reason: 'stale_buy',
+          error_message: message,
+          next_retry_at: null,
+        }),
+        updatePilotRuntimeState(wallet.alias, {
+          last_error: message,
+        }),
+      ]);
+      return {
+        outcome: 'skipped',
+        reason: 'stale_buy',
+        message,
+      };
+    }
+
+    const executionStartedAt = Date.now();
+    console.log(
+      `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} type=${trade.leader_type} `
+      + `stage=order_start ageMs=${shouldSkipStaleBuyAtExecution(trade, executionStartedAt).ageMs}`,
+    );
     const orderResponse = await requestSwapOrder(plan, wallet.publicKey);
+    const orderReturnedAt = Date.now();
     const priceImpactPct = normalizePriceImpact(orderResponse.priceImpactPct ?? orderResponse.priceImpact);
     const quotedInputRaw = normalizeRawAmount(orderResponse.inputAmount ?? orderResponse.inAmount) || plan.inputAmountRaw;
     const quotedOutputRaw = normalizeRawAmount(orderResponse.outputAmount ?? orderResponse.outAmount);
@@ -1221,6 +1286,50 @@ export async function executePilotTrade(
       : null;
     const quotedInputAmount = rawToUi(quotedInputRaw, plan.quotedInputDecimals);
     const quoteReceivedAt = new Date().toISOString();
+    console.log(
+      `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} type=${trade.leader_type} `
+      + `stage=order_done durationMs=${orderReturnedAt - executionStartedAt} `
+      + `ageMs=${shouldSkipStaleBuyAtExecution(trade, orderReturnedAt).ageMs}`,
+    );
+
+    const staleAfterOrder = shouldSkipStaleBuyAtExecution(trade);
+    if (staleAfterOrder.stale) {
+      const message = buildStaleBuyMessage(trade, 'transaction signing');
+      await Promise.all([
+        updatePilotTradeAttempt(attempt.id, {
+          status: 'failed',
+          error_code: 'stale_buy',
+          error_message: message,
+          jupiter_request_id: orderResponse.requestId || null,
+          jupiter_router: orderResponse.router || orderResponse.routerName || null,
+          last_valid_block_height: orderResponse.lastValidBlockHeight ?? null,
+          quoted_input_amount: quotedInputAmount,
+          quoted_output_amount: quotedOutputAmount,
+          quoted_input_amount_raw: quotedInputRaw,
+          price_impact_pct: priceImpactPct,
+          prioritization_fee_lamports: normalizeRawAmount(orderResponse.prioritizationFeeLamports),
+        }),
+        updatePilotTrade(trade.id, {
+          status: 'skipped',
+          skip_reason: 'stale_buy',
+          error_message: message,
+          quote_received_at: quoteReceivedAt,
+          quoted_input_amount: quotedInputAmount,
+          quoted_output_amount: quotedOutputAmount,
+          quoted_input_amount_raw: quotedInputRaw,
+          price_impact_pct: priceImpactPct,
+          next_retry_at: null,
+        }),
+        updatePilotRuntimeState(wallet.alias, {
+          last_error: message,
+        }),
+      ]);
+      return {
+        outcome: 'skipped',
+        reason: 'stale_buy',
+        message,
+      };
+    }
 
     const shouldEnforcePriceImpact =
       trade.leader_type === 'buy'
@@ -1271,7 +1380,40 @@ export async function executePilotTrade(
       execute_last_attempt_at: new Date().toISOString(),
     });
 
+    const staleBeforeExecute = shouldSkipStaleBuyAtExecution(trade);
+    if (staleBeforeExecute.stale) {
+      const message = buildStaleBuyMessage(trade, 'Jupiter execute request');
+      await Promise.all([
+        updatePilotTradeAttempt(attempt.id, {
+          status: 'failed',
+          error_code: 'stale_buy',
+          error_message: message,
+        }),
+        updatePilotTrade(trade.id, {
+          status: 'skipped',
+          skip_reason: 'stale_buy',
+          error_message: message,
+          quote_received_at: quoteReceivedAt,
+          quoted_input_amount: quotedInputAmount,
+          quoted_output_amount: quotedOutputAmount,
+          quoted_input_amount_raw: quotedInputRaw,
+          price_impact_pct: priceImpactPct,
+          tx_built_at: txBuiltAt,
+          next_retry_at: null,
+        }),
+        updatePilotRuntimeState(wallet.alias, {
+          last_error: message,
+        }),
+      ]);
+      return {
+        outcome: 'skipped',
+        reason: 'stale_buy',
+        message,
+      };
+    }
+
     let executeResponse: JupiterExecuteResponse;
+    const executeStartedAt = Date.now();
     try {
       executeResponse = await executeSignedOrder(orderResponse.requestId!, signedTransaction);
     } catch (error) {
@@ -1324,6 +1466,11 @@ export async function executePilotTrade(
       ]).catch(() => undefined);
       return { outcome: 'submitted', signature: null, recoveryPending: true };
     }
+    console.log(
+      `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} type=${trade.leader_type} `
+      + `stage=execute_done durationMs=${Date.now() - executeStartedAt} `
+      + `ageMs=${shouldSkipStaleBuyAtExecution(trade).ageMs}`,
+    );
 
     const txSignature = executeResponse.signature || executeResponse.txid || executeResponse.transactionId || null;
     const txSubmittedAt = new Date().toISOString();
@@ -1508,9 +1655,15 @@ export async function executePilotTrade(
       && isNoRouteFailure(message)
       && trade.attempt_count >= plan.maxAttempts;
 
-    const canRetry = classification.retryable && trade.attempt_count < plan.maxAttempts;
+    const retryDelayMs = getTradeRetryDelayMs(trade, trade.attempt_count, code, message);
+    const buyRateLimited = trade.leader_type === 'buy' && code === '429';
+    const buyRetryBudgetAvailable = hasBuyRetryBudget(trade, retryDelayMs);
+    const canRetry =
+      classification.retryable
+      && trade.attempt_count < plan.maxAttempts
+      && !buyRateLimited
+      && buyRetryBudgetAvailable;
     if (canRetry) {
-      const retryDelayMs = getTradeRetryDelayMs(trade, trade.attempt_count, code, message);
       const nextRetryAt = await queueTradeRetry(trade, wallet.alias, message, {
         txSignature: failedTxSignature,
         txSubmittedAt: failedSubmittedAt,
@@ -1525,6 +1678,48 @@ export async function executePilotTrade(
       return {
         outcome: 'requeued',
         message,
+      };
+    }
+
+    if (trade.leader_type === 'buy' && classification.retryable && !buyRetryBudgetAvailable) {
+      const staleMessage = `${message}; not retrying because the buy would exceed the ${BUY_STALENESS_THRESHOLD_MS / 1000}s execution cutoff`;
+      await updatePilotTrade(trade.id, {
+        status: 'skipped',
+        skip_reason: 'stale_buy',
+        error_message: staleMessage,
+        next_retry_at: null,
+        ...(failedTxSignature ? { tx_signature: failedTxSignature } : {}),
+        ...(failedSubmittedAt ? { tx_submitted_at: failedSubmittedAt } : {}),
+      });
+      await updatePilotRuntimeState(wallet.alias, {
+        ...(failedTxSignature ? { last_submitted_tx_signature: failedTxSignature } : {}),
+        last_error: staleMessage,
+      });
+      return {
+        outcome: 'skipped',
+        reason: 'stale_buy',
+        message: staleMessage,
+      };
+    }
+
+    if (buyRateLimited) {
+      const rateLimitMessage = `${message}; not retrying rate-limited buy inside the ${BUY_STALENESS_THRESHOLD_MS / 1000}s execution window`;
+      await updatePilotTrade(trade.id, {
+        status: 'skipped',
+        skip_reason: 'rate_limited_buy',
+        error_message: rateLimitMessage,
+        next_retry_at: null,
+        ...(failedTxSignature ? { tx_signature: failedTxSignature } : {}),
+        ...(failedSubmittedAt ? { tx_submitted_at: failedSubmittedAt } : {}),
+      });
+      await updatePilotRuntimeState(wallet.alias, {
+        ...(failedTxSignature ? { last_submitted_tx_signature: failedTxSignature } : {}),
+        last_error: rateLimitMessage,
+      });
+      return {
+        outcome: 'skipped',
+        reason: 'rate_limited_buy',
+        message: rateLimitMessage,
       };
     }
 

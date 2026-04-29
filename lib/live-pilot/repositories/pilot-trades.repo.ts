@@ -6,6 +6,7 @@ import {
   pgOne,
   pgQuery,
 } from '@/lib/db/postgres';
+import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 import { broadcastLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
 import type { PilotTradeRow, PilotTradeStatus, PilotTradeTriggerKind } from '@/lib/live-pilot/types';
 
@@ -230,6 +231,160 @@ export async function listQueuedPilotTrades(
 
   if (error) {
     throw new Error(`Failed to list queued live-pilot trades: ${error.message}`);
+  }
+
+  return (data || []) as PilotTradeRow[];
+}
+
+export async function listFreshQueuedCopyBuyTrades(limit: number = 25, nowMs: number = Date.now()) {
+  const cutoffIso = new Date(nowMs - BUY_STALENESS_THRESHOLD_MS).toISOString();
+
+  if (hasPostgresConnection()) {
+    return pgQuery<PilotTradeRow>(
+      `
+        select *
+        from public.pilot_trades
+        where status = 'queued'
+          and trigger_kind = 'copy'
+          and trigger_reason = 'leader_trade'
+          and leader_type = 'buy'
+          and leader_block_timestamp is not null
+          and leader_block_timestamp >= $2::timestamptz
+          and (next_retry_at is null or next_retry_at <= now())
+        order by leader_block_timestamp desc, created_at desc
+        limit $1
+      `,
+      [limit, cutoffIso],
+    );
+  }
+
+  const nowIso = new Date(nowMs).toISOString();
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .select('*')
+    .eq('status', 'queued')
+    .eq('trigger_kind', 'copy')
+    .eq('trigger_reason', 'leader_trade')
+    .eq('leader_type', 'buy')
+    .gte('leader_block_timestamp', cutoffIso)
+    .or(`next_retry_at.is.null,next_retry_at.lte.${nowIso}`)
+    .order('leader_block_timestamp', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to list fresh queued live-pilot buys: ${error.message}`);
+  }
+
+  return (data || []) as PilotTradeRow[];
+}
+
+export async function listQueuedCopySellTrades(limit: number = 25) {
+  if (hasPostgresConnection()) {
+    return pgQuery<PilotTradeRow>(
+      `
+        select *
+        from public.pilot_trades
+        where status = 'queued'
+          and trigger_kind = 'copy'
+          and trigger_reason = 'leader_trade'
+          and leader_type = 'sell'
+          and (next_retry_at is null or next_retry_at <= now())
+        order by created_at asc
+        limit $1
+      `,
+      [limit],
+    );
+  }
+
+  const nowIso = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .select('*')
+    .eq('status', 'queued')
+    .eq('trigger_kind', 'copy')
+    .eq('trigger_reason', 'leader_trade')
+    .eq('leader_type', 'sell')
+    .or(`next_retry_at.is.null,next_retry_at.lte.${nowIso}`)
+    .order('created_at', { ascending: true })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to list queued live-pilot sells: ${error.message}`);
+  }
+
+  return (data || []) as PilotTradeRow[];
+}
+
+export async function skipExpiredQueuedCopyBuyTrades(limit: number = 500, nowMs: number = Date.now()) {
+  const cutoffIso = new Date(nowMs - BUY_STALENESS_THRESHOLD_MS).toISOString();
+  const message = `Buy expired in worker queue before claim; hard cutoff is ${BUY_STALENESS_THRESHOLD_MS / 1000}s`;
+
+  if (hasPostgresConnection()) {
+    return pgQuery<PilotTradeRow>(
+      `
+        with expired as (
+          select id
+          from public.pilot_trades
+          where status = 'queued'
+            and trigger_kind = 'copy'
+            and trigger_reason = 'leader_trade'
+            and leader_type = 'buy'
+            and leader_block_timestamp is not null
+            and leader_block_timestamp < $2::timestamptz
+          order by leader_block_timestamp asc, created_at asc
+          limit $1
+        )
+        update public.pilot_trades trades
+        set status = 'skipped',
+            skip_reason = 'stale_buy',
+            error_message = $3,
+            next_retry_at = null,
+            updated_at = now()
+        from expired
+        where trades.id = expired.id
+        returning trades.*
+      `,
+      [limit, cutoffIso, message],
+    );
+  }
+
+  const { data: expiredRows, error: selectError } = await supabase
+    .from('pilot_trades')
+    .select('id')
+    .eq('status', 'queued')
+    .eq('trigger_kind', 'copy')
+    .eq('trigger_reason', 'leader_trade')
+    .eq('leader_type', 'buy')
+    .lt('leader_block_timestamp', cutoffIso)
+    .order('leader_block_timestamp', { ascending: true })
+    .order('created_at', { ascending: true })
+    .limit(limit);
+
+  if (selectError) {
+    throw new Error(`Failed to select expired queued live-pilot buys: ${selectError.message}`);
+  }
+
+  const ids = (expiredRows || []).map((row: any) => row.id).filter(Boolean);
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .update({
+      status: 'skipped',
+      skip_reason: 'stale_buy',
+      error_message: message,
+      next_retry_at: null,
+      updated_at: new Date(nowMs).toISOString(),
+    })
+    .in('id', ids)
+    .eq('status', 'queued')
+    .select('*');
+
+  if (error) {
+    throw new Error(`Failed to skip expired queued live-pilot buys: ${error.message}`);
   }
 
   return (data || []) as PilotTradeRow[];

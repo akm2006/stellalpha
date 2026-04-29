@@ -434,6 +434,12 @@ export default function DemoVaultPage() {
     try {
       const response = await fetch(`/api/demo-vault?wallet=${walletAddress}`);
       const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || 'Failed to fetch vault');
+        return;
+      }
+
       if (data.exists) {
         setVault(data.vault);
         setTraderStates(data.traderStates || []);

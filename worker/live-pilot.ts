@@ -13,10 +13,18 @@ import {
 import { ensurePilotRuntimeState, releasePilotRuntimeLock, tryAcquirePilotRuntimeLock } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import {
   claimQueuedPilotTrade,
+  listFreshQueuedCopyBuyTrades,
+  listQueuedCopySellTrades,
   listQueuedPilotTrades,
+  skipExpiredQueuedCopyBuyTrades,
   updatePilotTradeIfStatus,
 } from '@/lib/live-pilot/repositories/pilot-trades.repo';
-import { executePilotTrade, createLivePilotConnection, loadPilotWalletKeypair } from '@/lib/live-pilot/executor';
+import {
+  executePilotTrade,
+  createLivePilotConnection,
+  loadPilotWalletKeypair,
+  shouldSkipStaleBuyAtExecution,
+} from '@/lib/live-pilot/executor';
 import { getLivePilotConfig, findPilotWalletByAlias } from '@/lib/live-pilot/config';
 import { enqueueLiquidationIntentsForWallet } from '@/lib/live-pilot/liquidation';
 import { enqueueResidualExitIntentsForWallet } from '@/lib/live-pilot/residual-exits';
@@ -367,6 +375,25 @@ async function processQueuedTradeBatch(
       continue;
     }
 
+    if (trade.leader_type === 'buy' && !trade.leader_block_timestamp) {
+      await skipQueuedTrade(
+        trade.id,
+        'missing_leader_timestamp',
+        'Buy freshness cannot be verified without leader_block_timestamp',
+      );
+      continue;
+    }
+
+    const staleBuy = shouldSkipStaleBuyAtExecution(trade);
+    if (staleBuy.stale) {
+      await skipQueuedTrade(
+        trade.id,
+        'stale_buy',
+        `Buy expired before worker lock; age=${Math.round(staleBuy.ageMs / 1000)}s, remaining=0ms`,
+      );
+      continue;
+    }
+
     const lockAcquired = await acquireExecutionLock(wallet.alias);
     if (!lockAcquired) {
       await deferQueuedTrade(
@@ -440,13 +467,22 @@ async function processQueuedPilotTrades() {
       controlSnapshot.wallets.map((row) => [row.scope_key, row])
     );
 
-    const freshCopyTrades = await listQueuedPilotTrades(QUEUE_BATCH_SIZE, {
-      triggerKind: 'copy',
-      triggerReason: 'leader_trade',
-    });
+    const expiredBuyTrades = await skipExpiredQueuedCopyBuyTrades();
+    if (expiredBuyTrades.length > 0) {
+      console.log(`[LIVE_PILOT] Skipped ${expiredBuyTrades.length} expired queued buy intent(s) before execution`);
+    }
+
+    const freshCopyTrades = await listFreshQueuedCopyBuyTrades(QUEUE_BATCH_SIZE);
 
     if (freshCopyTrades.length > 0) {
       await processQueuedTradeBatch(config, controlSnapshot, walletControlMap, freshCopyTrades);
+      scheduleQueueDrain();
+      return;
+    }
+
+    const sellCopyTrades = await listQueuedCopySellTrades(QUEUE_BATCH_SIZE);
+    if (sellCopyTrades.length > 0) {
+      await processQueuedTradeBatch(config, controlSnapshot, walletControlMap, sellCopyTrades);
       scheduleQueueDrain();
       return;
     }

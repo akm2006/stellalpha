@@ -25,6 +25,7 @@ import {
   recordObservedLeaderBuy,
   recordObservedLeaderSell,
 } from '@/lib/repositories/copy-position-states.repo';
+import type { PilotWalletConfigSummary } from '@/lib/live-pilot/types';
 
 export interface PilotIntentResult {
   considered: boolean;
@@ -40,6 +41,46 @@ function toIso(ms: number) {
 
 function toBlockTimestampIso(timestampSeconds: number) {
   return new Date(timestampSeconds * 1000).toISOString();
+}
+
+const INTENT_CONTROL_CACHE_TTL_MS = 500;
+const ensuredIntentStateAliases = new Set<string>();
+let intentControlCache: {
+  expiresAt: number;
+  walletAlias: string;
+  snapshot: ReturnType<typeof buildPilotControlSnapshot>;
+} | null = null;
+
+async function ensureIntentStateOnce(pilotWallet: PilotWalletConfigSummary) {
+  if (ensuredIntentStateAliases.has(pilotWallet.alias)) {
+    return;
+  }
+
+  await Promise.all([
+    ensurePilotControlState([pilotWallet.alias]),
+    ensurePilotRuntimeState([pilotWallet]),
+  ]);
+  ensuredIntentStateAliases.add(pilotWallet.alias);
+}
+
+async function getIntentControlSnapshot(walletAlias: string) {
+  const now = Date.now();
+  if (
+    intentControlCache
+    && intentControlCache.walletAlias === walletAlias
+    && intentControlCache.expiresAt > now
+  ) {
+    return intentControlCache.snapshot;
+  }
+
+  const controlRows = await listPilotControlStates();
+  const snapshot = buildPilotControlSnapshot(controlRows, [walletAlias]);
+  intentControlCache = {
+    walletAlias,
+    expiresAt: now + INTENT_CONTROL_CACHE_TTL_MS,
+    snapshot,
+  };
+  return snapshot;
 }
 
 function resolveLiveBuyCopyRatio(args: {
@@ -80,8 +121,7 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
     return { considered: false, created: false, duplicate: false };
   }
 
-  await ensurePilotControlState([pilotWallet.alias]);
-  await ensurePilotRuntimeState([pilotWallet]);
+  await ensureIntentStateOnce(pilotWallet);
 
   const existingIntent = await getCopyPilotTradeByWalletSignature(pilotWallet.alias, trade.signature);
   if (existingIntent) {
@@ -101,14 +141,10 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
   };
 
   try {
-    const controlRows = await listPilotControlStates();
-    const control = buildPilotControlSnapshot(controlRows, [pilotWallet.alias]);
+    const control = await getIntentControlSnapshot(pilotWallet.alias);
     const walletControl = control.wallets[0];
     const tradeAgeMs = receivedAt - trade.timestamp * 1000;
-    const needsBuySignal = trade.type === 'buy' && pilotWallet.buyModelKey === 'current_ratio';
-    const signal = needsBuySignal
-      ? await computeCopyTradeSignal(trade, receivedAt, createPrivateRpcConnection())
-      : null;
+    let signal: Awaited<ReturnType<typeof computeCopyTradeSignal>> | null = null;
 
     let skipReason: string | null = null;
     let copyRatio = 0;
@@ -128,6 +164,35 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
     }
 
     if (!skipReason && trade.type === 'buy') {
+      if (tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
+        skipReason = 'stale_buy';
+      } else {
+        const outputMint = trade.tokenOutMint || null;
+        if (outputMint && await isPilotMintQuarantined(outputMint)) {
+          skipReason = 'mint_quarantined';
+        }
+      }
+    }
+
+    if (!skipReason && trade.type === 'buy') {
+      const needsBuySignal = pilotWallet.buyModelKey === 'current_ratio';
+      signal = needsBuySignal
+        ? await computeCopyTradeSignal(trade, receivedAt, createPrivateRpcConnection())
+        : null;
+
+      const liveBuySizing = resolveLiveBuyCopyRatio({
+        buyModelKey: pilotWallet.buyModelKey,
+        buyModelConfig: pilotWallet.buyModelConfig,
+        signalFinalRatio: signal?.finalRatio || 0,
+      });
+      copyRatio = liveBuySizing.copyRatio;
+
+      if (liveBuySizing.skipReason) {
+        skipReason = liveBuySizing.skipReason;
+      }
+    }
+
+    if (!skipReason && trade.type === 'buy') {
       const leaderBuy = await recordObservedLeaderBuy({
         scopeType: 'pilot',
         scopeKey: pilotWallet.alias,
@@ -142,24 +207,6 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       leaderPositionBefore = leaderBuy.leaderPositionBefore;
       leaderPositionAfter = leaderBuy.leaderPositionAfter;
       copiedPositionBefore = leaderBuy.copiedPositionBefore;
-
-      const liveBuySizing = resolveLiveBuyCopyRatio({
-        buyModelKey: pilotWallet.buyModelKey,
-        buyModelConfig: pilotWallet.buyModelConfig,
-        signalFinalRatio: signal?.finalRatio || 0,
-      });
-      copyRatio = liveBuySizing.copyRatio;
-
-      if (liveBuySizing.skipReason) {
-        skipReason = liveBuySizing.skipReason;
-      } else if (tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
-        skipReason = 'stale_buy';
-      } else {
-        const outputMint = trade.tokenOutMint || null;
-        if (outputMint && await isPilotMintQuarantined(outputMint)) {
-          skipReason = 'mint_quarantined';
-        }
-      }
     }
 
     if (!skipReason && trade.type === 'sell') {
@@ -211,7 +258,9 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       sol_price_at_intent: signal?.solPrice ?? null,
       status,
       skip_reason: skipReason,
-      error_message: null,
+      error_message: skipReason
+        ? `Intent skipped at producer stage: ${skipReason}; age=${Math.round(tradeAgeMs)}ms`
+        : null,
     });
 
     await updatePilotRuntimeState(pilotWallet.alias, {

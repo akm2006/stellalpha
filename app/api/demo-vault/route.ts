@@ -152,16 +152,19 @@ export async function GET(request: NextRequest) {
       .eq('vault_id', vault.id);
 
     const traderStateIds = (traderStates || []).map((state) => state.id);
-    const { data: tradeStatsRows, error: tradeStatsError } = traderStateIds.length > 0
-      ? await supabase.rpc('get_demo_trade_stats', { p_trader_state_ids: traderStateIds })
-      : { data: [], error: null };
+    let tradeStatsMap = createDemoTradeStatsMap(traderStateIds, []);
 
-    if (tradeStatsError) {
-      console.error('Demo vault stats fetch error:', tradeStatsError);
-      return NextResponse.json({ error: 'Failed to fetch trader state stats' }, { status: 500 });
+    if (traderStateIds.length > 0) {
+      const { data: tradeStatsRows, error: tradeStatsError } = await supabase.rpc('get_demo_trade_stats', {
+        p_trader_state_ids: traderStateIds,
+      });
+
+      if (tradeStatsError) {
+        console.warn('Demo vault stats fetch failed; continuing without aggregate stats:', tradeStatsError);
+      } else {
+        tradeStatsMap = createDemoTradeStatsMap(traderStateIds, tradeStatsRows);
+      }
     }
-
-    const tradeStatsMap = createDemoTradeStatsMap(traderStateIds, tradeStatsRows);
       
     // Collect all mints
     const allMints = new Set<string>();
