@@ -14,7 +14,6 @@ import type { PilotTradeRow } from '@/lib/live-pilot/types';
 import { formatSolscanTxUrl, sendLivePilotAlert } from '@/lib/live-pilot/alerts';
 import { evaluateSellExitProtection, evaluateWalletCircuitBreaker } from '@/lib/live-pilot/breaker';
 import { broadcastLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
-import { closeZeroTokenAccounts } from '@/lib/live-pilot/token-account-rent';
 import { isPilotMintQuarantined, quarantinePilotMint } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
 import {
   createPilotTradeAttempt,
@@ -23,6 +22,7 @@ import {
 import { updatePilotRuntimeState } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import {
   createPilotTrade,
+  sumSubmittedInputRawAmounts,
   updatePilotTrade,
   updatePilotTradeIfStatus,
 } from '@/lib/live-pilot/repositories/pilot-trades.repo';
@@ -33,6 +33,11 @@ import {
   recordSuccessfulCopiedSell,
 } from '@/lib/repositories/copy-position-states.repo';
 import { jupiterFetch } from '@/lib/jupiter/client';
+import {
+  getCachedSolBalance,
+  getCachedTokenBalance,
+  recordSubmittedSwapInCache,
+} from '@/lib/live-pilot/execution-state-cache';
 import { getTokenDecimals, getTokenSymbol, WSOL } from '@/lib/services/token-service';
 import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 
@@ -55,6 +60,11 @@ const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_MAX_MS = 8_000;
 const FAST_BUY_REQUOTE_DELAY_MS = 250;
 const BUY_RETRY_MIN_REMAINING_MS = 750;
+const BUY_REQUEST_TIMEOUT_SAFETY_MS = 400;
+const DEFAULT_BUY_ORDER_TIMEOUT_MS = 2_500;
+const DEFAULT_BUY_EXECUTE_TIMEOUT_MS = 2_500;
+const DEFAULT_SELL_ORDER_TIMEOUT_MS = 6_000;
+const DEFAULT_SELL_EXECUTE_TIMEOUT_MS = 6_000;
 export const LIVE_PILOT_TECHNICAL_MIN_SOL = 0;
 const BUY_RETRY_SLIPPAGE_LADDER_BPS = [1000, 1500, 2000];
 const SELL_SLIPPAGE_LADDER_BPS = [1000, 3000, 5000, 8000];
@@ -142,8 +152,9 @@ type ExecutionOutcome =
   | { outcome: 'confirmed'; signature: string }
   | { outcome: 'failed'; message: string };
 
-function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function readPositiveIntEnv(name: string, fallback: number) {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
 function isOlderThan(timestamp: string | null | undefined, ms: number) {
@@ -187,6 +198,11 @@ function rawToUi(rawAmount: string | bigint, decimals: number) {
 function uiToRaw(amount: number, decimals: number) {
   const scaled = Math.floor(amount * Math.pow(10, decimals));
   return BigInt(Math.max(scaled, 0));
+}
+
+function subtractPendingRaw(rawAmount: string | bigint, pendingRaw: bigint) {
+  const raw = typeof rawAmount === 'bigint' ? rawAmount : BigInt(rawAmount);
+  return raw > pendingRaw ? raw - pendingRaw : 0n;
 }
 
 function ceilDiv(numerator: bigint, denominator: bigint) {
@@ -357,7 +373,16 @@ export function classifyJupiterFailure(
 }
 
 export function isRetryableExecutionCode(code: string | null) {
-  return code === '429' || code === '-1000' || code === '-2000' || code === '-2003';
+  return (
+    code === '429'
+    || code === '-1000'
+    || code === '-2000'
+    || code === '-2003'
+    || code === 'order_timeout'
+    || code === 'order_transport_error'
+    || code === 'execute_timeout'
+    || code === 'execute_transport_error'
+  );
 }
 
 export function isAmbiguousExecuteError(error: unknown) {
@@ -391,9 +416,44 @@ function deriveTransactionSignature(transaction: VersionedTransaction) {
   return transaction.signatures[0] ? bs58.encode(transaction.signatures[0]) : null;
 }
 
+function getLiveJupiterTimeoutMs(
+  stage: 'order' | 'execute',
+  trade: Pick<PilotTradeRow, 'leader_type' | 'leader_block_timestamp'>,
+) {
+  const isBuy = trade.leader_type === 'buy';
+  const configuredTimeout = readPositiveIntEnv(
+    isBuy
+      ? stage === 'order'
+        ? 'JUPITER_LIVE_BUY_ORDER_TIMEOUT_MS'
+        : 'JUPITER_LIVE_BUY_EXECUTE_TIMEOUT_MS'
+      : stage === 'order'
+        ? 'JUPITER_LIVE_SELL_ORDER_TIMEOUT_MS'
+        : 'JUPITER_LIVE_SELL_EXECUTE_TIMEOUT_MS',
+    isBuy
+      ? stage === 'order'
+        ? DEFAULT_BUY_ORDER_TIMEOUT_MS
+        : DEFAULT_BUY_EXECUTE_TIMEOUT_MS
+      : stage === 'order'
+        ? DEFAULT_SELL_ORDER_TIMEOUT_MS
+        : DEFAULT_SELL_EXECUTE_TIMEOUT_MS,
+  );
+
+  if (!isBuy) {
+    return configuredTimeout;
+  }
+
+  const staleBuy = shouldSkipStaleBuyAtExecution(trade);
+  if (staleBuy.stale) {
+    return 1;
+  }
+
+  return Math.max(1, Math.min(configuredTimeout, staleBuy.remainingMs - BUY_REQUEST_TIMEOUT_SAFETY_MS));
+}
+
 async function requestSwapOrder(
   plan: Extract<ExecutionPlan, { kind: 'swap' }>,
   taker: string,
+  trade: Pick<PilotTradeRow, 'leader_type' | 'leader_block_timestamp'>,
 ) {
   const url = new URL(`${JUPITER_SWAP_BASE_URL}/order`);
   url.searchParams.set('inputMint', plan.inputMint);
@@ -405,14 +465,27 @@ async function requestSwapOrder(
     url.searchParams.set('slippageBps', String(plan.slippageBps));
   }
 
-  const response = await jupiterFetch(url.toString(), {
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  }, {
-    scope: 'live',
-    operation: 'swap-order',
-  });
+  let response: Response;
+  try {
+    response = await jupiterFetch(url.toString(), {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    }, {
+      scope: 'live',
+      operation: 'swap-order',
+      timeoutMs: getLiveJupiterTimeoutMs('order', trade),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const lower = message.toLowerCase();
+    const isTimeout = lower.includes('timed out') || lower.includes('aborted');
+    throw createJupiterError(
+      isTimeout ? 'order_timeout' : 'order_transport_error',
+      message,
+      'order',
+    );
+  }
 
   let payload: JupiterOrderResponse | null = null;
   try {
@@ -430,7 +503,11 @@ async function requestSwapOrder(
   return payload;
 }
 
-export async function executeSignedOrder(requestId: string, signedTransaction: string) {
+export async function executeSignedOrder(
+  requestId: string,
+  signedTransaction: string,
+  trade?: Pick<PilotTradeRow, 'leader_type' | 'leader_block_timestamp'>,
+) {
   let response: Response;
   try {
     response = await jupiterFetch(`${JUPITER_SWAP_BASE_URL}/execute`, {
@@ -445,10 +522,13 @@ export async function executeSignedOrder(requestId: string, signedTransaction: s
     }, {
       scope: 'live',
       operation: 'swap-execute',
+      timeoutMs: trade ? getLiveJupiterTimeoutMs('execute', trade) : undefined,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw createJupiterError('execute_transport_error', message, 'execute');
+    const lower = message.toLowerCase();
+    const isTimeout = lower.includes('timed out') || lower.includes('aborted');
+    throw createJupiterError(isTimeout ? 'execute_timeout' : 'execute_transport_error', message, 'execute');
   }
 
   let payload: JupiterExecuteResponse | null = null;
@@ -595,8 +675,15 @@ async function buildExecutionPlan(
       };
     }
 
-    const lamports = await connection.getBalance(new PublicKey(wallet.publicKey), 'confirmed');
-    const walletBalanceSol = lamports / 1e9;
+    const [solBalance, pendingSolInputRaw] = await Promise.all([
+      getCachedSolBalance(connection, wallet.publicKey),
+      sumSubmittedInputRawAmounts({
+        walletAlias: wallet.alias,
+        leaderType: 'buy',
+      }),
+    ]);
+    const availableLamports = subtractPendingRaw(solBalance.rawLamports, pendingSolInputRaw);
+    const walletBalanceSol = rawToUi(availableLamports, 9);
     const reserveSol = Math.max(
       walletBalanceSol * wallet.feeReservePct,
       wallet.minFeeReserveSol,
@@ -658,11 +745,27 @@ async function buildExecutionPlan(
     };
   }
 
-  const [tokenBalance, lamports] = await Promise.all([
-    getTokenBalance(connection, wallet.publicKey, inputMint),
-    connection.getBalance(new PublicKey(wallet.publicKey), 'confirmed'),
+  const [tokenBalance, solBalance, pendingTokenInputRaw] = await Promise.all([
+    getCachedTokenBalance(
+      wallet.publicKey,
+      inputMint,
+      () => getTokenBalance(connection, wallet.publicKey, inputMint),
+    ),
+    getCachedSolBalance(connection, wallet.publicKey),
+    sumSubmittedInputRawAmounts({
+      walletAlias: wallet.alias,
+      leaderType: 'sell',
+      inputMint,
+    }),
   ]);
-  if (tokenBalance.uiAmount <= 0) {
+  const availableTokenRaw = subtractPendingRaw(tokenBalance.rawAmount, pendingTokenInputRaw);
+  const availableTokenBalance = {
+    ...tokenBalance,
+    rawAmount: availableTokenRaw.toString(),
+    uiAmount: rawToUi(availableTokenRaw, tokenBalance.decimals),
+  };
+
+  if (availableTokenBalance.uiAmount <= 0) {
     return {
       kind: 'skip',
       reason: 'insufficient_balance',
@@ -670,7 +773,7 @@ async function buildExecutionPlan(
       };
   }
 
-  const walletBalanceSol = lamports / 1e9;
+  const walletBalanceSol = solBalance.uiAmount;
   if (walletBalanceSol < wallet.minFeeReserveSol) {
     return {
       kind: 'skip',
@@ -688,11 +791,11 @@ async function buildExecutionPlan(
     };
   }
 
-  const effectiveCopiedPositionBefore = Math.min(copiedPositionBefore, tokenBalance.uiAmount);
+  const effectiveCopiedPositionBefore = Math.min(copiedPositionBefore, availableTokenBalance.uiAmount);
   const desiredAmountUi = effectiveCopiedPositionBefore * copyRatio;
   const desiredAmountRaw = copyRatio >= 0.999
-    ? BigInt(tokenBalance.rawAmount)
-    : uiToRaw(desiredAmountUi, tokenBalance.decimals);
+    ? BigInt(availableTokenBalance.rawAmount)
+    : uiToRaw(desiredAmountUi, availableTokenBalance.decimals);
 
   if (desiredAmountRaw <= BigInt(0)) {
     return {
@@ -707,9 +810,9 @@ async function buildExecutionPlan(
     ? desiredAmountRaw
     : (desiredAmountRaw * chunkFraction.numerator) / chunkFraction.denominator;
   const attemptedAmountRaw = chunkedAmountRaw > 0n ? chunkedAmountRaw : desiredAmountRaw > 0n ? 1n : 0n;
-  const clampedAttemptedAmountRaw = attemptedAmountRaw < BigInt(tokenBalance.rawAmount)
+  const clampedAttemptedAmountRaw = attemptedAmountRaw < BigInt(availableTokenBalance.rawAmount)
     ? attemptedAmountRaw
-    : BigInt(tokenBalance.rawAmount);
+    : BigInt(availableTokenBalance.rawAmount);
 
   if (clampedAttemptedAmountRaw <= 0n) {
     return {
@@ -719,23 +822,26 @@ async function buildExecutionPlan(
     };
   }
 
-  const positionDriftAmount = copiedPositionBefore - tokenBalance.uiAmount;
+  const positionDriftAmount = copiedPositionBefore - availableTokenBalance.uiAmount;
   const hasPositionDrift = Math.abs(positionDriftAmount) > Math.max(1e-9, Math.abs(copiedPositionBefore) * 0.001);
   const positionDriftMessage = hasPositionDrift
-    ? `Copied position ${copiedPositionBefore.toFixed(6)} ${getTokenSymbol(inputMint)} differs from on-chain balance ${tokenBalance.uiAmount.toFixed(6)}; using on-chain balance for sell sizing`
+    ? `Copied position ${copiedPositionBefore.toFixed(6)} ${getTokenSymbol(inputMint)} differs from available on-chain balance ${availableTokenBalance.uiAmount.toFixed(6)}; using available balance for sell sizing`
     : null;
 
   return {
     kind: 'swap',
     inputMint,
     outputMint: SOL_MINT,
-    inputAmountUi: rawToUi(clampedAttemptedAmountRaw, tokenBalance.decimals),
+    inputAmountUi: rawToUi(clampedAttemptedAmountRaw, availableTokenBalance.decimals),
     inputAmountRaw: clampedAttemptedAmountRaw.toString(),
-    quotedInputDecimals: tokenBalance.decimals,
+    quotedInputDecimals: availableTokenBalance.decimals,
     maxAttempts: getPilotTradeMaxAttempts(wallet, trade),
     slippageBps: getSellSlippageBps(wallet, trade.attempt_count),
     positionDriftMessage,
-    postSellCopiedPositionAfterUi: rawToUi(BigInt(tokenBalance.rawAmount) - clampedAttemptedAmountRaw, tokenBalance.decimals),
+    postSellCopiedPositionAfterUi: rawToUi(
+      BigInt(availableTokenBalance.rawAmount) - clampedAttemptedAmountRaw,
+      availableTokenBalance.decimals,
+    ),
     chunkFraction,
   };
 }
@@ -882,16 +988,6 @@ async function maybeAlertTradeFailure(trade: PilotTradeRow, walletAlias: string,
 
 async function maybeAlertTradeSubmitted(trade: PilotTradeRow, walletAlias: string, signature: string) {
   await sendLivePilotAlert('Trade submitted', [
-    `wallet=${walletAlias}`,
-    `trade=${trade.id}`,
-    `trigger=${trade.trigger_kind}`,
-    `signature=${signature}`,
-    formatSolscanTxUrl(signature),
-  ]).catch(() => undefined);
-}
-
-async function maybeAlertTradeConfirmed(trade: PilotTradeRow, walletAlias: string, signature: string) {
-  await sendLivePilotAlert('Trade confirmed', [
     `wallet=${walletAlias}`,
     `trade=${trade.id}`,
     `trigger=${trade.trigger_kind}`,
@@ -1242,8 +1338,6 @@ export async function executePilotTrade(
     status: 'building',
   });
 
-  let onchainConfirmedSignature: string | null = null;
-
   try {
     const staleBeforeOrder = shouldSkipStaleBuyAtExecution(trade);
     if (staleBeforeOrder.stale) {
@@ -1276,7 +1370,7 @@ export async function executePilotTrade(
       `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} type=${trade.leader_type} `
       + `stage=order_start ageMs=${shouldSkipStaleBuyAtExecution(trade, executionStartedAt).ageMs}`,
     );
-    const orderResponse = await requestSwapOrder(plan, wallet.publicKey);
+    const orderResponse = await requestSwapOrder(plan, wallet.publicKey, trade);
     const orderReturnedAt = Date.now();
     const priceImpactPct = normalizePriceImpact(orderResponse.priceImpactPct ?? orderResponse.priceImpact);
     const quotedInputRaw = normalizeRawAmount(orderResponse.inputAmount ?? orderResponse.inAmount) || plan.inputAmountRaw;
@@ -1415,7 +1509,7 @@ export async function executePilotTrade(
     let executeResponse: JupiterExecuteResponse;
     const executeStartedAt = Date.now();
     try {
-      executeResponse = await executeSignedOrder(orderResponse.requestId!, signedTransaction);
+      executeResponse = await executeSignedOrder(orderResponse.requestId!, signedTransaction, trade);
     } catch (error) {
       if (!isAmbiguousExecuteError(error)) {
         throw error;
@@ -1529,108 +1623,23 @@ export async function executePilotTrade(
         last_error: null,
       }),
     ]);
+    recordSubmittedSwapInCache({
+      ownerAddress: wallet.publicKey,
+      inputMint: plan.inputMint,
+      outputMint: plan.outputMint,
+      inputRawAmount: actualInputRaw || quotedInputRaw,
+      inputDecimals: plan.quotedInputDecimals,
+      outputRawAmount: actualOutputRaw,
+      outputDecimals: actualOutputRaw && plan.outputMint !== SOL_MINT
+        ? await getTokenDecimals(plan.outputMint)
+        : null,
+      solMint: SOL_MINT,
+    });
     await maybeAlertTradeSubmitted(trade, wallet.alias, txSignature);
-
-    const confirmation = await waitForPilotConfirmation(connection, txSignature);
-    if (confirmation.state === 'confirmed') {
-      onchainConfirmedSignature = txSignature;
-      const confirmedAt = new Date().toISOString();
-      const confirmationResult = await confirmSubmittedPilotTradeWithLifecycle({
-        trade,
-        wallet,
-        attemptId: attempt.id,
-        confirmedAt,
-        confirmationSlot: confirmation.slot,
-        inputAmount: actualInputAmount,
-        outputAmount: actualOutputAmount,
-        copiedPositionAfterOverride: trade.leader_type === 'sell'
-          ? plan.postSellCopiedPositionAfterUi ?? null
-          : null,
-      });
-      await Promise.all([
-        updatePilotTradeAttempt(attempt.id, {
-          status: 'confirmed',
-          tx_confirmed_at: confirmedAt,
-          confirmation_slot: confirmation.slot,
-        }),
-        updatePilotRuntimeState(wallet.alias, {
-          last_confirmed_tx_signature: txSignature,
-          last_error: null,
-        }),
-      ]);
-      if (trade.leader_type === 'sell' && trade.token_in_mint) {
-        await closeZeroTokenAccounts({
-          connection,
-          owner: keypair,
-          mintAddress: trade.token_in_mint,
-        }).catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn(`[LIVE_PILOT] Failed to close zero token accounts for ${trade.token_in_mint}:`, message);
-          void updatePilotRuntimeState(wallet.alias, {
-            last_error: `Confirmed sell but failed to reclaim token-account rent: ${message}`,
-          }).catch(() => undefined);
-        });
-      }
-      const residualTrade = confirmationResult.claimed
-        ? await maybeQueueResidualExitTrade({
-          trade,
-          wallet,
-          connection,
-          attemptedInputRaw: quotedInputRaw,
-        })
-        : null;
-      if (confirmationResult.claimed) {
-        await maybeAlertTradeConfirmed(trade, wallet.alias, txSignature);
-      }
-      if (residualTrade) {
-        await sendLivePilotAlert('Residual exit queued', [
-          `wallet=${wallet.alias}`,
-          `sourceTrade=${trade.id}`,
-          `residualTrade=${residualTrade.id}`,
-          `mint=${trade.token_in_mint}`,
-          `chunk=${plan.chunkFraction?.label || '100%'}`,
-        ]).catch(() => undefined);
-      }
-      return { outcome: 'confirmed', signature: txSignature };
-    }
-
-    if (confirmation.state === 'failed') {
-      throw createJupiterError('confirmation_failed', confirmation.message, 'confirmation');
-    }
-
     return { outcome: 'submitted', signature: txSignature };
   } catch (error: any) {
     const code = String(error?.code ?? 'execution_error');
     const message = error?.message || 'Unknown live-pilot execution error';
-
-    if (onchainConfirmedSignature) {
-      const bookkeepingMessage = `Confirmed on-chain but bookkeeping failed: ${message}`;
-      await updatePilotTradeAttempt(attempt.id, {
-        status: 'confirmed',
-        tx_signature: onchainConfirmedSignature,
-        error_code: 'post_confirmation_bookkeeping_failed',
-        error_message: bookkeepingMessage,
-      }).catch(() => undefined);
-      await updatePilotTrade(trade.id, {
-        error_message: bookkeepingMessage,
-        next_retry_at: null,
-      }).catch(() => undefined);
-      await updatePilotRuntimeState(wallet.alias, {
-        last_confirmed_tx_signature: onchainConfirmedSignature,
-        last_error: bookkeepingMessage,
-      }).catch(() => undefined);
-      await sendLivePilotAlert('Confirmed trade bookkeeping failed', [
-        `wallet=${wallet.alias}`,
-        `trade=${trade.id}`,
-        formatSolscanTxUrl(onchainConfirmedSignature),
-        bookkeepingMessage,
-      ]).catch(() => undefined);
-
-      return {
-        outcome: 'confirmed',
-        signature: onchainConfirmedSignature,
-      };
-    }
 
     const retryable =
       isRetryableExecutionCode(code)

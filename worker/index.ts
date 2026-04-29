@@ -406,7 +406,9 @@ function handleNewSignature(signature: string, wallet: string, transactionUpdate
       };
 
       try {
-        const { processed, inserted } = await processBatch([tx], receiveTimestamp);
+        const { processed, inserted } = await processBatch([tx], receiveTimestamp, {
+          livePilotFastLane: true,
+        });
         console.log(
           `[CARBON] Trade: ${result.trade.type} ${result.trade.tokenMint.slice(0, 8)}... `
           + `| processed=${processed} inserted=${inserted} | Latency: ${Date.now() - receiveTimestamp}ms`

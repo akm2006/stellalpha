@@ -316,6 +316,77 @@ export async function listQueuedCopySellTrades(limit: number = 25) {
   return (data || []) as PilotTradeRow[];
 }
 
+export async function sumSubmittedInputRawAmounts(args: {
+  walletAlias: string;
+  leaderType: 'buy' | 'sell';
+  inputMint?: string | null;
+  limit?: number;
+}) {
+  const { walletAlias, leaderType, inputMint, limit = 100 } = args;
+
+  if (hasPostgresConnection()) {
+    const values: unknown[] = [walletAlias, leaderType, limit];
+    const conditions = [
+      'wallet_alias = $1',
+      "status = 'submitted'",
+      'leader_type = $2',
+      'quoted_input_amount_raw is not null',
+    ];
+
+    if (leaderType === 'sell' && inputMint) {
+      values.push(inputMint);
+      conditions.push(`token_in_mint = $${values.length}`);
+    }
+
+    const rows = await pgQuery<{ quoted_input_amount_raw: string }>(
+      `
+        select quoted_input_amount_raw
+        from public.pilot_trades
+        where ${conditions.join(' and ')}
+        order by tx_submitted_at desc nulls last, updated_at desc
+        limit $3
+      `,
+      values,
+    );
+
+    return rows.reduce((sum, row) => {
+      try {
+        return sum + BigInt(row.quoted_input_amount_raw || '0');
+      } catch {
+        return sum;
+      }
+    }, 0n);
+  }
+
+  let query = supabase
+    .from('pilot_trades')
+    .select('quoted_input_amount_raw')
+    .eq('wallet_alias', walletAlias)
+    .eq('status', 'submitted')
+    .eq('leader_type', leaderType)
+    .not('quoted_input_amount_raw', 'is', null)
+    .order('tx_submitted_at', { ascending: false, nullsFirst: false })
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+
+  if (leaderType === 'sell' && inputMint) {
+    query = query.eq('token_in_mint', inputMint);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    throw new Error(`Failed to sum submitted live-pilot input amounts: ${error.message}`);
+  }
+
+  return (data || []).reduce((sum, row: any) => {
+    try {
+      return sum + BigInt(row.quoted_input_amount_raw || '0');
+    } catch {
+      return sum;
+    }
+  }, 0n);
+}
+
 export async function skipExpiredQueuedCopyBuyTrades(limit: number = 500, nowMs: number = Date.now()) {
   const cutoffIso = new Date(nowMs - BUY_STALENESS_THRESHOLD_MS).toISOString();
   const message = `Buy expired in worker queue before claim; hard cutoff is ${BUY_STALENESS_THRESHOLD_MS / 1000}s`;

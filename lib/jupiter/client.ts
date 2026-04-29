@@ -107,6 +107,7 @@ export async function jupiterFetch(
     scope: JupiterApiScope;
     operation?: string;
     max429Retries?: number;
+    timeoutMs?: number;
   },
 ) {
   const max429Retries = getMax429Retries(options.scope, options.max429Retries);
@@ -114,10 +115,45 @@ export async function jupiterFetch(
 
   while (true) {
     await throttle(options.scope);
-    const response = await fetch(input, {
-      ...init,
-      headers: buildJupiterHeaders(options.scope, init.headers),
-    });
+    const controller = options.timeoutMs && options.timeoutMs > 0
+      ? new AbortController()
+      : null;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let removeAbortListener: (() => void) | null = null;
+
+    if (controller) {
+      timeoutHandle = setTimeout(() => {
+        controller.abort(
+          new Error(
+            `Jupiter ${options.operation || options.scope} timed out after ${options.timeoutMs}ms`,
+          ),
+        );
+      }, options.timeoutMs);
+
+      if (init.signal) {
+        const forwardAbort = () => controller.abort(init.signal!.reason);
+        if (init.signal.aborted) {
+          forwardAbort();
+        } else {
+          init.signal.addEventListener('abort', forwardAbort, { once: true });
+          removeAbortListener = () => init.signal?.removeEventListener('abort', forwardAbort);
+        }
+      }
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(input, {
+        ...init,
+        headers: buildJupiterHeaders(options.scope, init.headers),
+        signal: controller?.signal || init.signal,
+      });
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      removeAbortListener?.();
+    }
 
     if (response.status !== 429 || attempt >= max429Retries) {
       return response;

@@ -26,6 +26,7 @@ import {
   recordObservedLeaderSell,
 } from '@/lib/repositories/copy-position-states.repo';
 import type { PilotWalletConfigSummary } from '@/lib/live-pilot/types';
+import type { PilotTradeRow } from '@/lib/live-pilot/types';
 
 export interface PilotIntentResult {
   considered: boolean;
@@ -33,6 +34,7 @@ export interface PilotIntentResult {
   duplicate: boolean;
   status?: 'queued' | 'skipped';
   skipReason?: string;
+  trade?: PilotTradeRow | null;
 }
 
 function toIso(ms: number) {
@@ -105,7 +107,13 @@ function resolveLiveBuyCopyRatio(args: {
   }
 }
 
-export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number): Promise<PilotIntentResult> {
+export async function maybeCreatePilotIntent(
+  trade: RawTrade,
+  receivedAt: number,
+  options: {
+    includeTrade?: boolean;
+  } = {},
+): Promise<PilotIntentResult> {
   const config = getLivePilotPublicConfig();
   const pilotWallet = findPilotWalletForStarTrader(config, trade.wallet);
 
@@ -132,6 +140,7 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       duplicate: true,
       status: existingIntent.status === 'skipped' ? 'skipped' : undefined,
       skipReason: existingIntent.skip_reason || undefined,
+      ...(options.includeTrade ? { trade: existingIntent } : {}),
     };
   }
 
@@ -285,7 +294,14 @@ export async function maybeCreatePilotIntent(trade: RawTrade, receivedAt: number
       );
     }
 
-    return { considered: true, created: true, duplicate: false, status, skipReason: skipReason || undefined };
+    return {
+      considered: true,
+      created: true,
+      duplicate: false,
+      status,
+      skipReason: skipReason || undefined,
+      ...(options.includeTrade ? { trade: insertResult.trade } : {}),
+    };
   } catch (error: any) {
     await updatePilotRuntimeState(pilotWallet.alias, {
       ...runtimePatchBase,

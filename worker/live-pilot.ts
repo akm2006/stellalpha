@@ -405,8 +405,6 @@ async function processQueuedTradeBatch(
       continue;
     }
 
-    let keepLock = false;
-
     try {
       const claimedTrade = await claimQueuedPilotTrade(trade.id, trade.attempt_count + 1);
       if (!claimedTrade) {
@@ -414,7 +412,6 @@ async function processQueuedTradeBatch(
       }
 
       const outcome = await executePilotTrade(claimedTrade, wallet, connection);
-      keepLock = outcome.outcome === 'submitted';
 
       const summary =
         outcome.outcome === 'skipped'
@@ -435,9 +432,7 @@ async function processQueuedTradeBatch(
         error_message: error instanceof Error ? error.message : String(error),
       }).catch(() => undefined);
     } finally {
-      if (!keepLock) {
-        await releasePilotRuntimeLock(wallet.alias, lockOwner).catch(() => undefined);
-      }
+      await releasePilotRuntimeLock(wallet.alias, lockOwner).catch(() => undefined);
     }
   }
 }

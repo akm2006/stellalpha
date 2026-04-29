@@ -217,7 +217,11 @@ async function maybeRecoverMissingExecuteSignature(args: {
   }
 
   try {
-    const executeResponse = await executeSignedOrder(attempt.jupiter_request_id, attempt.signed_transaction);
+    const executeResponse = await executeSignedOrder(
+      attempt.jupiter_request_id,
+      attempt.signed_transaction,
+      trade,
+    );
     const signature = executeResponse.signature || executeResponse.txid || executeResponse.transactionId || null;
     const retriedAt = new Date().toISOString();
 

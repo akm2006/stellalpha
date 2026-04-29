@@ -70,7 +70,13 @@ async function updatePositionAndGetPnL(trade: RawTrade, usdValue: number): Promi
   return { realizedPnl, avgCostBasis: avgCost };
 }
 
-export async function processBatch(transactions: IngestedTransaction[], receivedAt: number): Promise<IngestionResult> {
+export async function processBatch(
+  transactions: IngestedTransaction[],
+  receivedAt: number,
+  options: {
+    livePilotFastLane?: boolean;
+  } = {},
+): Promise<IngestionResult> {
   let processed = 0;
   let inserted = 0;
   let batchError: Error | null = null;
@@ -189,9 +195,24 @@ export async function processBatch(transactions: IngestedTransaction[], received
         // 2. Fan out the live-pilot parent intent immediately after the canonical
         // claim gate so demo queueing/accounting cannot hold up the live path.
         try {
-          const pilotIntent = await maybeCreatePilotIntent(trade, receivedAt);
+          const pilotIntent = options.livePilotFastLane
+            ? await maybeCreatePilotIntent(trade, receivedAt, { includeTrade: true })
+            : await maybeCreatePilotIntent(trade, receivedAt);
           if (pilotIntent.considered) {
             txTimer.checkpoint('Create live-pilot intent');
+          }
+
+          if (
+            options.livePilotFastLane
+            && pilotIntent.created
+            && pilotIntent.status === 'queued'
+            && pilotIntent.trade
+          ) {
+            const { maybeExecuteLivePilotFastLane } = await import('@/lib/live-pilot/fast-lane');
+            const fastLane = await maybeExecuteLivePilotFastLane(pilotIntent.trade);
+            if (fastLane.attempted) {
+              txTimer.checkpoint('Live-pilot fast-lane execution');
+            }
           }
         } catch (pilotIntentError: any) {
           console.warn(
