@@ -192,7 +192,9 @@ export async function processBatch(
           });
           claimed = claimResult.claimed;
         } catch (claimError: any) {
-          const redisIntent = await maybeCreateRedisPilotIntent(trade, receivedAt, 'claim_trade_failed');
+          const redisIntent = await maybeCreateRedisPilotIntent(trade, receivedAt, 'claim_trade_failed', {
+            rawTx: tx.raw,
+          });
           if (redisIntent.considered) {
             txTimer.checkpoint('Redis live-pilot fallback intent after claim failure');
           }
@@ -232,6 +234,7 @@ export async function processBatch(
             && pilotIntent.created
             && pilotIntent.status === 'queued'
             && pilotIntent.trade
+            && !pilotIntent.trade.id.startsWith('redis:')
           ) {
             const { maybeExecuteLivePilotFastLane } = await import('@/lib/live-pilot/fast-lane');
             const fastLane = await maybeExecuteLivePilotFastLane(pilotIntent.trade);
@@ -244,7 +247,9 @@ export async function processBatch(
             `[ORCHESTRATOR] Live-pilot intent creation failed for ${trade.signature.slice(0, 12)}...`,
             pilotIntentError.message,
           );
-          const redisIntent = await maybeCreateRedisPilotIntent(trade, receivedAt, 'db_intent_failed');
+          const redisIntent = await maybeCreateRedisPilotIntent(trade, receivedAt, 'db_intent_failed', {
+            rawTx: tx.raw,
+          });
           if (redisIntent.considered) {
             txTimer.checkpoint('Redis live-pilot fallback intent after DB intent failure');
           }

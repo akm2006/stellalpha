@@ -9,6 +9,7 @@ import {
   livePilotDedupeKey,
 } from './keys';
 import type { PilotTradeRow } from '@/lib/live-pilot/types';
+import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 
 export type LivePilotRedisIntentPayload = {
   schemaVersion: '1';
@@ -32,6 +33,8 @@ export type LivePilotRedisIntentPayload = {
   leaderPositionAfter: string | null;
   copiedPositionBefore: string | null;
   copiedPositionAfter: string | null;
+  sourceClassificationJson: string | null;
+  meteoraDammV2CandidatePools: string | null;
   source: 'db_mirror' | 'redis_primary' | 'recovery' | 'liquidation' | 'residual';
   createdAt: string;
 };
@@ -61,6 +64,10 @@ export function buildLivePilotIntentId(trade: Pick<PilotTradeRow, 'wallet_alias'
 export function pilotTradeToRedisIntent(
   trade: PilotTradeRow,
   source: LivePilotRedisIntentPayload['source'] = 'db_mirror',
+  metadata: {
+    sourceClassification?: TradeSourceClassification | null;
+    meteoraDammV2CandidatePools?: string[];
+  } = {},
 ): LivePilotRedisIntentPayload {
   return {
     schemaVersion: '1',
@@ -84,6 +91,12 @@ export function pilotTradeToRedisIntent(
     leaderPositionAfter: stringifyNullable(trade.leader_position_after) || null,
     copiedPositionBefore: stringifyNullable(trade.copied_position_before) || null,
     copiedPositionAfter: stringifyNullable(trade.copied_position_after) || null,
+    sourceClassificationJson: metadata.sourceClassification
+      ? JSON.stringify(metadata.sourceClassification)
+      : null,
+    meteoraDammV2CandidatePools: metadata.meteoraDammV2CandidatePools?.length
+      ? metadata.meteoraDammV2CandidatePools.join(',')
+      : null,
     source,
     createdAt: new Date().toISOString(),
   };
@@ -169,6 +182,8 @@ function decodeIntent(streamId: string, message: Record<string, unknown>): LiveP
       leaderPositionAfter: parseNullable(message.leaderPositionAfter),
       copiedPositionBefore: parseNullable(message.copiedPositionBefore),
       copiedPositionAfter: parseNullable(message.copiedPositionAfter),
+      sourceClassificationJson: parseNullable(message.sourceClassificationJson),
+      meteoraDammV2CandidatePools: parseNullable(message.meteoraDammV2CandidatePools),
       source: (message.source || 'db_mirror') as LivePilotRedisIntentPayload['source'],
       createdAt: String(message.createdAt || new Date().toISOString()),
     },

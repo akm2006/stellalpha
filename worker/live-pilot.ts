@@ -26,6 +26,9 @@ import {
   loadPilotWalletKeypair,
   shouldSkipStaleBuyAtExecution,
 } from '@/lib/live-pilot/executor';
+import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
+import { rememberLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
+import { rememberLivePilotMeteoraDammV2CandidatePools } from '@/lib/live-pilot/meteora-damm-v2-cache';
 import { getLivePilotConfig, findPilotWalletByAlias } from '@/lib/live-pilot/config';
 import { enqueueLiquidationIntentsForWallet } from '@/lib/live-pilot/liquidation';
 import { enqueueResidualExitIntentsForWallet } from '@/lib/live-pilot/residual-exits';
@@ -87,6 +90,32 @@ let controlSnapshotCache: {
 const lockOwner = `${os.hostname()}:${process.pid}:live-pilot`;
 const redisConsumerName = `${os.hostname()}:${process.pid}:live-pilot-redis`;
 const connection = createLivePilotConnection();
+
+function hydrateRedisIntentExecutionMetadata(message: LivePilotRedisStreamMessage) {
+  const signature = message.payload.starTradeSignature;
+  if (!signature) {
+    return;
+  }
+
+  if (message.payload.sourceClassificationJson) {
+    try {
+      rememberLivePilotSourceClassification(
+        signature,
+        JSON.parse(message.payload.sourceClassificationJson) as TradeSourceClassification,
+      );
+    } catch {
+      console.warn(`[LIVE_PILOT_REDIS] Ignoring malformed source classification for ${signature.slice(0, 12)}...`);
+    }
+  }
+
+  const candidatePools = (message.payload.meteoraDammV2CandidatePools || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (candidatePools.length > 0) {
+    rememberLivePilotMeteoraDammV2CandidatePools(signature, candidatePools);
+  }
+}
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -537,6 +566,7 @@ async function processRedisIntentMessage(
   let trade = redisIntentToPilotTrade(message.payload);
   let dbMirrorTradeIdToClaim: string | null = null;
   let dbMirrorNextAttemptCount = 1;
+  hydrateRedisIntentExecutionMetadata(message);
   const wallet = findPilotWalletByAlias(config, trade.wallet_alias);
 
   if (!wallet || !wallet.isEnabled || !wallet.isComplete || !wallet.hasSecret) {

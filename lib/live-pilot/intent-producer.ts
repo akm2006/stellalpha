@@ -14,6 +14,8 @@ import {
   createPilotTrade,
   getCopyPilotTradeByWalletSignature,
 } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import { maybeCreateRedisPilotIntent } from '@/lib/live-pilot/redis/intent-producer';
+import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
 import {
   BUY_STALENESS_THRESHOLD_MS,
   computeCopyTradeSignal,
@@ -137,6 +139,41 @@ export async function maybeCreatePilotIntent(
     return { considered: false, created: false, duplicate: false };
   }
 
+  const sourceClassification = classifyTradeSource(trade, options.rawTx);
+  const sourceSummary = formatTradeSourceClassification(sourceClassification);
+  rememberLivePilotSourceClassification(trade.signature, sourceClassification);
+  if (isMeteoraDammV2Source(sourceClassification)) {
+    rememberLivePilotMeteoraDammV2CandidatePools(
+      trade.signature,
+      extractMeteoraDammV2CandidatePools(options.rawTx),
+    );
+  }
+
+  if (isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled) {
+    const redisIntent = await maybeCreateRedisPilotIntent(
+      trade,
+      receivedAt,
+      'redis_primary_hot_path',
+      {
+        rawTx: options.rawTx,
+        sourceClassification,
+      },
+    );
+
+    if (redisIntent.considered) {
+      if (redisIntent.created || redisIntent.duplicate || redisIntent.status === 'skipped') {
+        return {
+          considered: true,
+          created: redisIntent.created,
+          duplicate: redisIntent.duplicate,
+          status: redisIntent.status,
+          skipReason: redisIntent.skipReason,
+          ...(options.includeTrade ? { trade: redisIntent.trade || null } : {}),
+        };
+      }
+    }
+  }
+
   await ensureIntentStateOnce(pilotWallet);
 
   const existingIntent = await getCopyPilotTradeByWalletSignature(pilotWallet.alias, trade.signature);
@@ -160,15 +197,6 @@ export async function maybeCreatePilotIntent(
   try {
     const control = await getIntentControlSnapshot(pilotWallet.alias);
     const walletControl = control.wallets[0];
-    const sourceClassification = classifyTradeSource(trade, options.rawTx);
-    const sourceSummary = formatTradeSourceClassification(sourceClassification);
-    rememberLivePilotSourceClassification(trade.signature, sourceClassification);
-    if (isMeteoraDammV2Source(sourceClassification)) {
-      rememberLivePilotMeteoraDammV2CandidatePools(
-        trade.signature,
-        extractMeteoraDammV2CandidatePools(options.rawTx),
-      );
-    }
     const tradeAgeMs = receivedAt - trade.timestamp * 1000;
     let signal: Awaited<ReturnType<typeof computeCopyTradeSignal>> | null = null;
 

@@ -1,9 +1,19 @@
 import type { FixedAvailablePctCopyModelConfig } from '@/lib/copy-models/types';
 import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
+import {
+  classifyTradeSource,
+  formatTradeSourceClassification,
+  type TradeSourceClassification,
+} from '@/lib/ingestion/trade-source-classifier';
 import { findPilotWalletForStarTrader, getLivePilotPublicConfig } from '@/lib/live-pilot/config';
 import type { PilotTradeRow, PilotWalletConfigSummary } from '@/lib/live-pilot/types';
 import { getTokenSymbol } from '@/lib/services/token-service';
 import type { RawTrade } from '@/lib/trade-parser';
+import {
+  extractMeteoraDammV2CandidatePools,
+  isMeteoraDammV2Source,
+} from '@/lib/live-pilot/meteora-damm-v2-cache';
+import { getRedisPilotControlSnapshot } from './control-snapshot';
 import { isLivePilotRedisAvailable, livePilotRedisConfig } from './config';
 import {
   pilotTradeToRedisIntent,
@@ -43,6 +53,15 @@ function resolveRedisLiveBuyCopyRatio(pilotWallet: PilotWalletConfigSummary) {
     skipReason: copyRatio > 0 ? null : 'zero_model_spend',
   };
 }
+
+type RedisPilotIntentResult = {
+  considered: boolean;
+  created: boolean;
+  duplicate: boolean;
+  status?: 'queued' | 'skipped';
+  skipReason?: string;
+  trade?: PilotTradeRow;
+};
 
 function baseTradeRow(args: {
   pilotWallet: PilotWalletConfigSummary;
@@ -107,7 +126,11 @@ export async function maybeCreateRedisPilotIntent(
   trade: RawTrade,
   receivedAt: number,
   reason: string,
-) {
+  options: {
+    rawTx?: any;
+    sourceClassification?: TradeSourceClassification;
+  } = {},
+): Promise<RedisPilotIntentResult> {
   if (!isLivePilotRedisAvailable() || !livePilotRedisConfig.executionEnabled) {
     return { considered: false, created: false, duplicate: false };
   }
@@ -117,6 +140,34 @@ export async function maybeCreateRedisPilotIntent(
   if (!pilotWallet || !pilotWallet.isEnabled || !pilotWallet.isComplete || !pilotWallet.publicKey) {
     return { considered: false, created: false, duplicate: false };
   }
+
+  const control = await getRedisPilotControlSnapshot([pilotWallet.alias]);
+  if (!control) {
+    await publishLivePilotRedisAudit({
+      source: 'redis_intent_skip',
+      reason,
+      walletAlias: pilotWallet.alias,
+      starTradeSignature: trade.signature,
+      leaderType: trade.type,
+      skipReason: 'redis_control_unavailable',
+      errorMessage: 'Redis control state is unavailable; failing closed',
+    });
+    return {
+      considered: true,
+      created: false,
+      duplicate: false,
+      status: 'skipped' as const,
+      skipReason: 'redis_control_unavailable',
+    };
+  }
+
+  const walletControl = control.wallets[0];
+  const sourceClassification =
+    options.sourceClassification || classifyTradeSource(trade, options.rawTx);
+  const sourceSummary = formatTradeSourceClassification(sourceClassification);
+  const meteoraDammV2CandidatePools = isMeteoraDammV2Source(sourceClassification)
+    ? extractMeteoraDammV2CandidatePools(options.rawTx)
+    : [];
 
   let skipReason: string | null = null;
   let errorMessage: string | null = null;
@@ -128,8 +179,22 @@ export async function maybeCreateRedisPilotIntent(
 
   const tradeAgeMs = receivedAt - trade.timestamp * 1000;
 
+  if (control.global.kill_switch_active) {
+    skipReason = 'kill_switch_active';
+    errorMessage = 'Redis control global kill switch is active';
+  } else if (walletControl?.kill_switch_active) {
+    skipReason = 'wallet_kill_switch_active';
+    errorMessage = `Redis control kill switch is active for ${pilotWallet.alias}`;
+  } else if (control.global.is_paused) {
+    skipReason = 'global_paused';
+    errorMessage = 'Redis control global pause is active';
+  } else if (walletControl?.is_paused) {
+    skipReason = 'wallet_paused';
+    errorMessage = `Redis control pause is active for ${pilotWallet.alias}`;
+  }
+
   if (trade.type === 'buy') {
-    if (tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
+    if (!skipReason && tradeAgeMs > BUY_STALENESS_THRESHOLD_MS) {
       skipReason = 'stale_buy';
       errorMessage = `Buy was ${Math.round(tradeAgeMs / 1000)}s old before Redis intent creation`;
     }
@@ -163,7 +228,7 @@ export async function maybeCreateRedisPilotIntent(
     }
   } else {
     const inputMint = trade.tokenInMint || '';
-    if (inputMint && (await getRedisMintQuarantine(inputMint))?.status === 'active') {
+    if (!skipReason && inputMint && (await getRedisMintQuarantine(inputMint))?.status === 'active') {
       skipReason = 'mint_quarantined';
       errorMessage = `${getTokenSymbol(inputMint)} is quarantined for live-pilot sells`;
     }
@@ -214,12 +279,17 @@ export async function maybeCreateRedisPilotIntent(
       starTradeSignature: row.star_trade_signature,
       leaderType: row.leader_type,
       skipReason,
-      errorMessage,
+      errorMessage: `${errorMessage || ''}; source=${sourceSummary}`,
     });
-    return { considered: true, created: false, duplicate: false, status: 'skipped', skipReason };
+    return { considered: true, created: false, duplicate: false, status: 'skipped', skipReason: skipReason || undefined };
   }
 
-  const result = await publishLivePilotRedisIntent(pilotTradeToRedisIntent(row, 'redis_primary'));
+  const result = await publishLivePilotRedisIntent(
+    pilotTradeToRedisIntent(row, 'redis_primary', {
+      sourceClassification,
+      meteoraDammV2CandidatePools,
+    }),
+  );
   if (!result.published) {
     return {
       considered: true,
@@ -236,6 +306,8 @@ export async function maybeCreateRedisPilotIntent(
     walletAlias: row.wallet_alias,
     starTradeSignature: row.star_trade_signature,
     leaderType: row.leader_type,
+    sourceSummary,
+    meteoraDammV2CandidatePools: meteoraDammV2CandidatePools.join(','),
     redisStreamId: result.streamId,
   });
 

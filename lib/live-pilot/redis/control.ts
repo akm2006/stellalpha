@@ -6,18 +6,7 @@ import type { PilotControlStateRow } from '@/lib/live-pilot/types';
 import { getLivePilotRedisClient } from './client';
 import { isLivePilotRedisAvailable } from './config';
 import { livePilotGlobalControlKey, livePilotWalletControlKey } from './keys';
-
-function defaultControl(scopeType: 'global' | 'wallet', scopeKey: string): PilotControlStateRow {
-  return {
-    scope_type: scopeType,
-    scope_key: scopeKey,
-    is_paused: true,
-    kill_switch_active: false,
-    liquidation_requested: false,
-    updated_by_wallet: null,
-    updated_at: new Date().toISOString(),
-  };
-}
+export { getRedisPilotControlSnapshot } from './control-snapshot';
 
 async function getJson<T>(key: string) {
   const client = await getLivePilotRedisClient();
@@ -52,25 +41,4 @@ export async function hydrateRedisPilotControlState(walletAliases: string[]) {
     ...snapshot.wallets.map((row) => setRedisPilotControlState(row)),
   ]);
   return true;
-}
-
-export async function getRedisPilotControlSnapshot(walletAliases: string[]) {
-  if (!isLivePilotRedisAvailable()) return null;
-
-  const [global, ...wallets] = await Promise.all([
-    getJson<PilotControlStateRow>(livePilotGlobalControlKey()),
-    ...walletAliases.map((alias) => getJson<PilotControlStateRow>(livePilotWalletControlKey(alias))),
-  ]);
-
-  if (!global) {
-    return null;
-  }
-
-  return buildPilotControlSnapshot(
-    [
-      global,
-      ...wallets.map((row, index) => row || defaultControl('wallet', walletAliases[index]!)),
-    ],
-    walletAliases,
-  );
 }
