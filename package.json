@@ -52,6 +52,7 @@
     "@kdt-sol/solana-grpc-client": "^0.1.2",
     "@next/eslint-plugin-next": "^16.2.0",
     "@tailwindcss/postcss": "^4.1.12",
+    "@types/bn.js": "^5.2.0",
     "@types/node": "^20.12.12",
     "@types/pg": "^8.20.0",
     "@types/react": "^18.3.12",
