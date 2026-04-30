@@ -21,6 +21,11 @@ import {
 } from '@/lib/ingestion/copy-signal';
 import { classifyTradeSource, formatTradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 import { rememberLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
+import {
+  extractMeteoraDammV2CandidatePools,
+  isMeteoraDammV2Source,
+  rememberLivePilotMeteoraDammV2CandidatePools,
+} from '@/lib/live-pilot/meteora-damm-v2-cache';
 import { findPilotWalletForStarTrader, getLivePilotPublicConfig } from '@/lib/live-pilot/config';
 import { getTokenSymbol } from '@/lib/services/token-service';
 import {
@@ -158,6 +163,12 @@ export async function maybeCreatePilotIntent(
     const sourceClassification = classifyTradeSource(trade, options.rawTx);
     const sourceSummary = formatTradeSourceClassification(sourceClassification);
     rememberLivePilotSourceClassification(trade.signature, sourceClassification);
+    if (isMeteoraDammV2Source(sourceClassification)) {
+      rememberLivePilotMeteoraDammV2CandidatePools(
+        trade.signature,
+        extractMeteoraDammV2CandidatePools(options.rawTx),
+      );
+    }
     const tradeAgeMs = receivedAt - trade.timestamp * 1000;
     let signal: Awaited<ReturnType<typeof computeCopyTradeSignal>> | null = null;
 

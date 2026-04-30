@@ -42,6 +42,11 @@ import { getTokenDecimals, getTokenSymbol, WSOL } from '@/lib/services/token-ser
 import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 import { getLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
+import {
+  executeMeteoraDammV2BuySwap,
+  shouldUseMeteoraDammV2BuyFirst,
+  shouldUseMeteoraDammV2ForBuy,
+} from '@/lib/live-pilot/meteora-damm-v2';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HELIUS_GATEKEEPER_ENABLED = ['1', 'true', 'yes', 'on']
@@ -1302,6 +1307,132 @@ async function queueTradeRetry(
   return nextRetryAt;
 }
 
+async function executeMeteoraDammV2BuyAndRecord(args: {
+  trade: PilotTradeRow;
+  wallet: LivePilotWalletConfig;
+  connection: Connection;
+  plan: Extract<ExecutionPlan, { kind: 'swap' }>;
+  attempt: Awaited<ReturnType<typeof createPilotTradeAttempt>>;
+  trigger: 'primary' | 'jupiter_no_route_fallback';
+}) {
+  const { trade, wallet, connection, plan, attempt, trigger } = args;
+  const staleBeforeQuote = shouldSkipStaleBuyAtExecution(trade);
+  if (staleBeforeQuote.stale || !hasBuyRequestBudget(trade, 'order')) {
+    const message = buildStaleBuyMessage(trade, 'Meteora quote request');
+    await Promise.all([
+      updatePilotTradeAttempt(attempt.id, {
+        status: 'failed',
+        execution_mode: 'meteora_damm_v2_direct',
+        error_code: 'stale_buy',
+        error_message: message,
+      }),
+      updatePilotTrade(trade.id, {
+        status: 'skipped',
+        skip_reason: 'stale_buy',
+        error_message: message,
+        next_retry_at: null,
+      }),
+      updatePilotRuntimeState(wallet.alias, {
+        last_error: message,
+      }),
+    ]);
+    return {
+      outcome: 'skipped' as const,
+      reason: 'stale_buy',
+      message,
+    };
+  }
+
+  const keypair = loadPilotWalletKeypair(wallet.secret!);
+  const startedAt = Date.now();
+  console.log(
+    `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} type=${trade.leader_type} `
+    + `stage=meteora_${trigger}_start ageMs=${shouldSkipStaleBuyAtExecution(trade, startedAt).ageMs}`,
+  );
+
+  const outputDecimals = await getTokenDecimals(plan.outputMint);
+  const result = await executeMeteoraDammV2BuySwap({
+    connection,
+    keypair,
+    leaderSignature: trade.star_trade_signature,
+    plan: {
+      inputMint: plan.inputMint,
+      outputMint: plan.outputMint,
+      inputAmountRaw: plan.inputAmountRaw,
+      inputDecimals: plan.quotedInputDecimals,
+      outputDecimals,
+      slippageBps: plan.slippageBps,
+      maxPriceImpactPct: wallet.buyMaxPriceImpactPct,
+      sourceClassification: plan.sourceClassification,
+    },
+  });
+
+  console.log(
+    `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} type=${trade.leader_type} `
+    + `stage=meteora_${trigger}_submitted durationMs=${Date.now() - startedAt} `
+    + `ageMs=${shouldSkipStaleBuyAtExecution(trade).ageMs}`,
+  );
+
+  const staleAfterSubmit = shouldSkipStaleBuyAtExecution(trade);
+  if (staleAfterSubmit.stale) {
+    console.warn(
+      `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} `
+      + `stage=meteora_submitted_after_stale_cutoff ageMs=${staleAfterSubmit.ageMs}`,
+    );
+  }
+
+  await Promise.all([
+    updatePilotTradeAttempt(attempt.id, {
+      execution_mode: 'meteora_damm_v2_direct',
+      jupiter_router: `meteora_damm_v2:${result.pool}`,
+      signed_transaction: result.signedTransaction,
+      tx_signature: result.signature,
+      tx_submitted_at: result.txSubmittedAt,
+      quoted_input_amount: result.quotedInputAmount,
+      quoted_output_amount: result.quotedOutputAmount,
+      quoted_input_amount_raw: result.quotedInputRaw,
+      price_impact_pct: result.priceImpactPct,
+      actual_input_amount: result.quotedInputAmount,
+      actual_output_amount: result.quotedOutputAmount,
+      status: 'submitted',
+      error_code: null,
+      error_message: null,
+    }),
+    updatePilotTrade(trade.id, {
+      status: 'submitted',
+      quote_received_at: result.quoteReceivedAt,
+      quoted_input_amount: result.quotedInputAmount,
+      quoted_output_amount: result.quotedOutputAmount,
+      quoted_input_amount_raw: result.quotedInputRaw,
+      price_impact_pct: result.priceImpactPct,
+      tx_built_at: result.txBuiltAt,
+      tx_submitted_at: result.txSubmittedAt,
+      tx_signature: result.signature,
+      actual_input_amount: result.quotedInputAmount,
+      actual_output_amount: result.quotedOutputAmount,
+      next_retry_at: null,
+      error_message: null,
+    }),
+    updatePilotRuntimeState(wallet.alias, {
+      last_submitted_tx_signature: result.signature,
+      last_error: null,
+    }),
+  ]);
+
+  recordSubmittedSwapInCache({
+    ownerAddress: wallet.publicKey,
+    inputMint: plan.inputMint,
+    outputMint: plan.outputMint,
+    inputRawAmount: result.quotedInputRaw,
+    inputDecimals: plan.quotedInputDecimals,
+    outputRawAmount: result.quotedOutputRaw,
+    outputDecimals: result.quotedOutputRaw && plan.outputMint !== SOL_MINT ? outputDecimals : null,
+    solMint: SOL_MINT,
+  });
+  await maybeAlertTradeSubmitted(trade, wallet.alias, result.signature);
+  return { outcome: 'submitted' as const, signature: result.signature };
+}
+
 export async function executePilotTrade(
   trade: PilotTradeRow,
   wallet: LivePilotWalletConfig,
@@ -1356,12 +1487,25 @@ export async function executePilotTrade(
   const attempt = await createPilotTradeAttempt({
     pilot_trade_id: trade.id,
     attempt_number: trade.attempt_count,
-    execution_mode: 'managed_order_execute',
+    execution_mode: shouldUseMeteoraDammV2BuyFirst(plan, trade.leader_type)
+      ? 'meteora_damm_v2_direct'
+      : 'managed_order_execute',
     slippage_bps: plan.slippageBps,
     status: 'building',
   });
 
   try {
+    if (shouldUseMeteoraDammV2BuyFirst(plan, trade.leader_type)) {
+      return await executeMeteoraDammV2BuyAndRecord({
+        trade,
+        wallet,
+        connection,
+        plan,
+        attempt,
+        trigger: 'primary',
+      });
+    }
+
     const staleBeforeOrder = shouldSkipStaleBuyAtExecution(trade);
     if (staleBeforeOrder.stale || !hasBuyRequestBudget(trade, 'order')) {
       const message = buildStaleBuyMessage(trade, 'Jupiter order request');
@@ -1661,8 +1805,40 @@ export async function executePilotTrade(
     await maybeAlertTradeSubmitted(trade, wallet.alias, txSignature);
     return { outcome: 'submitted', signature: txSignature };
   } catch (error: any) {
-    const code = String(error?.code ?? 'execution_error');
-    const message = error?.message || 'Unknown live-pilot execution error';
+    let executionError = error;
+    let code = String(executionError?.code ?? 'execution_error');
+    let message = executionError?.message || 'Unknown live-pilot execution error';
+    const originalExecutionError = error;
+    const originalCode = code;
+    const originalMessage = message;
+
+    if (
+      shouldUseMeteoraDammV2ForBuy(plan, trade.leader_type)
+      && !shouldUseMeteoraDammV2BuyFirst(plan, trade.leader_type)
+      && isNoRouteFailure(message)
+    ) {
+      try {
+        return await executeMeteoraDammV2BuyAndRecord({
+          trade,
+          wallet,
+          connection,
+          plan,
+          attempt,
+          trigger: 'jupiter_no_route_fallback',
+        });
+      } catch (fallbackError: any) {
+        const fallbackCode = String(fallbackError?.code ?? 'execution_error');
+        if (fallbackCode === 'meteora_pool_unresolved') {
+          executionError = originalExecutionError;
+          code = originalCode;
+          message = originalMessage;
+        } else {
+          executionError = fallbackError;
+          code = fallbackCode;
+          message = executionError?.message || 'Unknown live-pilot execution error';
+        }
+      }
+    }
 
     const retryDelayMs = getTradeRetryDelayMs(trade, trade.attempt_count, code, message);
     const buyRetryBudgetAvailable = hasBuyRetryBudget(trade, retryDelayMs);
@@ -1682,9 +1858,9 @@ export async function executePilotTrade(
     const classification = classifyJupiterFailure(message, code, retryable, {
       retryNoRoute,
     });
-    const failedTxSignature = error?.derivedSignature ?? null;
-    const failedSubmittedAt = error?.submittedAt ?? null;
-    const sourceClassification = error?.sourceClassification as TradeSourceClassification | undefined;
+    const failedTxSignature = executionError?.derivedSignature ?? null;
+    const failedSubmittedAt = executionError?.submittedAt ?? null;
+    const sourceClassification = executionError?.sourceClassification as TradeSourceClassification | undefined;
     const sourceDebug = sourceClassification
       ? `; source_venue=${sourceClassification.venue}; source_parser=${sourceClassification.parserSource || 'unknown'}; source_labels=${sourceClassification.labels.slice(0, 6).join(',') || 'none'}; source_programs=${sourceClassification.programIds.slice(0, 8).join(',') || 'none'}`
       : '';

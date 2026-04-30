@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@kdt-sol/solana-grpc-client": "^0.1.2",
+    "@meteora-ag/cp-amm-sdk": "^1.4.3",
     "@reown/appkit": "^1.8.17",
     "@reown/appkit-adapter-solana": "^1.8.17",
     "@solana/spl-token": "^0.4.14",
@@ -28,6 +29,7 @@
     "@supabase/supabase-js": "^2.89.0",
     "@types/canvas-confetti": "^1.9.0",
     "autoprefixer": "^10.4.21",
+    "bn.js": "^5.2.3",
     "bs58": "^6.0.0",
     "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
