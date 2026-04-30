@@ -61,6 +61,7 @@ const RETRY_BACKOFF_MAX_MS = 8_000;
 const FAST_BUY_REQUOTE_DELAY_MS = 250;
 const BUY_RETRY_MIN_REMAINING_MS = 750;
 const BUY_REQUEST_TIMEOUT_SAFETY_MS = 400;
+const BUY_MIN_REQUEST_TIMEOUT_MS = 500;
 const DEFAULT_BUY_ORDER_TIMEOUT_MS = 2_500;
 const DEFAULT_BUY_EXECUTE_TIMEOUT_MS = 2_500;
 const DEFAULT_SELL_ORDER_TIMEOUT_MS = 6_000;
@@ -299,7 +300,7 @@ export function getTradeRetryDelayMs(
   code: string | null,
   message: string,
 ) {
-  if (isRetryableBuyExecutionFailure(trade, code, message)) {
+  if (trade.leader_type === 'buy' && (isNoRouteFailure(message) || isRetryableBuyExecutionFailure(trade, code, message))) {
     return FAST_BUY_REQUOTE_DELAY_MS;
   }
 
@@ -632,6 +633,18 @@ export function hasBuyRetryBudget(
 
   const staleBuy = shouldSkipStaleBuyAtExecution(trade, nowMs);
   return !staleBuy.stale && staleBuy.remainingMs > retryDelayMs + BUY_RETRY_MIN_REMAINING_MS;
+}
+
+function hasBuyRequestBudget(
+  trade: Pick<PilotTradeRow, 'leader_type' | 'leader_block_timestamp'>,
+  stage: 'order' | 'execute',
+) {
+  if (trade.leader_type !== 'buy') {
+    return true;
+  }
+
+  const timeoutMs = getLiveJupiterTimeoutMs(stage, trade);
+  return timeoutMs >= BUY_MIN_REQUEST_TIMEOUT_MS;
 }
 
 async function buildExecutionPlan(
@@ -1340,7 +1353,7 @@ export async function executePilotTrade(
 
   try {
     const staleBeforeOrder = shouldSkipStaleBuyAtExecution(trade);
-    if (staleBeforeOrder.stale) {
+    if (staleBeforeOrder.stale || !hasBuyRequestBudget(trade, 'order')) {
       const message = buildStaleBuyMessage(trade, 'Jupiter order request');
       await Promise.all([
         updatePilotTradeAttempt(attempt.id, {
@@ -1475,7 +1488,7 @@ export async function executePilotTrade(
     });
 
     const staleBeforeExecute = shouldSkipStaleBuyAtExecution(trade);
-    if (staleBeforeExecute.stale) {
+    if (staleBeforeExecute.stale || !hasBuyRequestBudget(trade, 'execute')) {
       const message = buildStaleBuyMessage(trade, 'Jupiter execute request');
       await Promise.all([
         updatePilotTradeAttempt(attempt.id, {
@@ -1641,12 +1654,23 @@ export async function executePilotTrade(
     const code = String(error?.code ?? 'execution_error');
     const message = error?.message || 'Unknown live-pilot execution error';
 
+    const retryDelayMs = getTradeRetryDelayMs(trade, trade.attempt_count, code, message);
+    const buyRetryBudgetAvailable = hasBuyRetryBudget(trade, retryDelayMs);
+    const retryNoRoute =
+      trade.leader_type === 'sell'
+      || (
+        trade.leader_type === 'buy'
+        && isNoRouteFailure(message)
+        && trade.attempt_count < plan.maxAttempts
+        && buyRetryBudgetAvailable
+      );
+
     const retryable =
       isRetryableExecutionCode(code)
       || isRetryableSellExecutionFailure(trade, code, message)
       || isRetryableBuyExecutionFailure(trade, code, message);
     const classification = classifyJupiterFailure(message, code, retryable, {
-      retryNoRoute: trade.leader_type === 'sell',
+      retryNoRoute,
     });
     const failedTxSignature = error?.derivedSignature ?? null;
     const failedSubmittedAt = error?.submittedAt ?? null;
@@ -1664,9 +1688,7 @@ export async function executePilotTrade(
       && isNoRouteFailure(message)
       && trade.attempt_count >= plan.maxAttempts;
 
-    const retryDelayMs = getTradeRetryDelayMs(trade, trade.attempt_count, code, message);
     const buyRateLimited = trade.leader_type === 'buy' && code === '429';
-    const buyRetryBudgetAvailable = hasBuyRetryBudget(trade, retryDelayMs);
     const canRetry =
       classification.retryable
       && trade.attempt_count < plan.maxAttempts
