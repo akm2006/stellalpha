@@ -53,6 +53,7 @@ type MeteoraError = Error & {
 
 const DEFAULT_METEORA_SLIPPAGE_BPS = 1000;
 const DEFAULT_METEORA_COMPUTE_UNIT_LIMIT = 350_000;
+const DEFAULT_METEORA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS = 25_000;
 
 function readBooleanEnv(name: string, fallback: boolean) {
   const raw = process.env[name];
@@ -73,10 +74,13 @@ function readNonNegativeIntEnv(name: string, fallback: number) {
 export const meteoraDammV2LivePilotConfig = {
   enabled: readBooleanEnv('LIVE_PILOT_METEORA_DAMM_V2_ENABLED', false),
   buyFirst: readBooleanEnv('LIVE_PILOT_METEORA_DAMM_V2_BUY_FIRST', false),
-  skipPreflight: readBooleanEnv('LIVE_PILOT_METEORA_SKIP_PREFLIGHT', false),
+  skipPreflight: readBooleanEnv('LIVE_PILOT_METEORA_SKIP_PREFLIGHT', true),
   slippageBps: readPositiveIntEnv('LIVE_PILOT_METEORA_SLIPPAGE_BPS', DEFAULT_METEORA_SLIPPAGE_BPS),
   computeUnitLimit: readPositiveIntEnv('LIVE_PILOT_METEORA_COMPUTE_UNIT_LIMIT', DEFAULT_METEORA_COMPUTE_UNIT_LIMIT),
-  computeUnitPriceMicroLamports: readNonNegativeIntEnv('LIVE_PILOT_METEORA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS', 0),
+  computeUnitPriceMicroLamports: readNonNegativeIntEnv(
+    'LIVE_PILOT_METEORA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS',
+    DEFAULT_METEORA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS,
+  ),
 };
 
 function createMeteoraError(

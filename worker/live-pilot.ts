@@ -13,6 +13,7 @@ import {
 import { ensurePilotRuntimeState, releasePilotRuntimeLock, tryAcquirePilotRuntimeLock } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import {
   claimQueuedPilotTrade,
+  getPilotTradeById,
   listFreshQueuedCopyBuyTrades,
   listQueuedCopySellTrades,
   listQueuedPilotTrades,
@@ -533,7 +534,9 @@ async function processRedisIntentMessage(
   config: ReturnType<typeof getLivePilotConfig>,
   controlSnapshot: ReturnType<typeof buildPilotControlSnapshot>,
 ) {
-  const trade = redisIntentToPilotTrade(message.payload);
+  let trade = redisIntentToPilotTrade(message.payload);
+  let dbMirrorTradeIdToClaim: string | null = null;
+  let dbMirrorNextAttemptCount = 1;
   const wallet = findPilotWalletByAlias(config, trade.wallet_alias);
 
   if (!wallet || !wallet.isEnabled || !wallet.isComplete || !wallet.hasSecret) {
@@ -575,7 +578,7 @@ async function processRedisIntentMessage(
   }
 
   const staleBuy = shouldSkipStaleBuyAtExecution(trade);
-  if (staleBuy.stale) {
+  if (staleBuy.stale && message.payload.source !== 'db_mirror') {
     await publishLivePilotRedisAudit({
       source: 'redis_intent_skipped',
       reason: 'stale_buy',
@@ -586,6 +589,40 @@ async function processRedisIntentMessage(
     });
     await ackLivePilotRedisIntent(message.streamId);
     return;
+  }
+
+  if (message.payload.source === 'db_mirror' && message.payload.dbTradeId) {
+    const dbTrade = await getPilotTradeById(message.payload.dbTradeId);
+    if (!dbTrade) {
+      await publishLivePilotRedisAudit({
+        source: 'redis_intent_skipped',
+        reason: 'db_trade_missing',
+        streamId: message.streamId,
+        intentId: message.payload.intentId,
+        dbTradeId: message.payload.dbTradeId,
+        walletAlias: message.payload.walletAlias,
+      });
+      await ackLivePilotRedisIntent(message.streamId);
+      return;
+    }
+
+    if (dbTrade.status !== 'queued') {
+      await publishLivePilotRedisAudit({
+        source: 'redis_intent_skipped',
+        reason: 'db_trade_not_queued',
+        streamId: message.streamId,
+        intentId: message.payload.intentId,
+        dbTradeId: dbTrade.id,
+        walletAlias: dbTrade.wallet_alias,
+        dbStatus: dbTrade.status,
+        dbSkipReason: dbTrade.skip_reason || '',
+      });
+      await ackLivePilotRedisIntent(message.streamId);
+      return;
+    }
+
+    dbMirrorTradeIdToClaim = dbTrade.id;
+    dbMirrorNextAttemptCount = (dbTrade.attempt_count || 0) + 1;
   }
 
   const redisLockOwner = `${redisConsumerName}:${message.streamId}`;
@@ -599,6 +636,25 @@ async function processRedisIntentMessage(
       walletAlias: wallet.alias,
     });
     return;
+  }
+
+  if (dbMirrorTradeIdToClaim) {
+    const claimedTrade = await claimQueuedPilotTrade(dbMirrorTradeIdToClaim, dbMirrorNextAttemptCount);
+    if (!claimedTrade) {
+      await publishLivePilotRedisAudit({
+        source: 'redis_intent_deferred',
+        reason: 'db_trade_claim_failed',
+        streamId: message.streamId,
+        intentId: message.payload.intentId,
+        dbTradeId: dbMirrorTradeIdToClaim,
+        walletAlias: wallet.alias,
+      });
+      await ackLivePilotRedisIntent(message.streamId);
+      await releaseLivePilotRedisWalletLock(wallet.alias, redisLockOwner).catch(() => undefined);
+      return;
+    }
+
+    trade = claimedTrade;
   }
 
   try {

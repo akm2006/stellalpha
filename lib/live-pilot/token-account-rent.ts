@@ -15,6 +15,17 @@ import { formatSolscanTxUrl, sendLivePilotAlert } from '@/lib/live-pilot/alerts'
 
 const DEFAULT_CLOSE_CHUNK_SIZE = 8;
 
+function readBooleanEnv(name: string, fallback: boolean) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
+}
+
+const TOKEN_ACCOUNT_RENT_SWEEP_SKIP_PREFLIGHT = readBooleanEnv(
+  'LIVE_PILOT_ATA_SWEEP_SKIP_PREFLIGHT',
+  true,
+);
+
 export interface TokenAccountCloseTarget {
   pubkey: PublicKey;
   programId: PublicKey;
@@ -99,8 +110,9 @@ async function submitCloseTargets(args: {
   });
 
   const signature = await connection.sendTransaction(transaction, {
-    maxRetries: 3,
-    skipPreflight: false,
+    maxRetries: 0,
+    skipPreflight: TOKEN_ACCOUNT_RENT_SWEEP_SKIP_PREFLIGHT,
+    preflightCommitment: 'confirmed',
   });
   const confirmation = await connection.confirmTransaction({
     signature,

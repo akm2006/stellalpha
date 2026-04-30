@@ -44,6 +44,10 @@ export interface CreatePilotTradeInput {
 }
 
 function publishQueuedTradeToRedis(trade: PilotTradeRow) {
+  if (!isLivePilotRedisAvailable() || (!livePilotRedisConfig.mirrorEnabled && !livePilotRedisConfig.executionEnabled)) {
+    return;
+  }
+
   void publishLivePilotRedisIntent(pilotTradeToRedisIntent(trade)).catch((error) => {
     console.warn('[LIVE_PILOT_REDIS] Failed to publish queued live-pilot intent:', error);
   });
