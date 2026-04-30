@@ -221,8 +221,8 @@ export async function processBatch(
         // claim gate so demo queueing/accounting cannot hold up the live path.
         try {
           const pilotIntent = options.livePilotFastLane
-            ? await maybeCreatePilotIntent(trade, receivedAt, { includeTrade: true })
-            : await maybeCreatePilotIntent(trade, receivedAt);
+            ? await maybeCreatePilotIntent(trade, receivedAt, { includeTrade: true, rawTx: tx.raw })
+            : await maybeCreatePilotIntent(trade, receivedAt, { rawTx: tx.raw });
           if (pilotIntent.considered) {
             txTimer.checkpoint('Create live-pilot intent');
           }

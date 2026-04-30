@@ -19,6 +19,8 @@ import {
   computeCopyTradeSignal,
   createPrivateRpcConnection,
 } from '@/lib/ingestion/copy-signal';
+import { classifyTradeSource, formatTradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
+import { rememberLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
 import { findPilotWalletForStarTrader, getLivePilotPublicConfig } from '@/lib/live-pilot/config';
 import { getTokenSymbol } from '@/lib/services/token-service';
 import {
@@ -112,6 +114,7 @@ export async function maybeCreatePilotIntent(
   receivedAt: number,
   options: {
     includeTrade?: boolean;
+    rawTx?: any;
   } = {},
 ): Promise<PilotIntentResult> {
   const config = getLivePilotPublicConfig();
@@ -152,6 +155,9 @@ export async function maybeCreatePilotIntent(
   try {
     const control = await getIntentControlSnapshot(pilotWallet.alias);
     const walletControl = control.wallets[0];
+    const sourceClassification = classifyTradeSource(trade, options.rawTx);
+    const sourceSummary = formatTradeSourceClassification(sourceClassification);
+    rememberLivePilotSourceClassification(trade.signature, sourceClassification);
     const tradeAgeMs = receivedAt - trade.timestamp * 1000;
     let signal: Awaited<ReturnType<typeof computeCopyTradeSignal>> | null = null;
 
@@ -268,7 +274,7 @@ export async function maybeCreatePilotIntent(
       status,
       skip_reason: skipReason,
       error_message: skipReason
-        ? `Intent skipped at producer stage: ${skipReason}; age=${Math.round(tradeAgeMs)}ms`
+        ? `Intent skipped at producer stage: ${skipReason}; age=${Math.round(tradeAgeMs)}ms; source=${sourceSummary}`
         : null,
     });
 
@@ -285,12 +291,13 @@ export async function maybeCreatePilotIntent(
     if (status === 'skipped') {
       console.log(
         `[LIVE_PILOT] Skipped intent for ${pilotWallet.alias} / ${trade.signature.slice(0, 12)}... `
-        + `(${skipReason}, age=${Math.round(tradeAgeMs / 1000)}s, stale-threshold=${BUY_STALENESS_THRESHOLD_MS / 1000}s)`
+        + `(${skipReason}, age=${Math.round(tradeAgeMs / 1000)}s, stale-threshold=${BUY_STALENESS_THRESHOLD_MS / 1000}s, `
+        + `source=${sourceSummary})`
       );
     } else {
       console.log(
         `[LIVE_PILOT] Queued pilot intent for ${pilotWallet.alias} / ${trade.signature.slice(0, 12)}... `
-        + `(model=${pilotWallet.buyModelKey}, ratio=${(copyRatio * 100).toFixed(2)}%)`
+        + `(model=${pilotWallet.buyModelKey}, ratio=${(copyRatio * 100).toFixed(2)}%, source=${sourceSummary})`
       );
     }
 

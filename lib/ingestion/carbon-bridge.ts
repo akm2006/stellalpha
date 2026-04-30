@@ -25,6 +25,7 @@ export interface CarbonParseResult {
   status: CarbonParseStatus;
   trade: RawTrade | null;
   decoderCandidates: string[];
+  programIds: string[];
 }
 
 export interface CarbonCaptureInput {
@@ -187,6 +188,12 @@ export class CarbonBridge {
           status,
           trade,
           decoderCandidates: response.decoder_candidates,
+          programIds: [
+            ...new Set([
+              ...response.top_level_program_ids,
+              ...response.inner_program_ids,
+            ]),
+          ],
         });
       } catch (error) {
         for (const resolver of this.pending.values()) {

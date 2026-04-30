@@ -40,6 +40,8 @@ import {
 } from '@/lib/live-pilot/execution-state-cache';
 import { getTokenDecimals, getTokenSymbol, WSOL } from '@/lib/services/token-service';
 import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
+import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
+import { getLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HELIUS_GATEKEEPER_ENABLED = ['1', 'true', 'yes', 'on']
@@ -83,6 +85,7 @@ type JupiterApiError = Error & {
   httpStatus?: number;
   derivedSignature?: string | null;
   submittedAt?: string | null;
+  sourceClassification?: TradeSourceClassification;
 };
 
 interface JupiterOrderResponse {
@@ -127,18 +130,19 @@ type ExecutionPlan =
       kind: 'swap';
       inputMint: string;
       outputMint: string;
-    inputAmountUi: number;
-    inputAmountRaw: string;
-    quotedInputDecimals: number;
-    maxAttempts: number;
-    slippageBps: number | null;
-    positionDriftMessage?: string | null;
-    postSellCopiedPositionAfterUi?: number | null;
-    chunkFraction?: {
-      numerator: bigint;
-      denominator: bigint;
-      label: string;
-    } | null;
+      inputAmountUi: number;
+      inputAmountRaw: string;
+      quotedInputDecimals: number;
+      maxAttempts: number;
+      slippageBps: number | null;
+      positionDriftMessage?: string | null;
+      postSellCopiedPositionAfterUi?: number | null;
+      chunkFraction?: {
+        numerator: bigint;
+        denominator: bigint;
+        label: string;
+      } | null;
+      sourceClassification?: TradeSourceClassification;
     };
 
 type ConfirmationResult =
@@ -336,11 +340,13 @@ function createJupiterError(
   message: string,
   stage?: 'order' | 'execute' | 'confirmation',
   httpStatus?: number,
+  sourceClassification?: TradeSourceClassification,
 ) {
   const error = new Error(message) as JupiterApiError;
   error.code = code;
   error.stage = stage;
   error.httpStatus = httpStatus;
+  error.sourceClassification = sourceClassification;
   return error;
 }
 
@@ -485,6 +491,8 @@ async function requestSwapOrder(
       isTimeout ? 'order_timeout' : 'order_transport_error',
       message,
       'order',
+      undefined,
+      plan.sourceClassification,
     );
   }
 
@@ -498,7 +506,7 @@ async function requestSwapOrder(
   if (!response.ok || !payload?.transaction || !payload?.requestId) {
     const code = String(payload?.errorCode ?? response.status);
     const message = payload?.message || payload?.error || `Jupiter order failed with status ${response.status}`;
-    throw createJupiterError(code, message, 'order', response.status);
+    throw createJupiterError(code, message, 'order', response.status, plan.sourceClassification);
   }
 
   return payload;
@@ -738,6 +746,7 @@ async function buildExecutionPlan(
       maxAttempts: getPilotTradeMaxAttempts(wallet, trade),
       slippageBps: getBuySlippageBps(trade.attempt_count),
       chunkFraction: null,
+      sourceClassification: getLivePilotSourceClassification(trade.star_trade_signature) || undefined,
     };
   }
 
@@ -856,6 +865,7 @@ async function buildExecutionPlan(
       availableTokenBalance.decimals,
     ),
     chunkFraction,
+    sourceClassification: getLivePilotSourceClassification(trade.star_trade_signature) || undefined,
   };
 }
 
@@ -1674,11 +1684,18 @@ export async function executePilotTrade(
     });
     const failedTxSignature = error?.derivedSignature ?? null;
     const failedSubmittedAt = error?.submittedAt ?? null;
+    const sourceClassification = error?.sourceClassification as TradeSourceClassification | undefined;
+    const sourceDebug = sourceClassification
+      ? `; source_venue=${sourceClassification.venue}; source_parser=${sourceClassification.parserSource || 'unknown'}; source_labels=${sourceClassification.labels.slice(0, 6).join(',') || 'none'}; source_programs=${sourceClassification.programIds.slice(0, 8).join(',') || 'none'}`
+      : '';
+    const messageWithSource = isNoRouteFailure(message) && sourceDebug
+      ? `${message}${sourceDebug}`
+      : message;
 
     await updatePilotTradeAttempt(attempt.id, {
       status: 'failed',
       error_code: classification.terminalStatus === 'skipped' ? classification.reason : code,
-      error_message: message,
+      error_message: messageWithSource,
       ...(failedTxSignature ? { tx_signature: failedTxSignature } : {}),
       ...(failedSubmittedAt ? { tx_submitted_at: failedSubmittedAt } : {}),
     });
@@ -1763,7 +1780,7 @@ export async function executePilotTrade(
       await updatePilotTrade(trade.id, {
         status: 'skipped',
         skip_reason: 'trapped_unquotable',
-        error_message: message,
+        error_message: messageWithSource,
         next_retry_at: null,
         ...(failedTxSignature ? { tx_signature: failedTxSignature } : {}),
         ...(failedSubmittedAt ? { tx_submitted_at: failedSubmittedAt } : {}),
@@ -1784,14 +1801,14 @@ export async function executePilotTrade(
     await updatePilotTrade(trade.id, {
       status: terminalStatus,
       skip_reason: terminalStatus === 'skipped' ? classification.reason : null,
-      error_message: message,
+      error_message: messageWithSource,
       next_retry_at: null,
       ...(failedTxSignature ? { tx_signature: failedTxSignature } : {}),
       ...(failedSubmittedAt ? { tx_submitted_at: failedSubmittedAt } : {}),
     });
     await updatePilotRuntimeState(wallet.alias, {
       ...(failedTxSignature ? { last_submitted_tx_signature: failedTxSignature } : {}),
-      last_error: message,
+      last_error: messageWithSource,
     });
     if (terminalStatus === 'failed') {
       if (trade.leader_type === 'sell') {

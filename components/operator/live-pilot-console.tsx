@@ -16,6 +16,7 @@ import type {
 import {
   Activity,
   AlertTriangle,
+  ChevronDown,
   CirclePause,
   ExternalLink,
   KeyRound,
@@ -171,6 +172,8 @@ export function LivePilotConsole() {
   const [status, setStatus] = useState<LivePilotStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showQuarantinedMints, setShowQuarantinedMints] = useState(false);
+  const [showDeadInventory, setShowDeadInventory] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   async function loadStatus() {
@@ -600,12 +603,35 @@ export function LivePilotConsole() {
                   className="rounded-3xl border p-5"
                   style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
                 >
-                  <h2 className="text-lg font-semibold">Trapped / Quarantined Mints</h2>
-                  <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
-                    Once a sell or liquidation exhausts the chunk ladder with only no-route failures, the mint is quarantined globally and future buys are skipped until an operator clears it.
-                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowQuarantinedMints((value) => !value)}
+                    className="flex w-full items-start justify-between gap-4 text-left"
+                  >
+                    <span>
+                      <span className="text-lg font-semibold">Trapped / Quarantined Mints</span>
+                      <span className="mt-1 block text-sm" style={{ color: COLORS.data }}>
+                        {status.quarantinedMints.length} active mint{status.quarantinedMints.length === 1 ? '' : 's'} blocked from future buys.
+                      </span>
+                    </span>
+                    <span
+                      className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs uppercase tracking-[0.14em]"
+                      style={{ borderColor: 'rgba(255,255,255,0.12)', color: COLORS.data }}
+                    >
+                      {showQuarantinedMints ? 'Hide' : 'Show'}
+                      <ChevronDown
+                        size={14}
+                        className={`transition-transform ${showQuarantinedMints ? 'rotate-180' : ''}`}
+                      />
+                    </span>
+                  </button>
+                  {showQuarantinedMints ? (
+                    <p className="mt-3 text-sm" style={{ color: COLORS.data }}>
+                      Once a sell or liquidation exhausts the chunk ladder with only no-route failures, the mint is quarantined globally and future buys are skipped until an operator clears it.
+                    </p>
+                  ) : null}
 
-                  {status.quarantinedMints.length === 0 ? (
+                  {!showQuarantinedMints ? null : status.quarantinedMints.length === 0 ? (
                     <div
                       className="mt-4 rounded-2xl border border-dashed px-4 py-8 text-center text-sm"
                       style={{ borderColor: 'rgba(255,255,255,0.12)', color: COLORS.data }}
@@ -658,12 +684,35 @@ export function LivePilotConsole() {
                   className="rounded-3xl border p-5"
                   style={{ backgroundColor: COLORS.surface, borderColor: 'rgba(255,255,255,0.08)' }}
                 >
-                  <h2 className="text-lg font-semibold">Active Dead Inventory</h2>
-                  <p className="mt-1 text-sm" style={{ color: COLORS.data }}>
-                    Quarantined holdings that stay in the wallet as dead inventory. They are not treated as active liquidation work and should not block the rest of the pilot.
-                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowDeadInventory((value) => !value)}
+                    className="flex w-full items-start justify-between gap-4 text-left"
+                  >
+                    <span>
+                      <span className="text-lg font-semibold">Active Dead Inventory</span>
+                      <span className="mt-1 block text-sm" style={{ color: COLORS.data }}>
+                        {status.walletDeadInventory.length} quarantined holding{status.walletDeadInventory.length === 1 ? '' : 's'} excluded from liquidation work.
+                      </span>
+                    </span>
+                    <span
+                      className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs uppercase tracking-[0.14em]"
+                      style={{ borderColor: 'rgba(255,255,255,0.12)', color: COLORS.data }}
+                    >
+                      {showDeadInventory ? 'Hide' : 'Show'}
+                      <ChevronDown
+                        size={14}
+                        className={`transition-transform ${showDeadInventory ? 'rotate-180' : ''}`}
+                      />
+                    </span>
+                  </button>
+                  {showDeadInventory ? (
+                    <p className="mt-3 text-sm" style={{ color: COLORS.data }}>
+                      Quarantined holdings that stay in the wallet as dead inventory. They are not treated as active liquidation work and should not block the rest of the pilot.
+                    </p>
+                  ) : null}
 
-                  {status.walletDeadInventory.length === 0 ? (
+                  {!showDeadInventory ? null : status.walletDeadInventory.length === 0 ? (
                     <div
                       className="mt-4 rounded-2xl border border-dashed px-4 py-8 text-center text-sm"
                       style={{ borderColor: 'rgba(255,255,255,0.12)', color: COLORS.data }}

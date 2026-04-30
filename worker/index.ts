@@ -402,7 +402,12 @@ function handleNewSignature(signature: string, wallet: string, transactionUpdate
         timestamp: result.trade.timestamp,
         feePayer: wallet,
         source: 'websocket',
-        raw: { __carbonParsed: result.trade, feePayer: wallet },
+        raw: {
+          __carbonParsed: result.trade,
+          __decoderCandidates: result.decoderCandidates,
+          __programIds: result.programIds,
+          feePayer: wallet,
+        },
       };
 
       try {
