@@ -8,6 +8,12 @@ import {
 } from '@/lib/db/postgres';
 import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 import { broadcastLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
+import {
+  pilotTradeToRedisIntent,
+  publishLivePilotRedisIntent,
+} from '@/lib/live-pilot/redis/streams';
+import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
+import { mirrorRedisTradeEvent, setRedisSubmittedTrade } from '@/lib/live-pilot/redis/state';
 import type { PilotTradeRow, PilotTradeStatus, PilotTradeTriggerKind } from '@/lib/live-pilot/types';
 
 export interface CreatePilotTradeInput {
@@ -35,6 +41,24 @@ export interface CreatePilotTradeInput {
   status: PilotTradeStatus;
   skip_reason?: string | null;
   error_message?: string | null;
+}
+
+function publishQueuedTradeToRedis(trade: PilotTradeRow) {
+  void publishLivePilotRedisIntent(pilotTradeToRedisIntent(trade)).catch((error) => {
+    console.warn('[LIVE_PILOT_REDIS] Failed to publish queued live-pilot intent:', error);
+  });
+}
+
+function canUseRedisExecutionFallback() {
+  return isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled;
+}
+
+function applyTradePatch<T extends PilotTradeRow>(trade: T, patch: PilotTradePatch): T {
+  return {
+    ...trade,
+    ...patch,
+    updated_at: new Date().toISOString(),
+  };
 }
 
 export async function createPilotTrade(trade: CreatePilotTradeInput) {
@@ -104,6 +128,7 @@ export async function createPilotTrade(trade: CreatePilotTradeInput) {
       );
 
       if (trade.status === 'queued') {
+        publishQueuedTradeToRedis(data);
         void broadcastLivePilotQueueWake({
           source: 'trade_created',
           walletAlias: trade.wallet_alias,
@@ -136,6 +161,7 @@ export async function createPilotTrade(trade: CreatePilotTradeInput) {
   }
 
   if (trade.status === 'queued') {
+    publishQueuedTradeToRedis(data as PilotTradeRow);
     void broadcastLivePilotQueueWake({
       source: 'trade_created',
       walletAlias: trade.wallet_alias,
@@ -338,24 +364,36 @@ export async function sumSubmittedInputRawAmounts(args: {
       conditions.push(`token_in_mint = $${values.length}`);
     }
 
-    const rows = await pgQuery<{ quoted_input_amount_raw: string }>(
-      `
-        select quoted_input_amount_raw
-        from public.pilot_trades
-        where ${conditions.join(' and ')}
-        order by tx_submitted_at desc nulls last, updated_at desc
-        limit $3
-      `,
-      values,
-    );
+    try {
+      const rows = await pgQuery<{ quoted_input_amount_raw: string }>(
+        `
+          select quoted_input_amount_raw
+          from public.pilot_trades
+          where ${conditions.join(' and ')}
+          order by tx_submitted_at desc nulls last, updated_at desc
+          limit $3
+        `,
+        values,
+      );
 
-    return rows.reduce((sum, row) => {
-      try {
-        return sum + BigInt(row.quoted_input_amount_raw || '0');
-      } catch {
-        return sum;
-      }
-    }, 0n);
+      return rows.reduce((sum, row) => {
+        try {
+          return sum + BigInt(row.quoted_input_amount_raw || '0');
+        } catch {
+          return sum;
+        }
+      }, 0n);
+    } catch (error) {
+      if (!canUseRedisExecutionFallback()) throw error;
+      await mirrorRedisTradeEvent({
+        source: 'redis_sum_submitted_fallback_after_db_failure',
+        walletAlias,
+        leaderType,
+        inputMint: inputMint || '',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      return 0n;
+    }
   }
 
   let query = supabase
@@ -375,6 +413,16 @@ export async function sumSubmittedInputRawAmounts(args: {
 
   const { data, error } = await query;
   if (error) {
+    if (canUseRedisExecutionFallback()) {
+      await mirrorRedisTradeEvent({
+        source: 'redis_sum_submitted_fallback_after_db_failure',
+        walletAlias,
+        leaderType,
+        inputMint: inputMint || '',
+        errorMessage: error.message,
+      });
+      return 0n;
+    }
     throw new Error(`Failed to sum submitted live-pilot input amounts: ${error.message}`);
   }
 
@@ -517,6 +565,10 @@ export async function getCopyPilotTradeByWalletSignature(walletAlias: string, si
 }
 
 export async function claimQueuedPilotTrade(tradeId: string, nextAttemptCount: number) {
+  if (tradeId.startsWith('redis:')) {
+    return null;
+  }
+
   if (hasPostgresConnection()) {
     return pgMaybeOne<PilotTradeRow>(
       `
@@ -646,9 +698,70 @@ export async function listRecentCopyExitTradesForWallet(walletAlias: string, sin
 }
 
 export async function updatePilotTrade(tradeId: string, patch: PilotTradePatch) {
+  if (tradeId.startsWith('redis:')) {
+    await mirrorRedisTradeEvent({
+      source: 'redis_trade_updated',
+      tradeId,
+      status: patch.status || '',
+      txSignature: patch.tx_signature || '',
+      txSubmittedAt: patch.tx_submitted_at || '',
+      txConfirmedAt: patch.tx_confirmed_at || '',
+      errorMessage: patch.error_message || '',
+      patch: JSON.stringify(patch),
+    });
+    const row = applyTradePatch({
+      id: tradeId,
+      wallet_alias: String(tradeId.split(':')[1] || 'redis'),
+      wallet_public_key: '',
+      trigger_kind: 'copy',
+      trigger_reason: 'leader_trade',
+      star_trader: null,
+      star_trade_signature: null,
+      leader_type: null,
+      token_in_mint: null,
+      token_out_mint: null,
+      copy_ratio: null,
+      leader_position_before: null,
+      leader_position_after: null,
+      copied_position_before: null,
+      copied_position_after: null,
+      sell_fraction: null,
+      leader_block_timestamp: null,
+      received_at: null,
+      intent_created_at: null,
+      quote_received_at: null,
+      tx_built_at: null,
+      tx_submitted_at: null,
+      tx_signature: null,
+      tx_confirmed_at: null,
+      confirmation_slot: null,
+      quoted_input_amount: null,
+      quoted_output_amount: null,
+      quoted_input_amount_raw: null,
+      actual_input_amount: null,
+      actual_output_amount: null,
+      price_impact_pct: null,
+      deployable_sol_at_intent: null,
+      sol_price_at_intent: null,
+      next_retry_at: null,
+      attempt_count: 1,
+      winning_attempt_id: null,
+      status: 'building',
+      skip_reason: null,
+      error_message: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, patch);
+    if (patch.status === 'submitted') {
+      await setRedisSubmittedTrade({ trade: row, patch: row });
+    }
+    return row;
+  }
+
   if (hasPostgresConnection()) {
-    const { assignments, values } = buildUpdateAssignments(patch);
-    return pgOne<PilotTradeRow>(
+    try {
+      const { assignments, values } = buildUpdateAssignments(patch);
+      const row = await pgOne<PilotTradeRow>(
       `
         update public.pilot_trades
         set ${[...assignments, 'updated_at = now()'].join(', ')}
@@ -656,7 +769,64 @@ export async function updatePilotTrade(tradeId: string, patch: PilotTradePatch) 
         returning *
       `,
       [tradeId, ...values],
-    );
+      );
+      return row;
+    } catch (error) {
+      if (!canUseRedisExecutionFallback()) throw error;
+      await mirrorRedisTradeEvent({
+        source: 'redis_trade_update_after_db_failure',
+        tradeId,
+        status: patch.status || '',
+        txSignature: patch.tx_signature || '',
+        txSubmittedAt: patch.tx_submitted_at || '',
+        txConfirmedAt: patch.tx_confirmed_at || '',
+        errorMessage: error instanceof Error ? error.message : String(error),
+        patch: JSON.stringify(patch),
+      });
+      return applyTradePatch({
+        id: tradeId,
+        wallet_alias: 'redis',
+        wallet_public_key: '',
+        trigger_kind: 'copy',
+        trigger_reason: 'leader_trade',
+        star_trader: null,
+        star_trade_signature: null,
+        leader_type: null,
+        token_in_mint: null,
+        token_out_mint: null,
+        copy_ratio: null,
+        leader_position_before: null,
+        leader_position_after: null,
+        copied_position_before: null,
+        copied_position_after: null,
+        sell_fraction: null,
+        leader_block_timestamp: null,
+        received_at: null,
+        intent_created_at: null,
+        quote_received_at: null,
+        tx_built_at: null,
+        tx_submitted_at: null,
+        tx_signature: null,
+        tx_confirmed_at: null,
+        confirmation_slot: null,
+        quoted_input_amount: null,
+        quoted_output_amount: null,
+        quoted_input_amount_raw: null,
+        actual_input_amount: null,
+        actual_output_amount: null,
+        price_impact_pct: null,
+        deployable_sol_at_intent: null,
+        sol_price_at_intent: null,
+        next_retry_at: null,
+        attempt_count: 1,
+        winning_attempt_id: null,
+        status: 'building',
+        skip_reason: null,
+        error_message: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, patch);
+    }
   }
 
   const { data, error } = await supabase
@@ -670,6 +840,61 @@ export async function updatePilotTrade(tradeId: string, patch: PilotTradePatch) 
     .single();
 
   if (error) {
+    if (canUseRedisExecutionFallback()) {
+      await mirrorRedisTradeEvent({
+        source: 'redis_trade_update_after_db_failure',
+        tradeId,
+        status: patch.status || '',
+        txSignature: patch.tx_signature || '',
+        txSubmittedAt: patch.tx_submitted_at || '',
+        txConfirmedAt: patch.tx_confirmed_at || '',
+        errorMessage: error.message,
+        patch: JSON.stringify(patch),
+      });
+      return applyTradePatch({
+        id: tradeId,
+        wallet_alias: 'redis',
+        wallet_public_key: '',
+        trigger_kind: 'copy',
+        trigger_reason: 'leader_trade',
+        star_trader: null,
+        star_trade_signature: null,
+        leader_type: null,
+        token_in_mint: null,
+        token_out_mint: null,
+        copy_ratio: null,
+        leader_position_before: null,
+        leader_position_after: null,
+        copied_position_before: null,
+        copied_position_after: null,
+        sell_fraction: null,
+        leader_block_timestamp: null,
+        received_at: null,
+        intent_created_at: null,
+        quote_received_at: null,
+        tx_built_at: null,
+        tx_submitted_at: null,
+        tx_signature: null,
+        tx_confirmed_at: null,
+        confirmation_slot: null,
+        quoted_input_amount: null,
+        quoted_output_amount: null,
+        quoted_input_amount_raw: null,
+        actual_input_amount: null,
+        actual_output_amount: null,
+        price_impact_pct: null,
+        deployable_sol_at_intent: null,
+        sol_price_at_intent: null,
+        next_retry_at: null,
+        attempt_count: 1,
+        winning_attempt_id: null,
+        status: 'building',
+        skip_reason: null,
+        error_message: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, patch);
+    }
     throw new Error(`Failed to update live-pilot trade ${tradeId}: ${error.message}`);
   }
 
@@ -681,6 +906,10 @@ export async function updatePilotTradeIfStatus(
   expectedStatus: PilotTradeStatus,
   patch: PilotTradePatch,
 ) {
+  if (tradeId.startsWith('redis:')) {
+    return updatePilotTrade(tradeId, patch);
+  }
+
   if (hasPostgresConnection()) {
     const { assignments, values } = buildUpdateAssignments(patch, 3);
     return pgMaybeOne<PilotTradeRow>(

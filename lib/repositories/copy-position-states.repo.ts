@@ -8,6 +8,14 @@ import {
   createEmptyCopyPositionLifecycle,
   type CopyPositionLifecycleSnapshot,
 } from '@/lib/copy-position-lifecycle';
+import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
+import {
+  getRedisCopyState,
+  recordRedisObservedLeaderBuy,
+  recordRedisObservedLeaderSell,
+  recordRedisSuccessfulCopiedBuy,
+  recordRedisSuccessfulCopiedSell,
+} from '@/lib/live-pilot/redis/state';
 
 export type CopyPositionScopeType = 'demo' | 'pilot';
 
@@ -138,9 +146,52 @@ async function upsertCopyPositionState(
   return data as CopyPositionStateRow;
 }
 
+function canUseRedisPilotFallback(key?: Partial<CopyPositionStateKey>) {
+  return (
+    isLivePilotRedisAvailable()
+    && livePilotRedisConfig.executionEnabled
+    && (!key || key.scopeType === 'pilot')
+  );
+}
+
+function redisStateToRow(
+  key: CopyPositionStateKey,
+  state: Awaited<ReturnType<typeof getRedisCopyState>>,
+): CopyPositionStateRow | null {
+  if (!state) return null;
+  const now = state.updatedAt || new Date().toISOString();
+  return {
+    scope_type: key.scopeType,
+    scope_key: key.scopeKey,
+    star_trader: key.starTrader,
+    mint: key.mint,
+    token_symbol: state.tokenSymbol,
+    leader_open_amount: state.leaderOpenAmount,
+    copied_open_amount: state.copiedOpenAmount,
+    copied_cost_usd: state.copiedCostUsd,
+    avg_cost_usd: state.avgCostUsd,
+    last_leader_trade_signature: state.lastLeaderTradeSignature,
+    last_leader_trade_at: state.lastLeaderTradeAt,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
 export async function getCopyPositionState(key: CopyPositionStateKey) {
+  if (canUseRedisPilotFallback(key)) {
+    const redisState = await getRedisCopyState({
+      walletAlias: key.scopeKey,
+      starTrader: key.starTrader,
+      mint: key.mint,
+    }).catch(() => null);
+    if (redisState) {
+      return redisStateToRow(key, redisState);
+    }
+  }
+
   if (hasPostgresConnection()) {
-    return pgMaybeOne<CopyPositionStateRow>(
+    try {
+      return await pgMaybeOne<CopyPositionStateRow>(
       `
         select *
         from public.copy_position_states
@@ -151,7 +202,11 @@ export async function getCopyPositionState(key: CopyPositionStateKey) {
         limit 1
       `,
       [key.scopeType, key.scopeKey, key.starTrader, key.mint],
-    );
+      );
+    } catch (error) {
+      if (canUseRedisPilotFallback(key)) return null;
+      throw error;
+    }
   }
 
   const { data, error } = await supabase
@@ -164,6 +219,7 @@ export async function getCopyPositionState(key: CopyPositionStateKey) {
     .maybeSingle();
 
   if (error) {
+    if (canUseRedisPilotFallback(key)) return null;
     throw new Error(`Failed to fetch copy position state for ${key.scopeKey}/${key.mint}: ${error.message}`);
   }
 
@@ -208,45 +264,152 @@ export async function listLeaderClosedCopiedOpenPilotStates(args: {
 }
 
 export async function recordObservedLeaderBuy(args: TransitionMetadata & { leaderBuyAmount: number }) {
-  const current = await getCopyPositionState(args);
-  const transition = applyObservedLeaderBuy(toRowSnapshot(current), args.leaderBuyAmount);
-  const row = await upsertCopyPositionState(args, transition.next);
-  return { row, ...transition };
+  try {
+    const current = await getCopyPositionState(args);
+    const transition = applyObservedLeaderBuy(toRowSnapshot(current), args.leaderBuyAmount);
+    const row = await upsertCopyPositionState(args, transition.next);
+    if (args.scopeType === 'pilot') {
+      await recordRedisObservedLeaderBuy({
+        walletAlias: args.scopeKey,
+        starTrader: args.starTrader,
+        mint: args.mint,
+        tokenSymbol: args.tokenSymbol,
+        tradeSignature: args.tradeSignature,
+        tradeTimestampIso: args.tradeTimestampIso,
+        leaderBuyAmount: args.leaderBuyAmount,
+      }).catch(() => undefined);
+    }
+    return { row, ...transition };
+  } catch (error) {
+    if (!canUseRedisPilotFallback(args)) throw error;
+    const redisResult = await recordRedisObservedLeaderBuy({
+      walletAlias: args.scopeKey,
+      starTrader: args.starTrader,
+      mint: args.mint,
+      tokenSymbol: args.tokenSymbol,
+      tradeSignature: args.tradeSignature,
+      tradeTimestampIso: args.tradeTimestampIso,
+      leaderBuyAmount: args.leaderBuyAmount,
+    });
+    const { row: _redisRow, ...transition } = redisResult!;
+    return { ...transition, row: redisStateToRow(args, redisResult?.row || null) };
+  }
 }
 
 export async function recordObservedLeaderSell(args: TransitionMetadata & { leaderSellAmount: number }) {
-  const current = await getCopyPositionState(args);
-  const transition = applyObservedLeaderSell(toRowSnapshot(current), args.leaderSellAmount);
+  try {
+    const current = await getCopyPositionState(args);
+    const transition = applyObservedLeaderSell(toRowSnapshot(current), args.leaderSellAmount);
 
-  if (transition.leaderPositionBefore > 0) {
-    await upsertCopyPositionState(args, transition.next);
+    if (transition.leaderPositionBefore > 0) {
+      await upsertCopyPositionState(args, transition.next);
+    }
+
+    if (args.scopeType === 'pilot') {
+      await recordRedisObservedLeaderSell({
+        walletAlias: args.scopeKey,
+        starTrader: args.starTrader,
+        mint: args.mint,
+        tokenSymbol: args.tokenSymbol,
+        tradeSignature: args.tradeSignature,
+        tradeTimestampIso: args.tradeTimestampIso,
+        leaderSellAmount: args.leaderSellAmount,
+      }).catch(() => undefined);
+    }
+
+    return {
+      row: current,
+      ...transition,
+    };
+  } catch (error) {
+    if (!canUseRedisPilotFallback(args)) throw error;
+    const redisResult = await recordRedisObservedLeaderSell({
+      walletAlias: args.scopeKey,
+      starTrader: args.starTrader,
+      mint: args.mint,
+      tokenSymbol: args.tokenSymbol,
+      tradeSignature: args.tradeSignature,
+      tradeTimestampIso: args.tradeTimestampIso,
+      leaderSellAmount: args.leaderSellAmount,
+    });
+    const { row: _redisRow, ...transition } = redisResult!;
+    return { ...transition, row: redisStateToRow(args, redisResult?.row || null) };
   }
-
-  return {
-    row: current,
-    ...transition,
-  };
 }
 
 export async function recordSuccessfulCopiedBuy(args: TransitionMetadata & { copiedBuyAmount: number; copiedCostUsd: number }) {
-  const current = await getCopyPositionState(args);
-  const transition = applySuccessfulCopiedBuy(
-    toRowSnapshot(current),
-    args.copiedBuyAmount,
-    args.copiedCostUsd,
-  );
-  const row = await upsertCopyPositionState(args, transition.next);
-  return { row, ...transition };
+  try {
+    const current = await getCopyPositionState(args);
+    const transition = applySuccessfulCopiedBuy(
+      toRowSnapshot(current),
+      args.copiedBuyAmount,
+      args.copiedCostUsd,
+    );
+    const row = await upsertCopyPositionState(args, transition.next);
+    if (args.scopeType === 'pilot') {
+      await recordRedisSuccessfulCopiedBuy({
+        walletAlias: args.scopeKey,
+        starTrader: args.starTrader,
+        mint: args.mint,
+        tokenSymbol: args.tokenSymbol,
+        tradeSignature: args.tradeSignature,
+        tradeTimestampIso: args.tradeTimestampIso,
+        copiedBuyAmount: args.copiedBuyAmount,
+        copiedCostUsd: args.copiedCostUsd,
+      }).catch(() => undefined);
+    }
+    return { row, ...transition };
+  } catch (error) {
+    if (!canUseRedisPilotFallback(args)) throw error;
+    const redisResult = await recordRedisSuccessfulCopiedBuy({
+      walletAlias: args.scopeKey,
+      starTrader: args.starTrader,
+      mint: args.mint,
+      tokenSymbol: args.tokenSymbol,
+      tradeSignature: args.tradeSignature,
+      tradeTimestampIso: args.tradeTimestampIso,
+      copiedBuyAmount: args.copiedBuyAmount,
+      copiedCostUsd: args.copiedCostUsd,
+    });
+    const { row: _redisRow, ...transition } = redisResult!;
+    return { ...transition, row: redisStateToRow(args, redisResult?.row || null) };
+  }
 }
 
 export async function recordSuccessfulCopiedSell(args: TransitionMetadata & { copiedSellAmount: number }) {
-  const current = await getCopyPositionState(args);
-  const transition = applySuccessfulCopiedSell(
-    toRowSnapshot(current),
-    args.copiedSellAmount,
-  );
-  const row = await upsertCopyPositionState(args, transition.next);
-  return { row, ...transition };
+  try {
+    const current = await getCopyPositionState(args);
+    const transition = applySuccessfulCopiedSell(
+      toRowSnapshot(current),
+      args.copiedSellAmount,
+    );
+    const row = await upsertCopyPositionState(args, transition.next);
+    if (args.scopeType === 'pilot') {
+      await recordRedisSuccessfulCopiedSell({
+        walletAlias: args.scopeKey,
+        starTrader: args.starTrader,
+        mint: args.mint,
+        tokenSymbol: args.tokenSymbol,
+        tradeSignature: args.tradeSignature,
+        tradeTimestampIso: args.tradeTimestampIso,
+        copiedSellAmount: args.copiedSellAmount,
+      }).catch(() => undefined);
+    }
+    return { row, ...transition };
+  } catch (error) {
+    if (!canUseRedisPilotFallback(args)) throw error;
+    const redisResult = await recordRedisSuccessfulCopiedSell({
+      walletAlias: args.scopeKey,
+      starTrader: args.starTrader,
+      mint: args.mint,
+      tokenSymbol: args.tokenSymbol,
+      tradeSignature: args.tradeSignature,
+      tradeTimestampIso: args.tradeTimestampIso,
+      copiedSellAmount: args.copiedSellAmount,
+    });
+    const { row: _redisRow, ...transition } = redisResult!;
+    return { ...transition, row: redisStateToRow(args, redisResult?.row || null) };
+  }
 }
 
 export async function reconcileCopiedPositionAmount(args: TransitionMetadata & { copiedOpenAmount: number }) {

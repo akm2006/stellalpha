@@ -40,6 +40,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "recharts": "^3.6.0",
+    "redis": "^5.12.1",
     "tailwind-merge": "^2.5.5",
     "tweetnacl": "^1.0.3",
     "unique-names-generator": "^4.7.1"

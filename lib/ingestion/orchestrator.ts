@@ -5,6 +5,8 @@ import { getPosition, upsertPosition } from '@/lib/repositories/positions.repo';
 import { queueCopyTrades, triggerQueuedTradeProcessors } from '@/lib/ingestion/follower-producer';
 import { deleteQueuedTradesBySignature } from '@/lib/repositories/demo-trades.repo';
 import { maybeCreatePilotIntent } from '@/lib/live-pilot/intent-producer';
+import { getLivePilotPublicConfig } from '@/lib/live-pilot/config';
+import { maybeCreateRedisPilotIntent } from '@/lib/live-pilot/redis/intent-producer';
 import { RawTrade } from '@/lib/trade-parser';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { extractInvolvedAddresses } from '@/lib/ingestion/utils';
@@ -110,12 +112,25 @@ export async function processBatch(
 
     txTimer.checkpoint('DB: Star trader query');
 
+    let effectiveStarTraders = matchedStarTraders || [];
     if (starTraderError) {
       console.error(`Star trader query error:`, starTraderError.message);
-      continue;
+      const livePilotConfig = getLivePilotPublicConfig();
+      const livePilotMatches = livePilotConfig.wallets
+        .filter((wallet) => wallet.isEnabled && involvedAddresses.has(wallet.starTrader))
+        .map((wallet) => ({ address: wallet.starTrader }));
+
+      if (livePilotMatches.length === 0) {
+        continue;
+      }
+
+      effectiveStarTraders = livePilotMatches;
+      console.warn(
+        `[ORCHESTRATOR] Star trader DB lookup failed; using ${livePilotMatches.length} live-pilot env match(es) for Redis fallback`,
+      );
     }
 
-    if (!matchedStarTraders || matchedStarTraders.length === 0) {
+    if (effectiveStarTraders.length === 0) {
       // Log which addresses we checked (first 3 for brevity)
       const sampleAddresses = Array.from(involvedAddresses).slice(0, 3).map(a => a.slice(0, 8));
       console.log(`No star traders in tx ${tx.signature.slice(0, 12)}... (checked ${involvedAddresses.size} addrs: ${sampleAddresses.join(', ')}...)`);
@@ -125,7 +140,7 @@ export async function processBatch(
 
     // 3. Process trade for EACH matched star trader
     // (Important: A single tx could involve multiple tracked wallets)
-    for (const starTrader of matchedStarTraders) {
+    for (const starTrader of effectiveStarTraders) {
       const traderAddress = starTrader.address;
       const isFeePayer = traderAddress === tx.feePayer;
 
@@ -153,7 +168,9 @@ export async function processBatch(
       try {
         let queuedTraderStateIds: string[] = [];
 
-        const { claimed } = await claimTrade({
+        let claimed = false;
+        try {
+          const claimResult = await claimTrade({
           signature: trade.signature,
           wallet: trade.wallet,
           type: trade.type,
@@ -172,7 +189,15 @@ export async function processBatch(
           source: trade.source,
           gas: trade.gas,
           latency_ms: latencyMs
-        });
+          });
+          claimed = claimResult.claimed;
+        } catch (claimError: any) {
+          const redisIntent = await maybeCreateRedisPilotIntent(trade, receivedAt, 'claim_trade_failed');
+          if (redisIntent.considered) {
+            txTimer.checkpoint('Redis live-pilot fallback intent after claim failure');
+          }
+          throw claimError;
+        }
 
         if (!claimed) {
           // Another source already owns this signature — skip everything
@@ -219,6 +244,10 @@ export async function processBatch(
             `[ORCHESTRATOR] Live-pilot intent creation failed for ${trade.signature.slice(0, 12)}...`,
             pilotIntentError.message,
           );
+          const redisIntent = await maybeCreateRedisPilotIntent(trade, receivedAt, 'db_intent_failed');
+          if (redisIntent.considered) {
+            txTimer.checkpoint('Redis live-pilot fallback intent after DB intent failure');
+          }
         }
 
         // 3+4. Queue followers and update the leader position in parallel, but

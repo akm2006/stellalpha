@@ -31,6 +31,26 @@ import { enqueueResidualExitIntentsForWallet } from '@/lib/live-pilot/residual-e
 import { subscribeToLivePilotQueueWake, unsubscribeFromLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
 import { recoverSubmittedPilotTrades } from '@/lib/live-pilot/recovery';
 import { closeZeroTokenAccounts } from '@/lib/live-pilot/token-account-rent';
+import { closeLivePilotRedisClient } from '@/lib/live-pilot/redis/client';
+import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
+import {
+  ackLivePilotRedisIntent,
+  claimStaleLivePilotRedisIntents,
+  deadletterLivePilotRedisIntent,
+  ensureLivePilotRedisStreams,
+  publishLivePilotRedisAudit,
+  readLivePilotRedisIntents,
+  redisIntentToPilotTrade,
+  type LivePilotRedisStreamMessage,
+} from '@/lib/live-pilot/redis/streams';
+import {
+  acquireLivePilotRedisWalletLock,
+  releaseLivePilotRedisWalletLock,
+} from '@/lib/live-pilot/redis/locks';
+import {
+  getRedisPilotControlSnapshot,
+  hydrateRedisPilotControlState,
+} from '@/lib/live-pilot/redis/control';
 
 const QUEUE_POLL_INTERVAL_MS = 1_000;
 const RECOVERY_INTERVAL_MS = 5_000;
@@ -64,6 +84,7 @@ let controlSnapshotCache: {
 } | null = null;
 
 const lockOwner = `${os.hostname()}:${process.pid}:live-pilot`;
+const redisConsumerName = `${os.hostname()}:${process.pid}:live-pilot-redis`;
 const connection = createLivePilotConnection();
 
 function wait(ms: number) {
@@ -449,6 +470,15 @@ async function processQueuedPilotTrades() {
   isProcessingQueue = true;
 
   try {
+    if (isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled) {
+      const processedRedis = await processRedisPilotIntents();
+      if (processedRedis) {
+        scheduleQueueDrain();
+      }
+      recordLoopSuccess('queue');
+      return;
+    }
+
     const config = getLivePilotConfig();
     const enabledWallets = config.wallets.filter((wallet) => wallet.isEnabled);
     const walletAliases = enabledWallets.map((wallet) => wallet.alias);
@@ -496,6 +526,141 @@ async function processQueuedPilotTrades() {
   } finally {
     isProcessingQueue = false;
   }
+}
+
+async function processRedisIntentMessage(
+  message: LivePilotRedisStreamMessage,
+  config: ReturnType<typeof getLivePilotConfig>,
+  controlSnapshot: ReturnType<typeof buildPilotControlSnapshot>,
+) {
+  const trade = redisIntentToPilotTrade(message.payload);
+  const wallet = findPilotWalletByAlias(config, trade.wallet_alias);
+
+  if (!wallet || !wallet.isEnabled || !wallet.isComplete || !wallet.hasSecret) {
+    await publishLivePilotRedisAudit({
+      source: 'redis_intent_skipped',
+      reason: 'wallet_not_ready',
+      streamId: message.streamId,
+      intentId: message.payload.intentId,
+      walletAlias: trade.wallet_alias,
+    });
+    await ackLivePilotRedisIntent(message.streamId);
+    return;
+  }
+
+  const walletControl = controlSnapshot.wallets.find((row) => row.scope_key === wallet.alias);
+  const isLiquidationTrade = trade.trigger_kind === 'liquidation';
+  if (!isLiquidationTrade && (controlSnapshot.global.kill_switch_active || walletControl?.kill_switch_active)) {
+    await publishLivePilotRedisAudit({
+      source: 'redis_intent_skipped',
+      reason: 'kill_switch_active',
+      streamId: message.streamId,
+      intentId: message.payload.intentId,
+      walletAlias: wallet.alias,
+    });
+    await ackLivePilotRedisIntent(message.streamId);
+    return;
+  }
+
+  if (!isLiquidationTrade && (controlSnapshot.global.is_paused || walletControl?.is_paused)) {
+    await publishLivePilotRedisAudit({
+      source: 'redis_intent_skipped',
+      reason: controlSnapshot.global.is_paused ? 'global_paused' : 'wallet_paused',
+      streamId: message.streamId,
+      intentId: message.payload.intentId,
+      walletAlias: wallet.alias,
+    });
+    await ackLivePilotRedisIntent(message.streamId);
+    return;
+  }
+
+  const staleBuy = shouldSkipStaleBuyAtExecution(trade);
+  if (staleBuy.stale) {
+    await publishLivePilotRedisAudit({
+      source: 'redis_intent_skipped',
+      reason: 'stale_buy',
+      streamId: message.streamId,
+      intentId: message.payload.intentId,
+      walletAlias: trade.wallet_alias,
+      ageMs: staleBuy.ageMs,
+    });
+    await ackLivePilotRedisIntent(message.streamId);
+    return;
+  }
+
+  const redisLockOwner = `${redisConsumerName}:${message.streamId}`;
+  const lockAcquired = await acquireLivePilotRedisWalletLock(wallet.alias, redisLockOwner);
+  if (!lockAcquired) {
+    await publishLivePilotRedisAudit({
+      source: 'redis_intent_deferred',
+      reason: 'wallet_busy',
+      streamId: message.streamId,
+      intentId: message.payload.intentId,
+      walletAlias: wallet.alias,
+    });
+    return;
+  }
+
+  try {
+    const outcome = await executePilotTrade(
+      {
+        ...trade,
+        status: 'building',
+        attempt_count: Math.max(trade.attempt_count || 0, 1),
+      },
+      wallet,
+      connection,
+    );
+
+    await publishLivePilotRedisAudit({
+      source: 'redis_intent_executed',
+      streamId: message.streamId,
+      intentId: message.payload.intentId,
+      walletAlias: wallet.alias,
+      outcome: outcome.outcome,
+      signature: 'signature' in outcome ? outcome.signature || '' : '',
+      message: 'message' in outcome ? outcome.message : '',
+      reason: 'reason' in outcome ? outcome.reason : '',
+    });
+
+    await ackLivePilotRedisIntent(message.streamId);
+  } catch (error) {
+    console.error(`[LIVE_PILOT_REDIS] Failed Redis intent ${message.payload.intentId}:`, error);
+    await deadletterLivePilotRedisIntent(message, 'execution_error', error);
+  } finally {
+    await releaseLivePilotRedisWalletLock(wallet.alias, redisLockOwner).catch(() => undefined);
+  }
+}
+
+async function processRedisPilotIntents() {
+  if (!isLivePilotRedisAvailable() || !livePilotRedisConfig.executionEnabled) {
+    return false;
+  }
+
+  const config = getLivePilotConfig();
+  if (config.errors.length > 0) {
+    throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
+  }
+  const walletAliases = config.wallets.filter((wallet) => wallet.isEnabled).map((wallet) => wallet.alias);
+  const controlSnapshot =
+    await getRedisPilotControlSnapshot(walletAliases)
+    || await getPilotControlSnapshot(walletAliases);
+
+  const freshMessages = await readLivePilotRedisIntents(redisConsumerName);
+  const staleMessages = freshMessages.length > 0
+    ? []
+    : await claimStaleLivePilotRedisIntents(redisConsumerName);
+  const messages = freshMessages.length > 0 ? freshMessages : staleMessages;
+
+  if (messages.length === 0) {
+    return false;
+  }
+
+  for (const message of messages) {
+    await processRedisIntentMessage(message, config, controlSnapshot);
+  }
+
+  return true;
 }
 
 async function runRecoveryLoop() {
@@ -562,6 +727,18 @@ async function startWorker() {
 
   console.log(`[LIVE_PILOT] Worker starting with lock owner ${lockOwner}`);
   console.log(`[LIVE_PILOT] Enabled wallets: ${walletAliases.join(', ')}`);
+  if (isLivePilotRedisAvailable()) {
+    await ensureLivePilotRedisStreams();
+    await hydrateRedisPilotControlState(walletAliases).catch((error) => {
+      console.warn('[LIVE_PILOT_REDIS] Failed to hydrate control state; Redis execution will fail closed until control is available:', error);
+    });
+    console.log(
+      `[LIVE_PILOT_REDIS] Redis hot path initialized `
+      + `(execution=${livePilotRedisConfig.executionEnabled}, group=${livePilotRedisConfig.consumerGroup})`,
+    );
+  } else {
+    console.log('[LIVE_PILOT_REDIS] Redis hot path disabled');
+  }
   await sendLivePilotAlert('Worker startup', [
     `lockOwner=${lockOwner}`,
     `wallets=${walletAliases.join(', ')}`,
@@ -612,6 +789,7 @@ async function shutdown() {
     );
     await unsubscribeFromLivePilotQueueWake(queueWakeChannel).catch(() => undefined);
     queueWakeChannel = null;
+    await closeLivePilotRedisClient().catch(() => undefined);
     await sendLivePilotAlert('Worker shutdown', [
       `lockOwner=${lockOwner}`,
       `wallets=${walletAliases.join(', ')}`,

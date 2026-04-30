@@ -1,8 +1,14 @@
 import { supabase } from '@/lib/supabase';
 import { hasPostgresConnection, pgMaybeOne, pgOne, pgQuery } from '@/lib/db/postgres';
+import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
+import { mirrorRedisTradeEvent } from '@/lib/live-pilot/redis/state';
 import type { PilotRuntimeStateRow, PilotWalletConfigSummary } from '@/lib/live-pilot/types';
 
 const LOCK_STALE_AFTER_MS = 90_000;
+
+function canUseRedisExecutionFallback() {
+  return isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled;
+}
 
 export async function ensurePilotRuntimeState(wallets: Pick<PilotWalletConfigSummary, 'alias' | 'starTrader' | 'mode'>[]) {
   if (wallets.length === 0) {
@@ -111,7 +117,8 @@ export async function getPilotRuntimeState(walletAlias: string) {
 
 export async function updatePilotRuntimeState(walletAlias: string, patch: Partial<Omit<PilotRuntimeStateRow, 'wallet_alias' | 'updated_at'>>) {
   if (hasPostgresConnection()) {
-    return pgOne<PilotRuntimeStateRow>(
+    try {
+      return await pgOne<PilotRuntimeStateRow>(
       `
         update public.pilot_runtime_state
         set star_trader = coalesce($2, star_trader),
@@ -139,7 +146,28 @@ export async function updatePilotRuntimeState(walletAlias: string, patch: Partia
         patch.last_error ?? null,
         patch.last_reconcile_at ?? null,
       ],
-    );
+      );
+    } catch (error) {
+      if (!canUseRedisExecutionFallback()) throw error;
+      await mirrorRedisTradeEvent({
+        source: 'redis_runtime_update_after_db_failure',
+        walletAlias,
+        patch: JSON.stringify(patch),
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        wallet_alias: walletAlias,
+        star_trader: patch.star_trader ?? null,
+        mode: patch.mode ?? 'copy',
+        lock_owner: patch.lock_owner ?? null,
+        last_seen_star_trade_signature: patch.last_seen_star_trade_signature ?? null,
+        last_submitted_tx_signature: patch.last_submitted_tx_signature ?? null,
+        last_confirmed_tx_signature: patch.last_confirmed_tx_signature ?? null,
+        last_error: patch.last_error ?? null,
+        last_reconcile_at: patch.last_reconcile_at ?? null,
+        updated_at: new Date().toISOString(),
+      };
+    }
   }
 
   const { data, error } = await supabase
@@ -153,6 +181,26 @@ export async function updatePilotRuntimeState(walletAlias: string, patch: Partia
     .single();
 
   if (error) {
+    if (canUseRedisExecutionFallback()) {
+      await mirrorRedisTradeEvent({
+        source: 'redis_runtime_update_after_db_failure',
+        walletAlias,
+        patch: JSON.stringify(patch),
+        errorMessage: error.message,
+      });
+      return {
+        wallet_alias: walletAlias,
+        star_trader: patch.star_trader ?? null,
+        mode: patch.mode ?? 'copy',
+        lock_owner: patch.lock_owner ?? null,
+        last_seen_star_trade_signature: patch.last_seen_star_trade_signature ?? null,
+        last_submitted_tx_signature: patch.last_submitted_tx_signature ?? null,
+        last_confirmed_tx_signature: patch.last_confirmed_tx_signature ?? null,
+        last_error: patch.last_error ?? null,
+        last_reconcile_at: patch.last_reconcile_at ?? null,
+        updated_at: new Date().toISOString(),
+      };
+    }
     throw new Error(`Failed to update live-pilot runtime state: ${error.message}`);
   }
 

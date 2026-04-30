@@ -12,6 +12,7 @@ import {
   updatePilotControlState,
 } from '@/lib/live-pilot/repositories/pilot-control-state.repo';
 import { getLivePilotStatus } from '@/lib/live-pilot/status';
+import { setRedisPilotControlState } from '@/lib/live-pilot/redis/control';
 import type { PilotControlAction } from '@/lib/live-pilot/types';
 
 export const dynamic = 'force-dynamic';
@@ -28,6 +29,14 @@ const VALID_ACTIONS: PilotControlAction[] = [
 
 function isWalletScopedAction(action: PilotControlAction) {
   return action === 'wallet_pause' || action === 'wallet_resume' || action === 'wallet_liquidate';
+}
+
+async function updateMirroredPilotControlState(
+  ...args: Parameters<typeof updatePilotControlState>
+) {
+  const row = await updatePilotControlState(...args);
+  await setRedisPilotControlState(row).catch(() => undefined);
+  return row;
 }
 
 export async function POST(request: NextRequest) {
@@ -69,13 +78,13 @@ export async function POST(request: NextRequest) {
 
     switch (action) {
       case 'global_pause':
-        await updatePilotControlState('global', 'global', {
+        await updateMirroredPilotControlState('global', 'global', {
           is_paused: true,
           updated_by_wallet: access.operatorWallet,
         });
         break;
       case 'global_resume':
-        await updatePilotControlState('global', 'global', {
+        await updateMirroredPilotControlState('global', 'global', {
           is_paused: false,
           kill_switch_active: false,
           liquidation_requested: false,
@@ -83,7 +92,7 @@ export async function POST(request: NextRequest) {
         });
         break;
       case 'wallet_pause':
-        await updatePilotControlState('wallet', walletAlias!, {
+        await updateMirroredPilotControlState('wallet', walletAlias!, {
           is_paused: true,
           updated_by_wallet: access.operatorWallet,
         });
@@ -119,7 +128,7 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        await updatePilotControlState('wallet', walletAlias!, {
+        await updateMirroredPilotControlState('wallet', walletAlias!, {
           is_paused: false,
           kill_switch_active: false,
           liquidation_requested: false,
@@ -127,7 +136,7 @@ export async function POST(request: NextRequest) {
         });
         break;
       case 'kill_switch_activate':
-        await updatePilotControlState('global', 'global', {
+        await updateMirroredPilotControlState('global', 'global', {
           is_paused: true,
           kill_switch_active: true,
           liquidation_requested: true,
@@ -135,7 +144,7 @@ export async function POST(request: NextRequest) {
         });
         await Promise.all(
           access.config.wallets.map((wallet) =>
-            updatePilotControlState('wallet', wallet.alias, {
+            updateMirroredPilotControlState('wallet', wallet.alias, {
               is_paused: true,
               kill_switch_active: true,
               liquidation_requested: true,
@@ -150,7 +159,7 @@ export async function POST(request: NextRequest) {
         ]).catch(() => undefined);
         break;
       case 'wallet_liquidate':
-        await updatePilotControlState('wallet', walletAlias!, {
+        await updateMirroredPilotControlState('wallet', walletAlias!, {
           is_paused: true,
           liquidation_requested: true,
           updated_by_wallet: access.operatorWallet,

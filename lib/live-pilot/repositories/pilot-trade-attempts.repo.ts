@@ -5,6 +5,8 @@ import {
   pgOne,
   pgQuery,
 } from '@/lib/db/postgres';
+import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
+import { createRedisAttemptRow, mirrorRedisTradeEvent } from '@/lib/live-pilot/redis/state';
 import type { PilotTradeAttemptRow } from '@/lib/live-pilot/types';
 
 const NON_BREAKER_ERROR_CODES = new Set([
@@ -54,9 +56,46 @@ export interface CreatePilotTradeAttemptInput {
 
 export type PilotTradeAttemptPatch = Partial<Omit<PilotTradeAttemptRow, 'id' | 'pilot_trade_id' | 'attempt_number' | 'created_at' | 'updated_at'>>;
 
+function canUseRedisExecutionFallback() {
+  return isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled;
+}
+
+function redisAttemptFromCreateInput(attempt: CreatePilotTradeAttemptInput): PilotTradeAttemptRow {
+  return createRedisAttemptRow({
+    id: `redis-attempt:${attempt.pilot_trade_id}:${attempt.attempt_number}:${Date.now()}`,
+    attempt: {
+      pilot_trade_id: attempt.pilot_trade_id,
+      attempt_number: attempt.attempt_number,
+      execution_mode: attempt.execution_mode,
+      slippage_bps: attempt.slippage_bps ?? null,
+      jupiter_request_id: attempt.jupiter_request_id ?? null,
+      jupiter_router: attempt.jupiter_router ?? null,
+      last_valid_block_height: attempt.last_valid_block_height ?? null,
+      quoted_input_amount: attempt.quoted_input_amount ?? null,
+      quoted_output_amount: attempt.quoted_output_amount ?? null,
+      quoted_input_amount_raw: attempt.quoted_input_amount_raw ?? null,
+      price_impact_pct: attempt.price_impact_pct ?? null,
+      prioritization_fee_lamports: attempt.prioritization_fee_lamports ?? null,
+      signed_transaction: attempt.signed_transaction ?? null,
+      execute_retry_count: attempt.execute_retry_count ?? 0,
+      execute_last_attempt_at: attempt.execute_last_attempt_at ?? null,
+      tx_signature: attempt.tx_signature ?? null,
+      tx_submitted_at: attempt.tx_submitted_at ?? null,
+      tx_confirmed_at: attempt.tx_confirmed_at ?? null,
+      confirmation_slot: attempt.confirmation_slot ?? null,
+      actual_input_amount: attempt.actual_input_amount ?? null,
+      actual_output_amount: attempt.actual_output_amount ?? null,
+      status: attempt.status,
+      error_code: attempt.error_code ?? null,
+      error_message: attempt.error_message ?? null,
+    },
+  });
+}
+
 export async function createPilotTradeAttempt(attempt: CreatePilotTradeAttemptInput) {
   if (hasPostgresConnection()) {
-    return pgOne<PilotTradeAttemptRow>(
+    try {
+      return await pgOne<PilotTradeAttemptRow>(
       `
         insert into public.pilot_trade_attempts (
           pilot_trade_id,
@@ -117,7 +156,20 @@ export async function createPilotTradeAttempt(attempt: CreatePilotTradeAttemptIn
         attempt.error_code ?? null,
         attempt.error_message ?? null,
       ],
-    );
+      );
+    } catch (error) {
+      if (!canUseRedisExecutionFallback()) throw error;
+      const row = redisAttemptFromCreateInput(attempt);
+      await mirrorRedisTradeEvent({
+        source: 'redis_attempt_created_after_db_failure',
+        pilotTradeId: attempt.pilot_trade_id,
+        attemptId: row.id,
+        attemptNumber: attempt.attempt_number,
+        status: attempt.status,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      return row;
+    }
   }
 
   const { data, error } = await supabase
@@ -127,6 +179,18 @@ export async function createPilotTradeAttempt(attempt: CreatePilotTradeAttemptIn
     .single();
 
   if (error) {
+    if (canUseRedisExecutionFallback()) {
+      const row = redisAttemptFromCreateInput(attempt);
+      await mirrorRedisTradeEvent({
+        source: 'redis_attempt_created_after_db_failure',
+        pilotTradeId: attempt.pilot_trade_id,
+        attemptId: row.id,
+        attemptNumber: attempt.attempt_number,
+        status: attempt.status,
+        errorMessage: error.message,
+      });
+      return row;
+    }
     throw new Error(`Failed to create live-pilot trade attempt: ${error.message}`);
   }
 
@@ -134,9 +198,56 @@ export async function createPilotTradeAttempt(attempt: CreatePilotTradeAttemptIn
 }
 
 export async function updatePilotTradeAttempt(attemptId: string, patch: PilotTradeAttemptPatch) {
+  if (attemptId.startsWith('redis-attempt:')) {
+    const parts = attemptId.split(':');
+    const row = createRedisAttemptRow({
+      id: attemptId,
+      attempt: {
+        pilot_trade_id: parts[1] || 'redis-unknown',
+        attempt_number: Number(parts[2] || 1),
+        execution_mode: String(patch.execution_mode || 'managed_order_execute'),
+        slippage_bps: patch.slippage_bps ?? null,
+        jupiter_request_id: patch.jupiter_request_id ?? null,
+        jupiter_router: patch.jupiter_router ?? null,
+        last_valid_block_height: patch.last_valid_block_height ?? null,
+        quoted_input_amount: patch.quoted_input_amount ?? null,
+        quoted_output_amount: patch.quoted_output_amount ?? null,
+        quoted_input_amount_raw: patch.quoted_input_amount_raw ?? null,
+        price_impact_pct: patch.price_impact_pct ?? null,
+        prioritization_fee_lamports: patch.prioritization_fee_lamports ?? null,
+        signed_transaction: patch.signed_transaction ?? null,
+        execute_retry_count: patch.execute_retry_count ?? 0,
+        execute_last_attempt_at: patch.execute_last_attempt_at ?? null,
+        tx_signature: patch.tx_signature ?? null,
+        tx_submitted_at: patch.tx_submitted_at ?? null,
+        tx_confirmed_at: patch.tx_confirmed_at ?? null,
+        confirmation_slot: patch.confirmation_slot ?? null,
+        actual_input_amount: patch.actual_input_amount ?? null,
+        actual_output_amount: patch.actual_output_amount ?? null,
+        status: patch.status ?? 'building',
+        error_code: patch.error_code ?? null,
+        error_message: patch.error_message ?? null,
+      },
+    });
+    await mirrorRedisTradeEvent({
+      source: 'redis_attempt_updated',
+      attemptId,
+      pilotTradeId: row.pilot_trade_id,
+      status: row.status,
+      txSignature: row.tx_signature,
+      txSubmittedAt: row.tx_submitted_at,
+      txConfirmedAt: row.tx_confirmed_at,
+      errorCode: row.error_code,
+      errorMessage: row.error_message,
+      patch: JSON.stringify(patch),
+    });
+    return row;
+  }
+
   if (hasPostgresConnection()) {
-    const { assignments, values } = buildUpdateAssignments(patch);
-    return pgOne<PilotTradeAttemptRow>(
+    try {
+      const { assignments, values } = buildUpdateAssignments(patch);
+      return await pgOne<PilotTradeAttemptRow>(
       `
         update public.pilot_trade_attempts
         set ${[...assignments, 'updated_at = now()'].join(', ')}
@@ -144,7 +255,45 @@ export async function updatePilotTradeAttempt(attemptId: string, patch: PilotTra
         returning *
       `,
       [attemptId, ...values],
-    );
+      );
+    } catch (error) {
+      if (!canUseRedisExecutionFallback()) throw error;
+      await mirrorRedisTradeEvent({
+        source: 'redis_attempt_update_after_db_failure',
+        attemptId,
+        patch: JSON.stringify(patch),
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      return createRedisAttemptRow({
+        id: attemptId,
+        attempt: {
+          pilot_trade_id: 'redis-unknown',
+          attempt_number: 1,
+          execution_mode: String(patch.execution_mode || 'managed_order_execute'),
+          slippage_bps: patch.slippage_bps ?? null,
+          jupiter_request_id: patch.jupiter_request_id ?? null,
+          jupiter_router: patch.jupiter_router ?? null,
+          last_valid_block_height: patch.last_valid_block_height ?? null,
+          quoted_input_amount: patch.quoted_input_amount ?? null,
+          quoted_output_amount: patch.quoted_output_amount ?? null,
+          quoted_input_amount_raw: patch.quoted_input_amount_raw ?? null,
+          price_impact_pct: patch.price_impact_pct ?? null,
+          prioritization_fee_lamports: patch.prioritization_fee_lamports ?? null,
+          signed_transaction: patch.signed_transaction ?? null,
+          execute_retry_count: patch.execute_retry_count ?? 0,
+          execute_last_attempt_at: patch.execute_last_attempt_at ?? null,
+          tx_signature: patch.tx_signature ?? null,
+          tx_submitted_at: patch.tx_submitted_at ?? null,
+          tx_confirmed_at: patch.tx_confirmed_at ?? null,
+          confirmation_slot: patch.confirmation_slot ?? null,
+          actual_input_amount: patch.actual_input_amount ?? null,
+          actual_output_amount: patch.actual_output_amount ?? null,
+          status: patch.status ?? 'building',
+          error_code: patch.error_code ?? null,
+          error_message: patch.error_message ?? null,
+        },
+      });
+    }
   }
 
   const { data, error } = await supabase
@@ -158,6 +307,43 @@ export async function updatePilotTradeAttempt(attemptId: string, patch: PilotTra
     .single();
 
   if (error) {
+    if (canUseRedisExecutionFallback()) {
+      await mirrorRedisTradeEvent({
+        source: 'redis_attempt_update_after_db_failure',
+        attemptId,
+        patch: JSON.stringify(patch),
+        errorMessage: error.message,
+      });
+      return createRedisAttemptRow({
+        id: attemptId,
+        attempt: {
+          pilot_trade_id: 'redis-unknown',
+          attempt_number: 1,
+          execution_mode: String(patch.execution_mode || 'managed_order_execute'),
+          slippage_bps: patch.slippage_bps ?? null,
+          jupiter_request_id: patch.jupiter_request_id ?? null,
+          jupiter_router: patch.jupiter_router ?? null,
+          last_valid_block_height: patch.last_valid_block_height ?? null,
+          quoted_input_amount: patch.quoted_input_amount ?? null,
+          quoted_output_amount: patch.quoted_output_amount ?? null,
+          quoted_input_amount_raw: patch.quoted_input_amount_raw ?? null,
+          price_impact_pct: patch.price_impact_pct ?? null,
+          prioritization_fee_lamports: patch.prioritization_fee_lamports ?? null,
+          signed_transaction: patch.signed_transaction ?? null,
+          execute_retry_count: patch.execute_retry_count ?? 0,
+          execute_last_attempt_at: patch.execute_last_attempt_at ?? null,
+          tx_signature: patch.tx_signature ?? null,
+          tx_submitted_at: patch.tx_submitted_at ?? null,
+          tx_confirmed_at: patch.tx_confirmed_at ?? null,
+          confirmation_slot: patch.confirmation_slot ?? null,
+          actual_input_amount: patch.actual_input_amount ?? null,
+          actual_output_amount: patch.actual_output_amount ?? null,
+          status: patch.status ?? 'building',
+          error_code: patch.error_code ?? null,
+          error_message: patch.error_message ?? null,
+        },
+      });
+    }
     throw new Error(`Failed to update live-pilot trade attempt ${attemptId}: ${error.message}`);
   }
 

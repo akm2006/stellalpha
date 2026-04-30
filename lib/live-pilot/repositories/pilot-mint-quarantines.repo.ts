@@ -1,6 +1,16 @@
 import { supabase } from '@/lib/supabase';
 import { hasPostgresConnection, pgMaybeOne, pgOne, pgQuery } from '@/lib/db/postgres';
+import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
+import {
+  clearRedisMintQuarantine,
+  getRedisMintQuarantine,
+  setRedisMintQuarantine,
+} from '@/lib/live-pilot/redis/state';
 import type { PilotMintQuarantineRow } from '@/lib/live-pilot/types';
+
+function canUseRedisExecutionFallback() {
+  return isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled;
+}
 
 export async function listActivePilotMintQuarantines() {
   if (hasPostgresConnection()) {
@@ -26,8 +36,14 @@ export async function listActivePilotMintQuarantines() {
 }
 
 export async function getPilotMintQuarantine(mint: string) {
+  const redisQuarantine = await getRedisMintQuarantine(mint).catch(() => null);
+  if (redisQuarantine) {
+    return redisQuarantine;
+  }
+
   if (hasPostgresConnection()) {
-    return pgMaybeOne<PilotMintQuarantineRow>(
+    try {
+      return await pgMaybeOne<PilotMintQuarantineRow>(
       `
         select *
         from public.pilot_mint_quarantines
@@ -35,7 +51,11 @@ export async function getPilotMintQuarantine(mint: string) {
         limit 1
       `,
       [mint],
-    );
+      );
+    } catch (error) {
+      if (canUseRedisExecutionFallback()) return null;
+      throw error;
+    }
   }
 
   const { data, error } = await supabase
@@ -45,6 +65,7 @@ export async function getPilotMintQuarantine(mint: string) {
     .maybeSingle();
 
   if (error) {
+    if (canUseRedisExecutionFallback()) return null;
     throw new Error(`Failed to fetch pilot mint quarantine for ${mint}: ${error.message}`);
   }
 
@@ -74,7 +95,7 @@ export async function quarantinePilotMint(args: {
   } = args;
   const now = new Date().toISOString();
 
-  const existing = await getPilotMintQuarantine(mint);
+  const existing = await getPilotMintQuarantine(mint).catch(() => null);
   const payload = {
     mint,
     status: 'active',
@@ -91,7 +112,8 @@ export async function quarantinePilotMint(args: {
   };
 
   if (hasPostgresConnection()) {
-    return pgOne<PilotMintQuarantineRow>(
+    try {
+      const row = await pgOne<PilotMintQuarantineRow>(
       `
         insert into public.pilot_mint_quarantines (
           mint,
@@ -136,7 +158,18 @@ export async function quarantinePilotMint(args: {
         payload.note,
         payload.updated_at,
       ],
-    );
+      );
+      await setRedisMintQuarantine(row).catch(() => undefined);
+      return row;
+    } catch (error) {
+      if (!canUseRedisExecutionFallback()) throw error;
+      const row = {
+        ...payload,
+        created_at: existing?.created_at || now,
+      } as PilotMintQuarantineRow;
+      await setRedisMintQuarantine(row);
+      return row;
+    }
   }
 
   const query = existing
@@ -146,9 +179,18 @@ export async function quarantinePilotMint(args: {
   const { data, error } = await query.select('*').single();
 
   if (error) {
+    if (canUseRedisExecutionFallback()) {
+      const row = {
+        ...payload,
+        created_at: existing?.created_at || now,
+      } as PilotMintQuarantineRow;
+      await setRedisMintQuarantine(row);
+      return row;
+    }
     throw new Error(`Failed to quarantine mint ${mint}: ${error.message}`);
   }
 
+  await setRedisMintQuarantine(data as PilotMintQuarantineRow).catch(() => undefined);
   return data as PilotMintQuarantineRow;
 }
 
@@ -161,7 +203,8 @@ export async function clearPilotMintQuarantine(args: {
   const now = new Date().toISOString();
 
   if (hasPostgresConnection()) {
-    return pgOne<PilotMintQuarantineRow>(
+    try {
+      const row = await pgOne<PilotMintQuarantineRow>(
       `
         update public.pilot_mint_quarantines
         set status = 'cleared',
@@ -173,7 +216,28 @@ export async function clearPilotMintQuarantine(args: {
         returning *
       `,
       [mint, now, clearedByWallet, note],
-    );
+      );
+      await clearRedisMintQuarantine(mint).catch(() => undefined);
+      return row;
+    } catch (error) {
+      if (!canUseRedisExecutionFallback()) throw error;
+      await clearRedisMintQuarantine(mint);
+      return {
+        mint,
+        status: 'cleared',
+        reason: 'cleared',
+        first_wallet_alias: null,
+        first_star_trader: null,
+        first_pilot_trade_id: null,
+        first_detected_at: now,
+        last_detected_at: now,
+        cleared_at: now,
+        cleared_by_wallet: clearedByWallet,
+        note,
+        created_at: now,
+        updated_at: now,
+      };
+    }
   }
 
   const { data, error } = await supabase
@@ -190,8 +254,27 @@ export async function clearPilotMintQuarantine(args: {
     .single();
 
   if (error) {
+    if (canUseRedisExecutionFallback()) {
+      await clearRedisMintQuarantine(mint);
+      return {
+        mint,
+        status: 'cleared',
+        reason: 'cleared',
+        first_wallet_alias: null,
+        first_star_trader: null,
+        first_pilot_trade_id: null,
+        first_detected_at: now,
+        last_detected_at: now,
+        cleared_at: now,
+        cleared_by_wallet: clearedByWallet,
+        note,
+        created_at: now,
+        updated_at: now,
+      };
+    }
     throw new Error(`Failed to clear pilot mint quarantine for ${mint}: ${error.message}`);
   }
 
+  await clearRedisMintQuarantine(mint).catch(() => undefined);
   return data as PilotMintQuarantineRow;
 }
