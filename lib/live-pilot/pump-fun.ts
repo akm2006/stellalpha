@@ -8,8 +8,7 @@ import {
   Transaction,
 } from '@solana/web3.js';
 import { PumpFunSDK } from 'pumpdotfun-sdk';
-import anchor from '@coral-xyz/anchor/dist/cjs/index.js';
-const { AnchorProvider } = anchor;
+import { AnchorProvider } from '@coral-xyz/anchor';
 import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 
 interface PumpFunSwapPlan {
