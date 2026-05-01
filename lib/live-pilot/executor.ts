@@ -47,6 +47,12 @@ import {
   shouldUseMeteoraDammV2BuyFirst,
   shouldUseMeteoraDammV2ForBuy,
 } from '@/lib/live-pilot/meteora-damm-v2';
+import {
+  executePumpFunSwap,
+  shouldUsePumpFunBuyFirst,
+  shouldUsePumpFunForBuy,
+  shouldUsePumpFunForSell,
+} from '@/lib/live-pilot/pump-fun';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HELIUS_GATEKEEPER_ENABLED = ['1', 'true', 'yes', 'on']
@@ -1433,6 +1439,138 @@ async function executeMeteoraDammV2BuyAndRecord(args: {
   return { outcome: 'submitted' as const, signature: result.signature };
 }
 
+async function executePumpFunSwapAndRecord(args: {
+  trade: PilotTradeRow;
+  wallet: LivePilotWalletConfig;
+  connection: Connection;
+  plan: Extract<ExecutionPlan, { kind: 'swap' }>;
+  attempt: Awaited<ReturnType<typeof createPilotTradeAttempt>>;
+  trigger: 'primary' | 'jupiter_no_route_fallback';
+}) {
+  const { trade, wallet, connection, plan, attempt, trigger } = args;
+  const isBuy = trade.leader_type === 'buy';
+
+  if (isBuy) {
+    const staleBeforeQuote = shouldSkipStaleBuyAtExecution(trade);
+    if (staleBeforeQuote.stale || !hasBuyRequestBudget(trade, 'order')) {
+      const message = buildStaleBuyMessage(trade, 'Pump.fun quote request');
+      await Promise.all([
+        updatePilotTradeAttempt(attempt.id, {
+          status: 'failed',
+          execution_mode: 'pump_fun_direct',
+          error_code: 'stale_buy',
+          error_message: message,
+        }),
+        updatePilotTrade(trade.id, {
+          status: 'skipped',
+          skip_reason: 'stale_buy',
+          error_message: message,
+          next_retry_at: null,
+        }),
+        updatePilotRuntimeState(wallet.alias, {
+          last_error: message,
+        }),
+      ]);
+      return {
+        outcome: 'skipped' as const,
+        reason: 'stale_buy',
+        message,
+      };
+    }
+  }
+
+  const keypair = loadPilotWalletKeypair(wallet.secret!);
+  const startedAt = Date.now();
+  console.log(
+    `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} type=${trade.leader_type} `
+    + `stage=pumpfun_${trigger}_start${isBuy ? ` ageMs=${shouldSkipStaleBuyAtExecution(trade, startedAt).ageMs}` : ''}`,
+  );
+
+  const result = await executePumpFunSwap({
+    connection,
+    keypair,
+    leaderSignature: trade.star_trade_signature,
+    plan: {
+      inputMint: plan.inputMint,
+      outputMint: plan.outputMint,
+      inputAmountRaw: plan.inputAmountRaw,
+      inputDecimals: plan.quotedInputDecimals,
+      outputDecimals: isBuy ? await getTokenDecimals(plan.outputMint) : 9,
+      slippageBps: plan.slippageBps,
+      maxPriceImpactPct: isBuy ? wallet.buyMaxPriceImpactPct : 0,
+      sourceClassification: plan.sourceClassification,
+    },
+    isBuy,
+  });
+
+  console.log(
+    `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} type=${trade.leader_type} `
+    + `stage=pumpfun_${trigger}_submitted durationMs=${Date.now() - startedAt} `
+    + (isBuy ? `ageMs=${shouldSkipStaleBuyAtExecution(trade).ageMs}` : ''),
+  );
+
+  if (isBuy) {
+    const staleAfterSubmit = shouldSkipStaleBuyAtExecution(trade);
+    if (staleAfterSubmit.stale) {
+      console.warn(
+        `[LIVE_PILOT_TIMING] trade=${trade.id} wallet=${wallet.alias} `
+        + `stage=pumpfun_submitted_after_stale_cutoff ageMs=${staleAfterSubmit.ageMs}`,
+      );
+    }
+  }
+
+  await Promise.all([
+    updatePilotTradeAttempt(attempt.id, {
+      execution_mode: 'pump_fun_direct',
+      jupiter_router: `pump_fun_direct`,
+      signed_transaction: result.signedTransaction,
+      tx_signature: result.signature,
+      tx_submitted_at: result.txSubmittedAt,
+      quoted_input_amount: result.quotedInputAmount,
+      quoted_output_amount: result.quotedOutputAmount,
+      quoted_input_amount_raw: result.quotedInputRaw,
+      price_impact_pct: result.priceImpactPct,
+      actual_input_amount: result.quotedInputAmount,
+      actual_output_amount: result.quotedOutputAmount,
+      status: 'submitted',
+      error_code: null,
+      error_message: null,
+    }),
+    updatePilotTrade(trade.id, {
+      status: 'submitted',
+      quote_received_at: result.quoteReceivedAt,
+      quoted_input_amount: result.quotedInputAmount,
+      quoted_output_amount: result.quotedOutputAmount,
+      quoted_input_amount_raw: result.quotedInputRaw,
+      price_impact_pct: result.priceImpactPct,
+      tx_built_at: result.txBuiltAt,
+      tx_submitted_at: result.txSubmittedAt,
+      tx_signature: result.signature,
+      actual_input_amount: result.quotedInputAmount,
+      actual_output_amount: result.quotedOutputAmount,
+      next_retry_at: null,
+      error_message: null,
+    }),
+    updatePilotRuntimeState(wallet.alias, {
+      last_submitted_tx_signature: result.signature,
+      last_error: null,
+    }),
+  ]);
+
+  recordSubmittedSwapInCache({
+    ownerAddress: wallet.publicKey,
+    inputMint: plan.inputMint,
+    outputMint: plan.outputMint,
+    inputRawAmount: result.quotedInputRaw,
+    inputDecimals: plan.quotedInputDecimals,
+    outputRawAmount: result.quotedOutputRaw,
+    outputDecimals: result.quotedOutputRaw && plan.outputMint !== SOL_MINT ? await getTokenDecimals(plan.outputMint) : null,
+    solMint: SOL_MINT,
+  });
+  await maybeAlertTradeSubmitted(trade, wallet.alias, result.signature);
+  return { outcome: 'submitted' as const, signature: result.signature };
+}
+
 export async function executePilotTrade(
   trade: PilotTradeRow,
   wallet: LivePilotWalletConfig,
@@ -1497,6 +1635,17 @@ export async function executePilotTrade(
   try {
     if (shouldUseMeteoraDammV2BuyFirst(plan, trade.leader_type)) {
       return await executeMeteoraDammV2BuyAndRecord({
+        trade,
+        wallet,
+        connection,
+        plan,
+        attempt,
+        trigger: 'primary',
+      });
+    }
+
+    if (shouldUsePumpFunBuyFirst(plan, trade.leader_type)) {
+      return await executePumpFunSwapAndRecord({
         trade,
         wallet,
         connection,
@@ -1829,6 +1978,34 @@ export async function executePilotTrade(
       } catch (fallbackError: any) {
         const fallbackCode = String(fallbackError?.code ?? 'execution_error');
         if (fallbackCode === 'meteora_pool_unresolved') {
+          executionError = originalExecutionError;
+          code = originalCode;
+          message = originalMessage;
+        } else {
+          executionError = fallbackError;
+          code = fallbackCode;
+          message = executionError?.message || 'Unknown live-pilot execution error';
+        }
+      }
+    }
+
+    if (
+      (shouldUsePumpFunForBuy(plan, trade.leader_type) || shouldUsePumpFunForSell(plan, trade.leader_type))
+      && !shouldUsePumpFunBuyFirst(plan, trade.leader_type)
+      && isNoRouteFailure(message)
+    ) {
+      try {
+        return await executePumpFunSwapAndRecord({
+          trade,
+          wallet,
+          connection,
+          plan,
+          attempt,
+          trigger: 'jupiter_no_route_fallback',
+        });
+      } catch (fallbackError: any) {
+        const fallbackCode = String(fallbackError?.code ?? 'execution_error');
+        if (fallbackCode === 'pumpfun_graduated_or_invalid') {
           executionError = originalExecutionError;
           code = originalCode;
           message = originalMessage;

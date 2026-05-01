@@ -16,6 +16,7 @@
     "worker:live-pilot": "tsx worker/live-pilot.ts"
   },
   "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
     "@kdt-sol/solana-grpc-client": "^0.1.2",
     "@meteora-ag/cp-amm-sdk": "^1.4.3",
     "@reown/appkit": "^1.8.17",
@@ -39,6 +40,7 @@
     "lucide-react": "^0.454.0",
     "motion": "^12.23.12",
     "next": "^16.0.4",
+    "pumpdotfun-sdk": "^1.4.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "recharts": "^3.6.0",
