@@ -815,8 +815,13 @@ async function buildExecutionPlan(
     };
   }
 
-  const copiedPositionBefore = Math.max(Number(trade.copied_position_before || 0), 0);
-  if (copiedPositionBefore <= 0) {
+  const dbCopiedPositionBefore = Math.max(Number(trade.copied_position_before || 0), 0);
+  const onChainAvailableUi = availableTokenBalance.uiAmount;
+
+  // Balance-Aware Sell: Trust on-chain balance if we have it, even if DB says 0
+  const effectiveCopiedPositionBefore = onChainAvailableUi > 0 ? onChainAvailableUi : dbCopiedPositionBefore;
+
+  if (effectiveCopiedPositionBefore <= 0) {
     return {
       kind: 'skip',
       reason: 'not_followed_position',
@@ -824,7 +829,6 @@ async function buildExecutionPlan(
     };
   }
 
-  const effectiveCopiedPositionBefore = Math.min(copiedPositionBefore, availableTokenBalance.uiAmount);
   const desiredAmountUi = effectiveCopiedPositionBefore * copyRatio;
   const desiredAmountRaw = copyRatio >= 0.999
     ? BigInt(availableTokenBalance.rawAmount)
@@ -855,10 +859,10 @@ async function buildExecutionPlan(
     };
   }
 
-  const positionDriftAmount = copiedPositionBefore - availableTokenBalance.uiAmount;
-  const hasPositionDrift = Math.abs(positionDriftAmount) > Math.max(1e-9, Math.abs(copiedPositionBefore) * 0.001);
+  const positionDriftAmount = dbCopiedPositionBefore - onChainAvailableUi;
+  const hasPositionDrift = Math.abs(positionDriftAmount) > Math.max(1e-9, Math.abs(dbCopiedPositionBefore) * 0.001);
   const positionDriftMessage = hasPositionDrift
-    ? `Copied position ${copiedPositionBefore.toFixed(6)} ${getTokenSymbol(inputMint)} differs from available on-chain balance ${availableTokenBalance.uiAmount.toFixed(6)}; using available balance for sell sizing`
+    ? `Copied position ${dbCopiedPositionBefore.toFixed(6)} ${getTokenSymbol(inputMint)} differs from available on-chain balance ${onChainAvailableUi.toFixed(6)}; using available balance for sell sizing`
     : null;
 
   return {

@@ -16,6 +16,8 @@ import {
   recordRedisSuccessfulCopiedBuy,
   recordRedisSuccessfulCopiedSell,
 } from '@/lib/live-pilot/redis/state';
+import { getLivePilotRedisClient } from '@/lib/live-pilot/redis/client';
+import { livePilotCopyStateKey } from '@/lib/live-pilot/redis/keys';
 
 export type CopyPositionScopeType = 'demo' | 'pilot';
 
@@ -226,6 +228,41 @@ export async function getCopyPositionState(key: CopyPositionStateKey) {
   return (data || null) as CopyPositionStateRow | null;
 }
 
+export async function listAllOpenPilotStatesForWallet(args: {
+  scopeKey: string;
+  starTrader: string;
+}) {
+  if (hasPostgresConnection()) {
+    return pgQuery<CopyPositionStateRow>(
+      `
+        select *
+        from public.copy_position_states
+        where scope_type = 'pilot'
+          and scope_key = $1
+          and star_trader = $2
+          and (copied_open_amount > 0.000000001 or leader_open_amount > 0.000000001)
+        order by updated_at desc
+      `,
+      [args.scopeKey, args.starTrader],
+    );
+  }
+
+  const { data, error } = await supabase
+    .from('copy_position_states')
+    .select('*')
+    .eq('scope_type', 'pilot')
+    .eq('scope_key', args.scopeKey)
+    .eq('star_trader', args.starTrader)
+    .or('copied_open_amount.gt.0.000000001,leader_open_amount.gt.0.000000001')
+    .order('updated_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to list open pilot states for ${args.scopeKey}: ${error.message}`);
+  }
+
+  return (data || []) as CopyPositionStateRow[];
+}
+
 export async function listLeaderClosedCopiedOpenPilotStates(args: {
   scopeKey: string;
   starTrader: string;
@@ -423,6 +460,29 @@ export async function reconcileCopiedPositionAmount(args: TransitionMetadata & {
     copiedCostUsd,
     avgCostUsd,
   });
+
+  if (isLivePilotRedisAvailable() && args.scopeType === 'pilot') {
+    const redisCurrent = await getRedisCopyState({
+      walletAlias: args.scopeKey,
+      starTrader: args.starTrader,
+      mint: args.mint,
+    });
+    if (redisCurrent) {
+      const next = {
+        ...redisCurrent,
+        copiedOpenAmount,
+        copiedCostUsd,
+        avgCostUsd,
+        updatedAt: new Date().toISOString(),
+      };
+      const client = await getLivePilotRedisClient();
+      await client.set(livePilotCopyStateKey({
+        walletAlias: args.scopeKey,
+        starTrader: args.starTrader,
+        mint: args.mint,
+      }), JSON.stringify(next));
+    }
+  }
 
   return row;
 }

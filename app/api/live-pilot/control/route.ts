@@ -13,6 +13,7 @@ import {
 } from '@/lib/live-pilot/repositories/pilot-control-state.repo';
 import { getLivePilotStatus } from '@/lib/live-pilot/status';
 import { setRedisPilotControlState } from '@/lib/live-pilot/redis/control';
+import { reconcileAllWalletPositions } from '@/lib/live-pilot/reconciliation';
 import type { PilotControlAction } from '@/lib/live-pilot/types';
 
 export const dynamic = 'force-dynamic';
@@ -90,6 +91,15 @@ export async function POST(request: NextRequest) {
           liquidation_requested: false,
           updated_by_wallet: access.operatorWallet,
         });
+        // Trigger reconciliation for all wallets on global resume
+        const resumeConn = createLivePilotConnection();
+        await Promise.all(
+          access.config.wallets.map((wallet) =>
+            reconcileAllWalletPositions(wallet, resumeConn).catch((err) => {
+              console.error(`[CONTROL] Failed to reconcile ${wallet.alias} on global resume:`, err);
+            })
+          )
+        );
         break;
       case 'wallet_pause':
         await updateMirroredPilotControlState('wallet', walletAlias!, {
@@ -105,8 +115,9 @@ export async function POST(request: NextRequest) {
 
         const walletControl = controlSnapshot.wallets.find((row) => row.scope_key === walletAlias!);
         const isProtectedWallet = Boolean(walletControl?.kill_switch_active || walletControl?.liquidation_requested);
+        const connection = createLivePilotConnection();
+
         if (isProtectedWallet) {
-          const connection = createLivePilotConnection();
           const liquidationStatus = await getWalletLiquidationStatus({
             walletAlias: walletAlias!,
             walletPublicKey: walletConfig.publicKey,
@@ -133,6 +144,11 @@ export async function POST(request: NextRequest) {
           kill_switch_active: false,
           liquidation_requested: false,
           updated_by_wallet: access.operatorWallet,
+        });
+
+        // Reconcile on wallet resume
+        await reconcileAllWalletPositions(walletConfig, connection).catch((err) => {
+          console.error(`[CONTROL] Failed to reconcile ${walletAlias} on resume:`, err);
         });
         break;
       case 'kill_switch_activate':

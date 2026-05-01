@@ -34,7 +34,7 @@ function rawToUi(rawAmount: bigint, decimals: number) {
   return Number(rawAmount) / Math.pow(10, decimals);
 }
 
-async function getWalletTokenHoldings(connection: Connection, walletPublicKey: string) {
+export async function getWalletTokenHoldings(connection: Connection, walletPublicKey: string) {
   const owner = new PublicKey(walletPublicKey);
   const responses = await Promise.all([
     connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID }, 'confirmed'),

@@ -10,7 +10,7 @@ import {
 import { listLeaderClosedCopiedOpenPilotStates } from '@/lib/repositories/copy-position-states.repo';
 import { getSolPrice, getTokenSymbol, WSOL } from '@/lib/services/token-service';
 
-const RESIDUAL_EXIT_COOLDOWN_MS = 30 * 60 * 1000;
+const RESIDUAL_EXIT_COOLDOWN_MS = 5 * 60 * 1000;
 
 export async function enqueueResidualExitIntentsForWallet(args: {
   wallet: LivePilotWalletConfig;
