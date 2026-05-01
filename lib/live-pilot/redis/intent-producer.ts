@@ -165,9 +165,7 @@ export async function maybeCreateRedisPilotIntent(
   const sourceClassification =
     options.sourceClassification || classifyTradeSource(trade, options.rawTx);
   const sourceSummary = formatTradeSourceClassification(sourceClassification);
-  const meteoraDammV2CandidatePools = isMeteoraDammV2Source(sourceClassification)
-    ? extractMeteoraDammV2CandidatePools(options.rawTx)
-    : [];
+  const meteoraDammV2CandidatePools = extractMeteoraDammV2CandidatePools(options.rawTx);
 
   let skipReason: string | null = null;
   let errorMessage: string | null = null;

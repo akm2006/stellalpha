@@ -142,11 +142,11 @@ export async function maybeCreatePilotIntent(
   const sourceClassification = classifyTradeSource(trade, options.rawTx);
   const sourceSummary = formatTradeSourceClassification(sourceClassification);
   rememberLivePilotSourceClassification(trade.signature, sourceClassification);
-  if (isMeteoraDammV2Source(sourceClassification)) {
-    rememberLivePilotMeteoraDammV2CandidatePools(
-      trade.signature,
-      extractMeteoraDammV2CandidatePools(options.rawTx),
-    );
+  
+  // Always extract candidate pools if we have the raw tx, for fallback robustness
+  const candidatePools = extractMeteoraDammV2CandidatePools(options.rawTx);
+  if (candidatePools.length > 0) {
+    rememberLivePilotMeteoraDammV2CandidatePools(trade.signature, candidatePools);
   }
 
   if (isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled) {
