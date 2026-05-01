@@ -60,6 +60,7 @@ function collectInstructions(raw: any) {
 export function extractMeteoraDammV2CandidatePools(raw: any) {
   const candidates = new Set<string>();
 
+  // Support for standard Solana instruction structures
   for (const instruction of collectInstructions(raw)) {
     if (instructionProgramId(instruction) !== METEORA_DAMM_V2_PROGRAM_ID) {
       continue;
@@ -71,6 +72,19 @@ export function extractMeteoraDammV2CandidatePools(raw: any) {
       }
     }
   }
+
+  // Support for Carbon parser custom payload from worker/index.ts
+  if (Array.isArray(raw?.__decoderCandidates)) {
+    for (const candidate of raw.__decoderCandidates) {
+      if (typeof candidate === 'string' && candidate.length >= 32 && candidate.length <= 44) {
+        candidates.add(candidate);
+      }
+    }
+  }
+
+  // If the program ID is present but no candidates were found in instructions,
+  // we might want to check all account keys as a last resort, but decoder_candidates
+  // from Carbon is usually more precise.
 
   return [...candidates];
 }
