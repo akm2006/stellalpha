@@ -12,9 +12,9 @@ import {
   updatePilotControlState,
 } from '@/lib/live-pilot/repositories/pilot-control-state.repo';
 import { getLivePilotStatus } from '@/lib/live-pilot/status';
-import { setRedisPilotControlState } from '@/lib/live-pilot/redis/control';
+import { getRedisPilotControlSnapshot, setRedisPilotControlState } from '@/lib/live-pilot/redis/control';
 import { reconcileAllWalletPositions } from '@/lib/live-pilot/reconciliation';
-import type { PilotControlAction } from '@/lib/live-pilot/types';
+import type { PilotControlAction, PilotControlScopeType, PilotControlStateRow } from '@/lib/live-pilot/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,12 +32,65 @@ function isWalletScopedAction(action: PilotControlAction) {
   return action === 'wallet_pause' || action === 'wallet_resume' || action === 'wallet_liquidate';
 }
 
+function isEmergencyStopAction(action: PilotControlAction) {
+  return (
+    action === 'global_pause'
+    || action === 'wallet_pause'
+    || action === 'kill_switch_activate'
+    || action === 'wallet_liquidate'
+  );
+}
+
+function buildRedisControlFallbackRow(
+  scopeType: PilotControlScopeType,
+  scopeKey: string,
+  patch: Parameters<typeof updatePilotControlState>[2],
+  existing?: PilotControlStateRow | null,
+): PilotControlStateRow {
+  return {
+    scope_type: scopeType,
+    scope_key: scopeKey,
+    // Emergency Redis fallbacks fail closed. Resume still requires DB/reconciliation.
+    is_paused: patch.is_paused ?? existing?.is_paused ?? true,
+    kill_switch_active: patch.kill_switch_active ?? existing?.kill_switch_active ?? false,
+    liquidation_requested: patch.liquidation_requested ?? existing?.liquidation_requested ?? false,
+    updated_by_wallet: patch.updated_by_wallet ?? existing?.updated_by_wallet ?? null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
 async function updateMirroredPilotControlState(
   ...args: Parameters<typeof updatePilotControlState>
 ) {
-  const row = await updatePilotControlState(...args);
-  await setRedisPilotControlState(row).catch(() => undefined);
-  return row;
+  const [scopeType, scopeKey, patch] = args;
+  const emergencyStop = patch.is_paused === true || patch.kill_switch_active === true || patch.liquidation_requested === true;
+  const redisSnapshot = emergencyStop
+    ? await getRedisPilotControlSnapshot(scopeType === 'wallet' ? [scopeKey] : []).catch(() => null)
+    : null;
+  const existingRedisRow = scopeType === 'global'
+    ? redisSnapshot?.global
+    : redisSnapshot?.wallets.find((row) => row.scope_key === scopeKey);
+  const redisFallbackRow = buildRedisControlFallbackRow(scopeType, scopeKey, patch, existingRedisRow);
+
+  if (emergencyStop) {
+    await setRedisPilotControlState(redisFallbackRow).catch(() => undefined);
+  }
+
+  try {
+    const row = await updatePilotControlState(...args);
+    await setRedisPilotControlState(row).catch(() => undefined);
+    return row;
+  } catch (error) {
+    if (!emergencyStop) {
+      throw error;
+    }
+
+    console.warn(
+      `[LIVE_PILOT_CONTROL] DB control update failed for ${scopeType}:${scopeKey}; Redis emergency stop state was still written.`,
+      error,
+    );
+    return redisFallbackRow;
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -74,8 +127,21 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    await ensurePilotControlState(Array.from(configuredAliases));
-    const controlSnapshot = buildPilotControlSnapshot(await listPilotControlStates(), Array.from(configuredAliases));
+    const aliases = Array.from(configuredAliases);
+    const emergencyStop = isEmergencyStopAction(action);
+    await ensurePilotControlState(aliases).catch((error) => {
+      if (!emergencyStop) {
+        throw error;
+      }
+      console.warn(
+        '[LIVE_PILOT_CONTROL] Failed to ensure DB control rows before emergency stop; continuing with Redis control.',
+        error,
+      );
+    });
+
+    const controlSnapshot = action === 'wallet_resume'
+      ? buildPilotControlSnapshot(await listPilotControlStates(), aliases)
+      : buildPilotControlSnapshot([], aliases);
 
     switch (action) {
       case 'global_pause':
@@ -201,10 +267,17 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Unsupported action' }, { status: 400 });
     }
 
-    const status = await getLivePilotStatus(access.operatorWallet, access.config);
+    const status = await getLivePilotStatus(access.operatorWallet, access.config).catch((error) => {
+      console.warn(
+        '[LIVE_PILOT_CONTROL] Control mutation succeeded but status refresh failed.',
+        error,
+      );
+      return null;
+    });
     return NextResponse.json({
       success: true,
       action,
+      degradedStatus: status === null,
       status,
     });
   } catch (error: any) {
