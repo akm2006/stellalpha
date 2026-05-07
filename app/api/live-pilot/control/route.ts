@@ -85,13 +85,6 @@ export async function POST(request: NextRequest) {
         });
         break;
       case 'global_resume':
-        await updateMirroredPilotControlState('global', 'global', {
-          is_paused: false,
-          kill_switch_active: false,
-          liquidation_requested: false,
-          updated_by_wallet: access.operatorWallet,
-        });
-        // Trigger reconciliation for all wallets on global resume
         const resumeConn = createLivePilotConnection();
         await Promise.all(
           access.config.wallets.map((wallet) =>
@@ -100,6 +93,12 @@ export async function POST(request: NextRequest) {
             })
           )
         );
+        await updateMirroredPilotControlState('global', 'global', {
+          is_paused: false,
+          kill_switch_active: false,
+          liquidation_requested: false,
+          updated_by_wallet: access.operatorWallet,
+        });
         break;
       case 'wallet_pause':
         await updateMirroredPilotControlState('wallet', walletAlias!, {
@@ -139,16 +138,14 @@ export async function POST(request: NextRequest) {
           }
         }
 
+        await reconcileAllWalletPositions(walletConfig, connection).catch((err) => {
+          console.error(`[CONTROL] Failed to reconcile ${walletAlias} on resume:`, err);
+        });
         await updateMirroredPilotControlState('wallet', walletAlias!, {
           is_paused: false,
           kill_switch_active: false,
           liquidation_requested: false,
           updated_by_wallet: access.operatorWallet,
-        });
-
-        // Reconcile on wallet resume
-        await reconcileAllWalletPositions(walletConfig, connection).catch((err) => {
-          console.error(`[CONTROL] Failed to reconcile ${walletAlias} on resume:`, err);
         });
         break;
       case 'kill_switch_activate':

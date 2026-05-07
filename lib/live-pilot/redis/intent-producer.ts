@@ -16,9 +16,11 @@ import {
 import { getRedisPilotControlSnapshot } from './control-snapshot';
 import { isLivePilotRedisAvailable, livePilotRedisConfig } from './config';
 import {
+  clearLivePilotRedisIntentDedupe,
   pilotTradeToRedisIntent,
   publishLivePilotRedisAudit,
   publishLivePilotRedisIntent,
+  reserveLivePilotRedisIntentDedupe,
 } from './streams';
 import {
   getRedisMintQuarantine,
@@ -174,6 +176,33 @@ export async function maybeCreateRedisPilotIntent(
   let leaderPositionAfter: number | null = null;
   let copiedPositionBefore: number | null = null;
   let sellFraction: number | null = null;
+  let dedupeReserved = false;
+
+  const reserveIntentDedupe = async () => {
+    const reservationRow = baseTradeRow({
+      pilotWallet,
+      trade,
+      receivedAt,
+      copyRatio,
+      status: 'queued',
+      leaderPositionBefore,
+      leaderPositionAfter,
+      copiedPositionBefore,
+      sellFraction,
+    });
+    const reservationPayload = pilotTradeToRedisIntent(reservationRow, 'redis_primary', {
+      sourceClassification,
+      meteoraDammV2CandidatePools,
+    });
+    const reservation = await reserveLivePilotRedisIntentDedupe(reservationPayload);
+    if (!reservation.reserved) {
+      return {
+        duplicate: reservation.reason === 'duplicate',
+      };
+    }
+    dedupeReserved = true;
+    return { duplicate: false };
+  };
 
   const tradeAgeMs = receivedAt - trade.timestamp * 1000;
 
@@ -211,6 +240,16 @@ export async function maybeCreateRedisPilotIntent(
     }
 
     if (!skipReason) {
+      const reservation = await reserveIntentDedupe();
+      if (reservation.duplicate) {
+        return {
+          considered: true,
+          created: false,
+          duplicate: true,
+          status: undefined,
+        };
+      }
+
       const leaderBuy = await recordRedisObservedLeaderBuy({
         walletAlias: pilotWallet.alias,
         starTrader: trade.wallet,
@@ -232,6 +271,16 @@ export async function maybeCreateRedisPilotIntent(
     }
 
     if (!skipReason) {
+      const reservation = await reserveIntentDedupe();
+      if (reservation.duplicate) {
+        return {
+          considered: true,
+          created: false,
+          duplicate: true,
+          status: undefined,
+        };
+      }
+
       const leaderSell = await recordRedisObservedLeaderSell({
         walletAlias: pilotWallet.alias,
         starTrader: trade.wallet,
@@ -282,12 +331,21 @@ export async function maybeCreateRedisPilotIntent(
     return { considered: true, created: false, duplicate: false, status: 'skipped', skipReason: skipReason || undefined };
   }
 
-  const result = await publishLivePilotRedisIntent(
-    pilotTradeToRedisIntent(row, 'redis_primary', {
+  const payload = pilotTradeToRedisIntent(row, 'redis_primary', {
       sourceClassification,
       meteoraDammV2CandidatePools,
-    }),
-  );
+  });
+  let result: Awaited<ReturnType<typeof publishLivePilotRedisIntent>>;
+  try {
+    result = await publishLivePilotRedisIntent(payload, {
+      dedupeAlreadyReserved: dedupeReserved,
+    });
+  } catch (error) {
+    if (dedupeReserved) {
+      await clearLivePilotRedisIntentDedupe(payload).catch(() => undefined);
+    }
+    throw error;
+  }
   if (!result.published) {
     return {
       considered: true,

@@ -7,6 +7,7 @@ import { deleteQueuedTradesBySignature } from '@/lib/repositories/demo-trades.re
 import { maybeCreatePilotIntent } from '@/lib/live-pilot/intent-producer';
 import { getLivePilotPublicConfig } from '@/lib/live-pilot/config';
 import { maybeCreateRedisPilotIntent } from '@/lib/live-pilot/redis/intent-producer';
+import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
 import { RawTrade } from '@/lib/trade-parser';
 import { PerformanceTimer } from '@/lib/utils/perf-timer';
 import { extractInvolvedAddresses } from '@/lib/ingestion/utils';
@@ -106,6 +107,38 @@ export async function processBatch(
     }
 
     txTimer.checkpoint('Extract addresses');
+    const livePilotConfig = getLivePilotPublicConfig();
+    const livePilotMatches = livePilotConfig.wallets
+      .filter((wallet) =>
+        wallet.isEnabled
+        && wallet.isComplete
+        && wallet.starTrader
+        && involvedAddresses.has(wallet.starTrader)
+      )
+      .map((wallet) => ({ address: wallet.starTrader }));
+
+    if (isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled && livePilotMatches.length > 0) {
+      for (const livePilotMatch of livePilotMatches) {
+        try {
+          const hotPathTrade = await detectTrade(tx.raw, livePilotMatch.address);
+          if (!hotPathTrade) {
+            continue;
+          }
+
+          const redisIntent = await maybeCreateRedisPilotIntent(hotPathTrade, receivedAt, 'pre_db_env_hot_path', {
+            rawTx: tx.raw,
+          });
+          if (redisIntent.considered) {
+            txTimer.checkpoint('Redis live-pilot pre-DB intent');
+          }
+        } catch (redisHotPathError: any) {
+          console.warn(
+            `[ORCHESTRATOR] Redis pre-DB live-pilot intent failed for ${tx.signature.slice(0, 12)}...`,
+            redisHotPathError?.message || redisHotPathError,
+          );
+        }
+      }
+    }
 
     // 2. Query star_traders for ANY match (single efficient query)
     const { data: matchedStarTraders, error: starTraderError } = await getStarTradersByAddresses(Array.from(involvedAddresses));
@@ -115,10 +148,6 @@ export async function processBatch(
     let effectiveStarTraders = matchedStarTraders || [];
     if (starTraderError) {
       console.error(`Star trader query error:`, starTraderError.message);
-      const livePilotConfig = getLivePilotPublicConfig();
-      const livePilotMatches = livePilotConfig.wallets
-        .filter((wallet) => wallet.isEnabled && involvedAddresses.has(wallet.starTrader))
-        .map((wallet) => ({ address: wallet.starTrader }));
 
       if (livePilotMatches.length === 0) {
         continue;

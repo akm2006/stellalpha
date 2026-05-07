@@ -19,6 +19,10 @@ export function livePilotSubmittedKey(walletAlias: string, intentId: string) {
   return `live-pilot:submitted:${walletAlias}:${intentId}`;
 }
 
+export function livePilotSubmittedPattern() {
+  return 'live-pilot:submitted:*';
+}
+
 export function livePilotGlobalControlKey() {
   return 'live-pilot:control:global';
 }

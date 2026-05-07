@@ -454,35 +454,55 @@ export async function reconcileCopiedPositionAmount(args: TransitionMetadata & {
   const copiedOpenAmount = Math.max(Number(args.copiedOpenAmount || 0), 0);
   const avgCostUsd = copiedOpenAmount > 0 ? current.avgCostUsd : 0;
   const copiedCostUsd = copiedOpenAmount > 0 ? copiedOpenAmount * current.avgCostUsd : 0;
-  const row = await upsertCopyPositionState(args, {
+  const nextSnapshot = {
     ...current,
     copiedOpenAmount,
     copiedCostUsd,
     avgCostUsd,
-  });
+  };
 
-  if (isLivePilotRedisAvailable() && args.scopeType === 'pilot') {
+  const mirrorRedisState = async () => {
+    if (!isLivePilotRedisAvailable() || args.scopeType !== 'pilot') {
+      return null;
+    }
+
     const redisCurrent = await getRedisCopyState({
       walletAlias: args.scopeKey,
       starTrader: args.starTrader,
       mint: args.mint,
     });
-    if (redisCurrent) {
-      const next = {
-        ...redisCurrent,
-        copiedOpenAmount,
-        copiedCostUsd,
-        avgCostUsd,
-        updatedAt: new Date().toISOString(),
-      };
-      const client = await getLivePilotRedisClient();
-      await client.set(livePilotCopyStateKey({
-        walletAlias: args.scopeKey,
-        starTrader: args.starTrader,
-        mint: args.mint,
-      }), JSON.stringify(next));
-    }
-  }
+    const next = {
+      ...(redisCurrent || createEmptyCopyPositionLifecycle()),
+      ...nextSnapshot,
+      tokenSymbol: args.tokenSymbol || redisCurrent?.tokenSymbol || null,
+      lastLeaderTradeSignature: args.tradeSignature || redisCurrent?.lastLeaderTradeSignature || null,
+      lastLeaderTradeAt: args.tradeTimestampIso || redisCurrent?.lastLeaderTradeAt || null,
+      updatedAt: new Date().toISOString(),
+    };
+    const client = await getLivePilotRedisClient();
+    await client.set(livePilotCopyStateKey({
+      walletAlias: args.scopeKey,
+      starTrader: args.starTrader,
+      mint: args.mint,
+    }), JSON.stringify(next));
+    return next;
+  };
 
-  return row;
+  try {
+    const row = await upsertCopyPositionState(args, nextSnapshot);
+
+    await mirrorRedisState().catch(() => undefined);
+    return row;
+  } catch (error) {
+    if (!canUseRedisPilotFallback(args)) {
+      throw error;
+    }
+
+    const redisState = await mirrorRedisState();
+    const row = redisStateToRow(args, redisState);
+    if (!row) {
+      throw error;
+    }
+    return row;
+  }
 }

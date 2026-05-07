@@ -207,9 +207,18 @@ export async function ensureLivePilotRedisStreams() {
   return true;
 }
 
-export async function publishLivePilotRedisIntent(payload: LivePilotRedisIntentPayload) {
+export async function publishLivePilotRedisIntent(
+  payload: LivePilotRedisIntentPayload,
+  options: {
+    dedupeAlreadyReserved?: boolean;
+  } = {},
+) {
+  return publishLivePilotRedisIntentWithOptions(payload, options);
+}
+
+export async function reserveLivePilotRedisIntentDedupe(payload: LivePilotRedisIntentPayload) {
   if (!isLivePilotRedisAvailable()) {
-    return { published: false as const, reason: 'redis_disabled' };
+    return { reserved: false as const, reason: 'redis_disabled' };
   }
 
   const client = await getLivePilotRedisClient();
@@ -226,10 +235,44 @@ export async function publishLivePilotRedisIntent(payload: LivePilotRedisIntentP
     );
 
     if (dedupe !== 'OK') {
-      return { published: false as const, reason: 'duplicate' };
+      return { reserved: false as const, reason: 'duplicate' };
     }
   }
 
+  return { reserved: true as const };
+}
+
+export async function clearLivePilotRedisIntentDedupe(payload: LivePilotRedisIntentPayload) {
+  if (!isLivePilotRedisAvailable() || !payload.starTradeSignature || !payload.leaderType) {
+    return;
+  }
+
+  const client = await getLivePilotRedisClient();
+  await client.del(livePilotDedupeKey({
+    walletAlias: payload.walletAlias,
+    starTradeSignature: payload.starTradeSignature,
+    leaderType: payload.leaderType,
+  }));
+}
+
+async function publishLivePilotRedisIntentWithOptions(
+  payload: LivePilotRedisIntentPayload,
+  options: {
+    dedupeAlreadyReserved?: boolean;
+  } = {},
+) {
+  if (!isLivePilotRedisAvailable()) {
+    return { published: false as const, reason: 'redis_disabled' };
+  }
+
+  if (!options.dedupeAlreadyReserved) {
+    const reservation = await reserveLivePilotRedisIntentDedupe(payload);
+    if (!reservation.reserved) {
+      return { published: false as const, reason: reservation.reason };
+    }
+  }
+
+  const client = await getLivePilotRedisClient();
   const streamId = await client.xAdd(
     LIVE_PILOT_INTENTS_STREAM,
     '*',

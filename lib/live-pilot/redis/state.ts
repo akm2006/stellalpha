@@ -12,6 +12,7 @@ import { isLivePilotRedisAvailable } from './config';
 import {
   livePilotCopyStateKey,
   livePilotQuarantineKey,
+  livePilotSubmittedPattern,
   livePilotSubmittedKey,
 } from './keys';
 import { publishLivePilotRedisResult } from './streams';
@@ -20,6 +21,13 @@ export type RedisCopyState = CopyPositionLifecycleSnapshot & {
   tokenSymbol: string | null;
   lastLeaderTradeSignature: string | null;
   lastLeaderTradeAt: string | null;
+  updatedAt: string;
+};
+
+export type RedisSubmittedTradeRecord = {
+  key: string;
+  trade: PilotTradeRow;
+  patch: Partial<PilotTradeRow>;
   updatedAt: string;
 };
 
@@ -235,6 +243,45 @@ export async function setRedisSubmittedTrade(args: {
       updatedAt: new Date().toISOString(),
     }),
   );
+}
+
+export async function listRedisSubmittedTrades(limit: number = 50): Promise<RedisSubmittedTradeRecord[]> {
+  if (!isLivePilotRedisAvailable()) return [];
+  const client = await getLivePilotRedisClient();
+  const records: RedisSubmittedTradeRecord[] = [];
+
+  for await (const key of (client as any).scanIterator({
+    MATCH: livePilotSubmittedPattern(),
+    COUNT: Math.max(limit, 10),
+  })) {
+    const keys = Array.isArray(key) ? key : [key];
+    for (const entryKey of keys) {
+      if (records.length >= limit) return records;
+      const raw = await client.get(String(entryKey));
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw) as Omit<RedisSubmittedTradeRecord, 'key'>;
+        if (parsed?.trade?.id) {
+          records.push({
+            key: String(entryKey),
+            trade: parsed.trade,
+            patch: parsed.patch || {},
+            updatedAt: parsed.updatedAt || new Date().toISOString(),
+          });
+        }
+      } catch {
+        // Ignore malformed recovery records; they are audit-only and should not block execution.
+      }
+    }
+  }
+
+  return records;
+}
+
+export async function deleteRedisSubmittedTrade(key: string) {
+  if (!isLivePilotRedisAvailable()) return;
+  const client = await getLivePilotRedisClient();
+  await client.del(key);
 }
 
 export async function mirrorRedisTradeEvent(payload: Record<string, unknown>) {

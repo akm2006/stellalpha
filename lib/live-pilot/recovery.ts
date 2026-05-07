@@ -15,6 +15,7 @@ import {
   isNoRouteFailure,
   maybeQueueResidualExitTrade,
   quarantineFailedMint,
+  recordConfirmedCopyPositionMutation,
   isRetryableBuyExecutionFailure,
   isRetryableExecutionCode,
   isRetryableSellExecutionFailure,
@@ -35,11 +36,31 @@ import {
   updatePilotTrade,
   updatePilotTradeIfStatus,
 } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import {
+  deleteRedisSubmittedTrade,
+  listRedisSubmittedTrades,
+  mirrorRedisTradeEvent,
+} from '@/lib/live-pilot/redis/state';
+import {
+  acquireLivePilotRedisWalletLock,
+  releaseLivePilotRedisWalletLock,
+} from '@/lib/live-pilot/redis/locks';
 
 const BLOCK_EXPIRY_SAFETY_BUFFER = 10;
 const PENDING_EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
 
 type RecoveryAttemptOutcome = 'confirmed' | 'requeued' | 'failed' | 'pending' | 'busy';
+
+function emptyRecoverySummary(scanned = 0) {
+  return {
+    scanned,
+    confirmed: 0,
+    requeued: 0,
+    failed: 0,
+    pending: 0,
+    busy: 0,
+  };
+}
 
 async function ensureRecoveryLock(walletAlias: string, lockOwner: string) {
   const runtime = await getPilotRuntimeState(walletAlias);
@@ -405,6 +426,119 @@ async function maybeRecoverMissingExecuteSignature(args: {
   }
 }
 
+export async function recoverRedisSubmittedPilotTrades(args: {
+  config: LivePilotConfig;
+  connection: Connection;
+  lockOwner: string;
+  limit?: number;
+}) {
+  const { config, connection, lockOwner, limit = 50 } = args;
+  const records = await listRedisSubmittedTrades(limit);
+  const summary = emptyRecoverySummary(records.length);
+
+  for (const record of records) {
+    const trade = {
+      ...record.trade,
+      ...record.patch,
+      status: 'submitted' as const,
+    };
+    const signature = trade.tx_signature || record.patch.tx_signature;
+    const wallet = findPilotWalletByAlias(config, trade.wallet_alias);
+
+    if (!wallet || !signature) {
+      await mirrorRedisTradeEvent({
+        source: 'redis_submitted_recovery_skipped',
+        tradeId: trade.id,
+        walletAlias: trade.wallet_alias,
+        reason: wallet ? 'missing_signature' : 'wallet_missing',
+      });
+      await deleteRedisSubmittedTrade(record.key);
+      summary.failed += 1;
+      continue;
+    }
+
+    const redisLockOwner = `${lockOwner}:redis-recovery:${trade.id}`;
+    const lockAcquired = await acquireLivePilotRedisWalletLock(wallet.alias, redisLockOwner);
+    if (!lockAcquired) {
+      summary.busy += 1;
+      continue;
+    }
+
+    try {
+      const statuses = await connection.getSignatureStatuses([signature], {
+        searchTransactionHistory: true,
+      });
+      const status = statuses.value[0];
+
+      if (!status) {
+        summary.pending += 1;
+        continue;
+      }
+
+      if (status.err) {
+        await mirrorRedisTradeEvent({
+          source: 'redis_submitted_recovery_failed_onchain',
+          tradeId: trade.id,
+          walletAlias: wallet.alias,
+          txSignature: signature,
+          errorMessage: JSON.stringify(status.err),
+        });
+        await deleteRedisSubmittedTrade(record.key);
+        summary.failed += 1;
+        continue;
+      }
+
+      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+        const copiedPositionAfterOverride = trade.leader_type === 'sell' && trade.token_in_mint
+          ? await getTokenBalance(connection, wallet.publicKey, trade.token_in_mint)
+            .then((balance) => balance.uiAmount)
+            .catch(() => null)
+          : null;
+
+        const lifecycle = await recordConfirmedCopyPositionMutation({
+          trade,
+          wallet,
+          inputAmount: trade.actual_input_amount ?? trade.quoted_input_amount,
+          outputAmount: trade.actual_output_amount ?? trade.quoted_output_amount,
+          copiedPositionAfterOverride,
+        });
+
+        await updatePilotRuntimeState(wallet.alias, {
+          last_confirmed_tx_signature: signature,
+          last_error: null,
+          last_reconcile_at: new Date().toISOString(),
+        }).catch(() => undefined);
+        await mirrorRedisTradeEvent({
+          source: 'redis_submitted_recovery_confirmed',
+          tradeId: trade.id,
+          walletAlias: wallet.alias,
+          txSignature: signature,
+          confirmationSlot: status.slot ?? '',
+          copiedPositionAfter: lifecycle.copiedPositionAfter,
+        });
+        await deleteRedisSubmittedTrade(record.key);
+        summary.confirmed += 1;
+        continue;
+      }
+
+      summary.pending += 1;
+    } catch (error) {
+      await mirrorRedisTradeEvent({
+        source: 'redis_submitted_recovery_error',
+        tradeId: trade.id,
+        walletAlias: wallet.alias,
+        txSignature: signature,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
+      summary.pending += 1;
+    } finally {
+      await releaseLivePilotRedisWalletLock(wallet.alias, redisLockOwner).catch(() => undefined);
+    }
+  }
+
+  return summary;
+}
+
 export async function recoverSubmittedPilotTrades(args: {
   config: LivePilotConfig;
   connection: Connection;
@@ -414,14 +548,7 @@ export async function recoverSubmittedPilotTrades(args: {
   const { config, connection, lockOwner, limit = 50 } = args;
   const attempts = await listSubmittedPilotTradeAttempts(limit);
 
-  const summary = {
-    scanned: attempts.length,
-    confirmed: 0,
-    requeued: 0,
-    failed: 0,
-    pending: 0,
-    busy: 0,
-  };
+  const summary = emptyRecoverySummary(attempts.length);
 
   for (const attempt of attempts) {
     const trade = await getPilotTradeById(attempt.pilot_trade_id);

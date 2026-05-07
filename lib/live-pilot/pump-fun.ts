@@ -102,7 +102,7 @@ export function shouldUsePumpFunForBuy(plan: {
   return (
     pumpFunLivePilotConfig.enabled
     && leaderType === 'buy'
-    && (!plan.sourceClassification || isPumpFunSource(plan.sourceClassification))
+    && isPumpFunSource(plan.sourceClassification)
   );
 }
 
@@ -112,7 +112,7 @@ export function shouldUsePumpFunForSell(plan: {
   return (
     pumpFunLivePilotConfig.enabled
     && leaderType === 'sell'
-    && (!plan.sourceClassification || isPumpFunSource(plan.sourceClassification))
+    && isPumpFunSource(plan.sourceClassification)
   );
 }
 
@@ -141,36 +141,70 @@ export async function executePumpFunSwap(args: {
     signTransaction: async (tx: any) => tx,
     signAllTransactions: async (txs: any[]) => txs,
   };
-  const provider = new AnchorProvider(connection, dummyWallet, { commitment: "confirmed" });
+  const provider = new AnchorProvider(connection, dummyWallet, { commitment: 'confirmed' });
   const sdk = new PumpFunSDK(provider);
 
   const slippageBps = BigInt(plan.slippageBps ?? pumpFunLivePilotConfig.slippageBps);
   const quoteReceivedAt = new Date().toISOString();
   
   let baseTx: Transaction;
+  let quotedOutputRaw: string | null = null;
   
   try {
     if (isBuy) {
       const mint = new PublicKey(plan.outputMint);
       const buyAmountSol = BigInt(plan.inputAmountRaw);
+      const bondingCurveAccount = await sdk.getBondingCurveAccount(mint, 'confirmed');
+      if (!bondingCurveAccount) {
+        throw createPumpFunError(
+          'pumpfun_graduated_or_invalid',
+          `Pump.fun bonding curve account not found for ${mint.toBase58()}. Token might have graduated.`,
+          plan.sourceClassification,
+        );
+      }
+      if ((bondingCurveAccount as { complete?: boolean }).complete) {
+        throw createPumpFunError(
+          'pumpfun_graduated_or_invalid',
+          `Pump.fun bonding curve is complete for ${mint.toBase58()}. Token has graduated.`,
+          plan.sourceClassification,
+        );
+      }
+      quotedOutputRaw = bondingCurveAccount.getBuyPrice(buyAmountSol).toString();
       
       baseTx = await sdk.getBuyInstructionsBySolAmount(
         keypair.publicKey,
         mint,
         buyAmountSol,
         slippageBps,
-        "confirmed"
+        'confirmed'
       );
     } else {
       const mint = new PublicKey(plan.inputMint);
       const sellTokenAmount = BigInt(plan.inputAmountRaw);
+      const bondingCurveAccount = await sdk.getBondingCurveAccount(mint, 'confirmed');
+      if (!bondingCurveAccount) {
+        throw createPumpFunError(
+          'pumpfun_graduated_or_invalid',
+          `Pump.fun bonding curve account not found for ${mint.toBase58()}. Token might have graduated.`,
+          plan.sourceClassification,
+        );
+      }
+      if ((bondingCurveAccount as { complete?: boolean }).complete) {
+        throw createPumpFunError(
+          'pumpfun_graduated_or_invalid',
+          `Pump.fun bonding curve is complete for ${mint.toBase58()}. Token has graduated.`,
+          plan.sourceClassification,
+        );
+      }
+      const globalAccount = await sdk.getGlobalAccount('confirmed');
+      quotedOutputRaw = bondingCurveAccount.getSellPrice(sellTokenAmount, globalAccount.feeBasisPoints).toString();
       
       baseTx = await sdk.getSellInstructionsByTokenAmount(
         keypair.publicKey,
         mint,
         sellTokenAmount,
         slippageBps,
-        "confirmed"
+        'confirmed'
       );
     }
   } catch (error) {
@@ -237,9 +271,9 @@ export async function executePumpFunSwap(args: {
     signature,
     signedTransaction,
     quotedInputRaw: plan.inputAmountRaw,
-    quotedOutputRaw: null, // We don't get exact output quote back from the raw instructions easily
+    quotedOutputRaw,
     quotedInputAmount: rawToUi(plan.inputAmountRaw, plan.inputDecimals),
-    quotedOutputAmount: null,
+    quotedOutputAmount: quotedOutputRaw ? rawToUi(quotedOutputRaw, plan.outputDecimals) : null,
     priceImpactPct: 0,
     quoteReceivedAt,
     txBuiltAt,

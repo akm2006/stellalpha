@@ -33,7 +33,10 @@ import { getLivePilotConfig, findPilotWalletByAlias } from '@/lib/live-pilot/con
 import { enqueueLiquidationIntentsForWallet } from '@/lib/live-pilot/liquidation';
 import { enqueueResidualExitIntentsForWallet } from '@/lib/live-pilot/residual-exits';
 import { subscribeToLivePilotQueueWake, unsubscribeFromLivePilotQueueWake } from '@/lib/live-pilot/queue-wake';
-import { recoverSubmittedPilotTrades } from '@/lib/live-pilot/recovery';
+import {
+  recoverRedisSubmittedPilotTrades,
+  recoverSubmittedPilotTrades,
+} from '@/lib/live-pilot/recovery';
 import { closeZeroTokenAccounts } from '@/lib/live-pilot/token-account-rent';
 import { closeLivePilotRedisClient } from '@/lib/live-pilot/redis/client';
 import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
@@ -728,9 +731,16 @@ async function processRedisPilotIntents() {
     throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
   }
   const walletAliases = config.wallets.filter((wallet) => wallet.isEnabled).map((wallet) => wallet.alias);
-  const controlSnapshot =
-    await getRedisPilotControlSnapshot(walletAliases)
-    || await getPilotControlSnapshot(walletAliases);
+  const controlSnapshot = await getRedisPilotControlSnapshot(walletAliases);
+  if (!controlSnapshot) {
+    await publishLivePilotRedisAudit({
+      source: 'redis_execution_paused',
+      reason: 'redis_control_unavailable',
+      walletAliases: walletAliases.join(','),
+      message: 'Redis execution is enabled but Redis control state is unavailable; failing closed without querying DB hot path',
+    });
+    return false;
+  }
 
   const freshMessages = await readLivePilotRedisIntents(redisConsumerName);
   const staleMessages = freshMessages.length > 0
@@ -766,20 +776,53 @@ async function runRecoveryLoop() {
       throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
     }
 
-    const summary = await recoverSubmittedPilotTrades({
-      config,
-      connection,
-      lockOwner,
-    });
+    const redisSummary = isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled
+      ? await recoverRedisSubmittedPilotTrades({
+        config,
+        connection,
+        lockOwner,
+      })
+      : null;
 
-    if (summary.scanned > 0) {
+    let summary = {
+      scanned: 0,
+      confirmed: 0,
+      requeued: 0,
+      failed: 0,
+      pending: 0,
+      busy: 0,
+    };
+
+    try {
+      summary = await recoverSubmittedPilotTrades({
+        config,
+        connection,
+        lockOwner,
+      });
+    } catch (error) {
+      if (!isLivePilotRedisAvailable() || !livePilotRedisConfig.executionEnabled) {
+        throw error;
+      }
+      console.warn('[LIVE_PILOT] DB submitted recovery failed; Redis recovery remains active:', error);
+    }
+
+    const combinedSummary = {
+      scanned: summary.scanned + (redisSummary?.scanned || 0),
+      confirmed: summary.confirmed + (redisSummary?.confirmed || 0),
+      requeued: summary.requeued + (redisSummary?.requeued || 0),
+      failed: summary.failed + (redisSummary?.failed || 0),
+      pending: summary.pending + (redisSummary?.pending || 0),
+      busy: summary.busy + (redisSummary?.busy || 0),
+    };
+
+    if (combinedSummary.scanned > 0) {
       console.log(
         '[LIVE_PILOT] Recovery summary:',
-        JSON.stringify(summary),
+        JSON.stringify(combinedSummary),
       );
     }
 
-    if (summary.requeued > 0) {
+    if (combinedSummary.requeued > 0) {
       scheduleQueueDrain();
     }
 
@@ -802,14 +845,27 @@ async function startWorker() {
     throw new Error('No enabled live-pilot wallets found in config');
   }
 
-  await ensurePilotControlState(walletAliases);
-  await ensurePilotRuntimeState(
-    wallets.map((wallet) => ({
-      alias: wallet.alias,
-      starTrader: wallet.starTrader,
-      mode: wallet.mode,
-    }))
-  );
+  const ensureDbState = async () => {
+    await ensurePilotControlState(walletAliases);
+    await ensurePilotRuntimeState(
+      wallets.map((wallet) => ({
+        alias: wallet.alias,
+        starTrader: wallet.starTrader,
+        mode: wallet.mode,
+      }))
+    );
+  };
+
+  if (isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled) {
+    await ensureDbState().catch((error) => {
+      console.warn(
+        '[LIVE_PILOT] Failed to ensure DB control/runtime state; continuing with Redis execution:',
+        error,
+      );
+    });
+  } else {
+    await ensureDbState();
+  }
 
   console.log(`[LIVE_PILOT] Worker starting with lock owner ${lockOwner}`);
   console.log(`[LIVE_PILOT] Enabled wallets: ${walletAliases.join(', ')}`);
@@ -839,8 +895,12 @@ async function startWorker() {
     console.warn('[LIVE_PILOT] Failed to subscribe to queue wake channel, falling back to polling only:', error);
   }
 
-  await runRecoveryLoop();
-  await processQueuedPilotTrades();
+  await runRecoveryLoop().catch((error) => {
+    recordLoopFailure('recovery', error);
+  });
+  await processQueuedPilotTrades().catch((error) => {
+    recordLoopFailure('queue', error);
+  });
 
   setInterval(() => {
     processQueuedPilotTrades().catch((error) => {

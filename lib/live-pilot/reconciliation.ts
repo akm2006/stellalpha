@@ -15,13 +15,17 @@ export async function reconcileAllWalletPositions(wallet: PilotWalletConfigSumma
     scopeKey: wallet.alias,
     starTrader: wallet.starTrader || '',
   });
+  const copyStatesByMint = new Map(copyStates.map((state) => [state.mint, state]));
   
-  const allMints = new Set([...holdingMap.keys(), ...copyStates.map(s => s.mint)]);
+  const allMints = new Set(copyStates.map(s => s.mint));
   
   let reconciled = 0;
   for (const mint of allMints) {
     const actualOnChainAmount = holdingMap.get(mint) || 0;
-    const existing = copyStates.find(s => s.mint === mint);
+    const existing = copyStatesByMint.get(mint);
+    if (!existing) {
+      continue;
+    }
     
     const dbAmount = Number(existing?.copied_open_amount || 0);
     const drift = Math.abs(dbAmount - actualOnChainAmount);
@@ -32,7 +36,7 @@ export async function reconcileAllWalletPositions(wallet: PilotWalletConfigSumma
       await reconcileCopiedPositionAmount({
         scopeType: 'pilot',
         scopeKey: wallet.alias,
-        starTrader: wallet.starTrader || existing?.star_trader || '',
+        starTrader: existing.star_trader || wallet.starTrader || '',
         mint,
         tokenSymbol: getTokenSymbol(mint),
         tradeSignature: null,
