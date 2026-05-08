@@ -27,6 +27,7 @@ import {
   recordRedisObservedLeaderBuy,
   recordRedisObservedLeaderSell,
 } from './state';
+import { resolveLivePilotSellSizing } from '@/lib/live-pilot/sell-safety';
 
 function toIso(ms: number) {
   return new Date(ms).toISOString();
@@ -178,6 +179,8 @@ export async function maybeCreateRedisPilotIntent(
   let copiedPositionBefore: number | null = null;
   let sellFraction: number | null = null;
   let dedupeReserved = false;
+  let sellSizingSource: string | null = null;
+  let sellFallbackReason: string | null = null;
 
   const reserveIntentDedupe = async () => {
     const reservationRow = baseTradeRow({
@@ -267,6 +270,11 @@ export async function maybeCreateRedisPilotIntent(
     }
   } else {
     const inputMint = trade.tokenInMint || '';
+    if (!skipReason && !inputMint) {
+      skipReason = 'missing_input_mint';
+      errorMessage = 'Sell trade is missing input token mint';
+    }
+
     if (!skipReason && inputMint && (await getRedisMintQuarantine(inputMint))?.status === 'active') {
       skipReason = 'mint_quarantined';
       errorMessage = `${getTokenSymbol(inputMint)} is quarantined for live-pilot sells`;
@@ -295,13 +303,16 @@ export async function maybeCreateRedisPilotIntent(
       leaderPositionBefore = leaderSell?.leaderPositionBefore ?? null;
       leaderPositionAfter = leaderSell?.leaderPositionAfter ?? null;
       copiedPositionBefore = leaderSell?.copiedPositionBefore ?? null;
-      copyRatio = Math.min(Math.max(leaderSell?.sellFraction || 0, 0), 1);
-      sellFraction = leaderSell?.sellFraction ?? null;
-
-      if (leaderSell?.notFollowedPosition || copyRatio <= 0) {
-        skipReason = 'not_followed_position';
-        errorMessage = `Wallet ${pilotWallet.alias} did not build a copied ${getTokenSymbol(inputMint)} position`;
-      }
+      const sellSizing = resolveLivePilotSellSizing({
+        trade,
+        lifecycleSellFraction: leaderSell?.sellFraction,
+      });
+      copyRatio = sellSizing.copyRatio;
+      sellFraction = sellSizing.sellFraction;
+      sellSizingSource = sellSizing.source;
+      sellFallbackReason = leaderSell?.notFollowedPosition || sellSizing.fallbackReason
+        ? sellSizing.fallbackReason || 'copied_position_missing_on_sell'
+        : null;
     }
   }
 
@@ -320,6 +331,14 @@ export async function maybeCreateRedisPilotIntent(
   });
 
   if (row.status !== 'queued') {
+    const payload = pilotTradeToRedisIntent(row, 'redis_primary', {
+      sourceClassification,
+      meteoraDammV2CandidatePools,
+      pumpSwapCandidatePools,
+    });
+    if (dedupeReserved) {
+      await clearLivePilotRedisIntentDedupe(payload).catch(() => undefined);
+    }
     await publishLivePilotRedisAudit({
       source: 'redis_intent_skip',
       reason,
@@ -366,6 +385,8 @@ export async function maybeCreateRedisPilotIntent(
     starTradeSignature: row.star_trade_signature,
     leaderType: row.leader_type,
     sourceSummary,
+    sellSizingSource,
+    sellFallbackReason,
     meteoraDammV2CandidatePools: meteoraDammV2CandidatePools.join(','),
     pumpSwapCandidatePools: pumpSwapCandidatePools.join(','),
     redisStreamId: result.streamId,

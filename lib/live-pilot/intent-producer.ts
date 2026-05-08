@@ -22,6 +22,7 @@ import {
   createPrivateRpcConnection,
 } from '@/lib/ingestion/copy-signal';
 import { classifyTradeSource, formatTradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
+import { resolveLivePilotSellSizing } from '@/lib/live-pilot/sell-safety';
 import { rememberLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
 import {
   extractMeteoraDammV2CandidatePools,
@@ -213,6 +214,7 @@ export async function maybeCreatePilotIntent(
     let leaderPositionAfter: number | null = null;
     let copiedPositionBefore: number | null = null;
     let sellFraction: number | null = null;
+    let sellSizingFallbackReason: string | null = null;
 
     if (control.global.kill_switch_active) {
       skipReason = 'kill_switch_active';
@@ -285,12 +287,15 @@ export async function maybeCreatePilotIntent(
       leaderPositionBefore = leaderSell.leaderPositionBefore;
       leaderPositionAfter = leaderSell.leaderPositionAfter;
       copiedPositionBefore = leaderSell.copiedPositionBefore;
-      copyRatio = Math.min(Math.max(leaderSell.sellFraction, 0), 1);
-      sellFraction = leaderSell.sellFraction;
-
-      if (leaderSell.notFollowedPosition || copyRatio <= 0) {
-        skipReason = 'not_followed_position';
-      }
+      const sellSizing = resolveLivePilotSellSizing({
+        trade,
+        lifecycleSellFraction: leaderSell.sellFraction,
+      });
+      copyRatio = sellSizing.copyRatio;
+      sellFraction = sellSizing.sellFraction;
+      sellSizingFallbackReason = leaderSell.notFollowedPosition || sellSizing.fallbackReason
+        ? sellSizing.fallbackReason || 'copied_position_missing_on_sell'
+        : null;
     }
 
     const intentCreatedAt = Date.now();
@@ -343,7 +348,8 @@ export async function maybeCreatePilotIntent(
     } else {
       console.log(
         `[LIVE_PILOT] Queued pilot intent for ${pilotWallet.alias} / ${trade.signature.slice(0, 12)}... `
-        + `(model=${pilotWallet.buyModelKey}, ratio=${(copyRatio * 100).toFixed(2)}%, source=${sourceSummary})`
+        + `(model=${pilotWallet.buyModelKey}, ratio=${(copyRatio * 100).toFixed(2)}%, source=${sourceSummary}`
+        + `${sellSizingFallbackReason ? `, sell_sizing_fallback=${sellSizingFallbackReason}` : ''})`
       );
     }
 
