@@ -531,6 +531,7 @@ async function processQueuedPilotTrades() {
   try {
     if (isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled) {
       const processedRedis = await processRedisPilotIntents();
+      await processRedisMaintenanceSweeps();
       if (processedRedis) {
         scheduleQueueDrain();
       }
@@ -585,6 +586,30 @@ async function processQueuedPilotTrades() {
   } finally {
     isProcessingQueue = false;
   }
+}
+
+async function processRedisMaintenanceSweeps() {
+  const config = getLivePilotConfig();
+  if (config.errors.length > 0) {
+    throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
+  }
+
+  const enabledWallets = config.wallets.filter((wallet) => wallet.isEnabled);
+  const walletAliases = enabledWallets.map((wallet) => wallet.alias);
+  const controlSnapshot = await getRedisPilotControlSnapshot(walletAliases);
+  if (!controlSnapshot) {
+    await publishLivePilotRedisAudit({
+      source: 'redis_maintenance_skipped',
+      reason: 'redis_control_unavailable',
+      walletAliases: walletAliases.join(','),
+      message: 'Redis maintenance sweeps are disabled until Redis control state is available',
+    });
+    return;
+  }
+
+  await runLiquidationSweep(config, controlSnapshot);
+  await runTokenAccountRentSweep(config, controlSnapshot);
+  await runResidualExitSweep(config, controlSnapshot);
 }
 
 async function processRedisIntentMessage(
