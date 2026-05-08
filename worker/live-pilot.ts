@@ -71,6 +71,7 @@ const WALLET_BUSY_RETRY_DELAY_MS = 2_500;
 const CONTROL_CACHE_TTL_MS = 1_000;
 const TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const TOKEN_ACCOUNT_RENT_SWEEP_MAX_ACCOUNTS = 32;
+const REDIS_CONTROL_HYDRATE_INTERVAL_MS = 5_000;
 
 let isShuttingDown = false;
 let isProcessingQueue = false;
@@ -82,6 +83,7 @@ let queueBackoffUntil = 0;
 let queueBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
 let recoveryBackoffUntil = 0;
 let recoveryBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
+let isHydratingRedisControl = false;
 
 type PilotControlSnapshot = ReturnType<typeof buildPilotControlSnapshot>;
 
@@ -145,6 +147,21 @@ function scheduleQueueDrain() {
       recordLoopFailure('queue', error);
     });
   }, 0);
+}
+
+async function hydrateRedisControlFromDb(walletAliases: string[], reason: string) {
+  if (!isLivePilotRedisAvailable() || isHydratingRedisControl) {
+    return;
+  }
+
+  isHydratingRedisControl = true;
+  try {
+    await hydrateRedisPilotControlState(walletAliases);
+  } catch (error) {
+    console.warn(`[LIVE_PILOT_REDIS] Failed to hydrate control state (${reason}):`, error);
+  } finally {
+    isHydratingRedisControl = false;
+  }
 }
 
 async function getPilotControlSnapshot(walletAliases: string[]) {
@@ -880,13 +897,14 @@ async function startWorker() {
   console.log(`[LIVE_PILOT] Enabled wallets: ${walletAliases.join(', ')}`);
   if (isLivePilotRedisAvailable()) {
     await ensureLivePilotRedisStreams();
-    await hydrateRedisPilotControlState(walletAliases).catch((error) => {
-      console.warn('[LIVE_PILOT_REDIS] Failed to hydrate control state; Redis execution will fail closed until control is available:', error);
-    });
+    await hydrateRedisControlFromDb(walletAliases, 'startup');
     console.log(
       `[LIVE_PILOT_REDIS] Redis hot path initialized `
       + `(execution=${livePilotRedisConfig.executionEnabled}, group=${livePilotRedisConfig.consumerGroup})`,
     );
+    setInterval(() => {
+      hydrateRedisControlFromDb(walletAliases, 'periodic').catch(() => undefined);
+    }, REDIS_CONTROL_HYDRATE_INTERVAL_MS);
   } else {
     console.log('[LIVE_PILOT_REDIS] Redis hot path disabled');
   }
