@@ -186,6 +186,7 @@ export async function POST(request: NextRequest) {
           const liquidationStatus = await getWalletLiquidationStatus({
             walletAlias: walletAlias!,
             walletPublicKey: walletConfig.publicKey,
+            starTrader: walletConfig.starTrader,
             connection,
           });
 

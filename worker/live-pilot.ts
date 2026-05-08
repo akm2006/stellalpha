@@ -231,6 +231,8 @@ async function runLiquidationSweep(
   config: ReturnType<typeof getLivePilotConfig>,
   controlSnapshot: ReturnType<typeof buildPilotControlSnapshot>,
 ) {
+  let anyPendingLiquidationWork = false;
+
   for (const wallet of config.wallets.filter((entry) => entry.isEnabled && entry.isComplete && entry.hasSecret)) {
     const walletControl = controlSnapshot.wallets.find((row) => row.scope_key === wallet.alias);
     const liquidationRequested =
@@ -245,6 +247,7 @@ async function runLiquidationSweep(
 
     const lockAcquired = await acquireExecutionLock(wallet.alias);
     if (!lockAcquired) {
+      anyPendingLiquidationWork = true;
       continue;
     }
 
@@ -259,7 +262,10 @@ async function runLiquidationSweep(
       });
 
       if (result.created > 0) {
+        anyPendingLiquidationWork = true;
         console.log(`[LIVE_PILOT] ${wallet.alias}: queued ${result.created} liquidation trade(s)`);
+      } else if (result.pendingWork) {
+        anyPendingLiquidationWork = true;
       } else if (!result.pendingWork && walletControl?.liquidation_requested) {
         await updatePilotControlState('wallet', wallet.alias, {
           liquidation_requested: false,
@@ -270,9 +276,17 @@ async function runLiquidationSweep(
       }
     } catch (error) {
       console.error(`[LIVE_PILOT] Failed liquidation sweep for ${wallet.alias}:`, error);
+      anyPendingLiquidationWork = true;
     } finally {
       await releasePilotRuntimeLock(wallet.alias, lockOwner).catch(() => undefined);
     }
+  }
+
+  if (controlSnapshot.global.liquidation_requested && !anyPendingLiquidationWork) {
+    await updatePilotControlState('global', 'global', {
+      liquidation_requested: false,
+    });
+    console.log('[LIVE_PILOT] Cleared global liquidation request (no pending liquidation work)');
   }
 }
 

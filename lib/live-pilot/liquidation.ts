@@ -4,9 +4,16 @@ import type { Connection } from '@solana/web3.js';
 import type { LivePilotWalletConfig } from '@/lib/live-pilot/config';
 import { sendLivePilotAlert } from '@/lib/live-pilot/alerts';
 import { listActivePilotMintQuarantines } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
-import { listActiveLiquidationTrades, createPilotTrade } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import {
+  listActiveLiquidationTrades,
+  createPilotTrade,
+  updatePilotTrade,
+} from '@/lib/live-pilot/repositories/pilot-trades.repo';
 import { updatePilotRuntimeState } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
-import { getCopyPositionState } from '@/lib/repositories/copy-position-states.repo';
+import {
+  getCopyPositionState,
+  listAllOpenPilotStatesForWallet,
+} from '@/lib/repositories/copy-position-states.repo';
 import { jupiterFetch } from '@/lib/jupiter/client';
 import { getSolPrice, getTokenSymbol } from '@/lib/services/token-service';
 
@@ -27,6 +34,7 @@ interface LiquidationCandidate extends TokenHolding {
 interface WalletLiquidationStatusArgs {
   walletAlias: string;
   walletPublicKey: string;
+  starTrader?: string | null;
   connection: Connection;
 }
 
@@ -103,8 +111,9 @@ function selectMeaningfulLiquidationCandidates(args: {
   holdings: TokenHolding[];
   prices: Record<string, number>;
   solPrice: number;
+  copiedMintSet: Set<string>;
 }) {
-  const { holdings, prices, solPrice } = args;
+  const { holdings, prices, solPrice, copiedMintSet } = args;
 
   return holdings
     .map((holding) => {
@@ -120,7 +129,7 @@ function selectMeaningfulLiquidationCandidates(args: {
     })
     .filter((holding) => {
       if (holding.estimatedSolValue === null) {
-        return true;
+        return copiedMintSet.has(holding.mint);
       }
 
       return holding.estimatedSolValue >= DUST_SOL_VALUE_THRESHOLD;
@@ -128,35 +137,52 @@ function selectMeaningfulLiquidationCandidates(args: {
 }
 
 export async function getWalletLiquidationStatus(args: WalletLiquidationStatusArgs) {
-  const { walletAlias, walletPublicKey, connection } = args;
-  const [holdings, activeLiquidations, solPrice, quarantines] = await Promise.all([
+  const { walletAlias, walletPublicKey, starTrader, connection } = args;
+  const [holdings, activeLiquidations, solPrice, quarantines, copyStates] = await Promise.all([
     getWalletTokenHoldings(connection, walletPublicKey),
     listActiveLiquidationTrades(walletAlias),
     getSolPrice(),
     listActivePilotMintQuarantines(),
+    starTrader
+      ? listAllOpenPilotStatesForWallet({
+          scopeKey: walletAlias,
+          starTrader,
+        }).catch(() => [])
+      : Promise.resolve([]),
   ]);
 
   const prices = await fetchUsdPrices(holdings.map((holding) => holding.mint));
+  const copiedMintSet = new Set(copyStates.map((state) => state.mint));
   const meaningfulHoldings = selectMeaningfulLiquidationCandidates({
     holdings,
     prices,
     solPrice,
+    copiedMintSet,
   });
   const quarantinedMintSet = new Set(quarantines.map((entry) => entry.mint));
   const deadInventoryHoldings = meaningfulHoldings.filter((holding) => quarantinedMintSet.has(holding.mint));
   const liquidatableHoldings = meaningfulHoldings.filter((holding) => !quarantinedMintSet.has(holding.mint));
+  const liquidatableMintSet = new Set(liquidatableHoldings.map((holding) => holding.mint));
+  const actionableActiveLiquidations = activeLiquidations.filter((trade) =>
+    Boolean(trade.token_in_mint && liquidatableMintSet.has(trade.token_in_mint)),
+  );
+  const obsoleteActiveLiquidations = activeLiquidations.filter((trade) =>
+    !trade.token_in_mint || !liquidatableMintSet.has(trade.token_in_mint),
+  );
 
   return {
     holdings,
     meaningfulHoldings,
     deadInventoryHoldings,
     liquidatableHoldings,
-    activeLiquidations,
-    activeLiquidationCount: activeLiquidations.length,
+    activeLiquidations: actionableActiveLiquidations,
+    obsoleteActiveLiquidations,
+    activeLiquidationCount: actionableActiveLiquidations.length,
+    obsoleteActiveLiquidationCount: obsoleteActiveLiquidations.length,
     meaningfulHoldingCount: meaningfulHoldings.length,
     deadInventoryCount: deadInventoryHoldings.length,
     isFlat: liquidatableHoldings.length === 0,
-    pendingWork: activeLiquidations.length > 0 || liquidatableHoldings.length > 0,
+    pendingWork: actionableActiveLiquidations.length > 0 || liquidatableHoldings.length > 0,
     solPrice,
   };
 }
@@ -171,6 +197,7 @@ export async function enqueueLiquidationIntentsForWallet(args: {
     holdings,
     liquidatableHoldings,
     activeLiquidations,
+    obsoleteActiveLiquidations,
     activeLiquidationCount,
     meaningfulHoldingCount,
     deadInventoryCount,
@@ -179,8 +206,24 @@ export async function enqueueLiquidationIntentsForWallet(args: {
   } = await getWalletLiquidationStatus({
     walletAlias: wallet.alias,
     walletPublicKey: wallet.publicKey,
+    starTrader: wallet.starTrader,
     connection,
   });
+
+  if (obsoleteActiveLiquidations.length > 0) {
+    await Promise.all(
+      obsoleteActiveLiquidations.map((trade) =>
+        updatePilotTrade(trade.id, {
+          status: 'skipped',
+          skip_reason: 'liquidation_not_needed',
+          error_message: trade.token_in_mint
+            ? `${getTokenSymbol(trade.token_in_mint)} is no longer a meaningful liquidatable holding`
+            : 'Liquidation trade is missing token_in_mint',
+          next_retry_at: null,
+        }).catch(() => undefined),
+      ),
+    );
+  }
 
   const activeMints = new Set(activeLiquidations.map((trade) => trade.token_in_mint).filter(Boolean));
   const candidates = liquidatableHoldings.filter((holding) => !activeMints.has(holding.mint));

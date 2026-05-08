@@ -101,6 +101,7 @@ export async function getLivePilotStatus(
       status: await getWalletLiquidationStatus({
         walletAlias: wallet.alias,
         walletPublicKey: wallet.publicKey,
+        starTrader: wallet.starTrader,
         connection,
       }),
     })),
