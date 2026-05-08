@@ -237,9 +237,7 @@ async function runLiquidationSweep(
     const walletControl = controlSnapshot.wallets.find((row) => row.scope_key === wallet.alias);
     const liquidationRequested =
       controlSnapshot.global.liquidation_requested
-      || controlSnapshot.global.kill_switch_active
-      || walletControl?.liquidation_requested
-      || walletControl?.kill_switch_active;
+      || walletControl?.liquidation_requested;
 
     if (!liquidationRequested) {
       continue;
