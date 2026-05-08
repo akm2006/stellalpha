@@ -42,3 +42,10 @@ export function livePilotCopyStateKey(args: {
 }) {
   return `live-pilot:copy-state:${args.walletAlias}:${args.starTrader}:${args.mint}`;
 }
+
+export function livePilotCopyStatePattern(args: {
+  walletAlias: string;
+  starTrader: string;
+}) {
+  return `live-pilot:copy-state:${args.walletAlias}:${args.starTrader}:*`;
+}

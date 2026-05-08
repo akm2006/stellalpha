@@ -11,6 +11,7 @@ import {
 import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
 import {
   getRedisCopyState,
+  listRedisCopyStates,
   recordRedisObservedLeaderBuy,
   recordRedisObservedLeaderSell,
   recordRedisSuccessfulCopiedBuy,
@@ -179,6 +180,52 @@ function redisStateToRow(
   };
 }
 
+function mergeCopyPositionRows(
+  dbRows: CopyPositionStateRow[],
+  redisRows: CopyPositionStateRow[],
+) {
+  const byMint = new Map<string, CopyPositionStateRow>();
+  for (const row of dbRows) {
+    byMint.set(row.mint, row);
+  }
+  for (const row of redisRows) {
+    const existing = byMint.get(row.mint);
+    if (!existing || Date.parse(row.updated_at || '') >= Date.parse(existing.updated_at || '')) {
+      byMint.set(row.mint, row);
+    }
+  }
+
+  return Array.from(byMint.values()).sort((a, b) =>
+    Date.parse(b.updated_at || '') - Date.parse(a.updated_at || '')
+  );
+}
+
+async function listRedisLeaderClosedCopiedOpenPilotStates(args: {
+  scopeKey: string;
+  starTrader: string;
+}) {
+  if (!canUseRedisPilotFallback({ scopeType: 'pilot' })) return [];
+  const redisStates = await listRedisCopyStates({
+    walletAlias: args.scopeKey,
+    starTrader: args.starTrader,
+  });
+
+  return redisStates
+    .map(({ mint, state }) =>
+      redisStateToRow({
+        scopeType: 'pilot',
+        scopeKey: args.scopeKey,
+        starTrader: args.starTrader,
+        mint,
+      }, state)
+    )
+    .filter((row): row is CopyPositionStateRow => Boolean(row))
+    .filter((row) =>
+      Number(row.leader_open_amount || 0) <= 0.000000001
+      && Number(row.copied_open_amount || 0) > 0.000000001
+    );
+}
+
 export async function getCopyPositionState(key: CopyPositionStateKey) {
   if (canUseRedisPilotFallback(key)) {
     const redisState = await getRedisCopyState({
@@ -267,37 +314,48 @@ export async function listLeaderClosedCopiedOpenPilotStates(args: {
   scopeKey: string;
   starTrader: string;
 }) {
+  let dbRows: CopyPositionStateRow[] = [];
+
   if (hasPostgresConnection()) {
-    return pgQuery<CopyPositionStateRow>(
-      `
-        select *
-        from public.copy_position_states
-        where scope_type = 'pilot'
-          and scope_key = $1
-          and star_trader = $2
-          and leader_open_amount <= 0.000000001
-          and copied_open_amount > 0.000000001
-        order by updated_at desc
-      `,
-      [args.scopeKey, args.starTrader],
-    );
+    try {
+      dbRows = await pgQuery<CopyPositionStateRow>(
+        `
+          select *
+          from public.copy_position_states
+          where scope_type = 'pilot'
+            and scope_key = $1
+            and star_trader = $2
+            and leader_open_amount <= 0.000000001
+            and copied_open_amount > 0.000000001
+          order by updated_at desc
+        `,
+        [args.scopeKey, args.starTrader],
+      );
+    } catch (error) {
+      if (!canUseRedisPilotFallback({ scopeType: 'pilot' })) throw error;
+    }
+  } else {
+    const { data, error } = await supabase
+      .from('copy_position_states')
+      .select('*')
+      .eq('scope_type', 'pilot')
+      .eq('scope_key', args.scopeKey)
+      .eq('star_trader', args.starTrader)
+      .lte('leader_open_amount', 0.000000001)
+      .gt('copied_open_amount', 0.000000001)
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      if (!canUseRedisPilotFallback({ scopeType: 'pilot' })) {
+        throw new Error(`Failed to list residual copy positions for ${args.scopeKey}: ${error.message}`);
+      }
+    } else {
+      dbRows = (data || []) as CopyPositionStateRow[];
+    }
   }
 
-  const { data, error } = await supabase
-    .from('copy_position_states')
-    .select('*')
-    .eq('scope_type', 'pilot')
-    .eq('scope_key', args.scopeKey)
-    .eq('star_trader', args.starTrader)
-    .lte('leader_open_amount', 0.000000001)
-    .gt('copied_open_amount', 0.000000001)
-    .order('updated_at', { ascending: false });
-
-  if (error) {
-    throw new Error(`Failed to list residual copy positions for ${args.scopeKey}: ${error.message}`);
-  }
-
-  return (data || []) as CopyPositionStateRow[];
+  const redisRows = await listRedisLeaderClosedCopiedOpenPilotStates(args).catch(() => []);
+  return mergeCopyPositionRows(dbRows, redisRows);
 }
 
 export async function recordObservedLeaderBuy(args: TransitionMetadata & { leaderBuyAmount: number }) {

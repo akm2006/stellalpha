@@ -11,6 +11,7 @@ import { getLivePilotRedisClient } from './client';
 import { isLivePilotRedisAvailable } from './config';
 import {
   livePilotCopyStateKey,
+  livePilotCopyStatePattern,
   livePilotQuarantineKey,
   livePilotSubmittedPattern,
   livePilotSubmittedKey,
@@ -81,6 +82,35 @@ export async function getRedisCopyState(args: {
   if (!isLivePilotRedisAvailable()) return null;
   const client = await getLivePilotRedisClient();
   return normalizeCopyState(await client.get(copyStateKey(args)));
+}
+
+export async function listRedisCopyStates(args: {
+  walletAlias: string;
+  starTrader: string;
+}) {
+  if (!isLivePilotRedisAvailable()) return [];
+  const client = await getLivePilotRedisClient();
+  const prefix = livePilotCopyStatePattern(args).slice(0, -1);
+  const states: Array<{ mint: string; state: RedisCopyState }> = [];
+
+  for await (const key of (client as any).scanIterator({
+    MATCH: livePilotCopyStatePattern(args),
+    COUNT: 100,
+  })) {
+    const keys = Array.isArray(key) ? key : [key];
+    for (const entryKey of keys) {
+      const textKey = String(entryKey);
+      const mint = textKey.startsWith(prefix) ? textKey.slice(prefix.length) : '';
+      if (!mint) continue;
+      const raw = await client.get(textKey);
+      states.push({
+        mint,
+        state: normalizeCopyState(raw),
+      });
+    }
+  }
+
+  return states;
 }
 
 async function setRedisCopyState(args: {
