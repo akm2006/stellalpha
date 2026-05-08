@@ -11,8 +11,8 @@ import { getTokenSymbol } from '@/lib/services/token-service';
 import type { RawTrade } from '@/lib/trade-parser';
 import {
   extractMeteoraDammV2CandidatePools,
-  isMeteoraDammV2Source,
 } from '@/lib/live-pilot/meteora-damm-v2-cache';
+import { extractPumpSwapCandidatePools } from '@/lib/live-pilot/pump-swap-cache';
 import { getRedisPilotControlSnapshot } from './control-snapshot';
 import { isLivePilotRedisAvailable, livePilotRedisConfig } from './config';
 import {
@@ -168,6 +168,7 @@ export async function maybeCreateRedisPilotIntent(
     options.sourceClassification || classifyTradeSource(trade, options.rawTx);
   const sourceSummary = formatTradeSourceClassification(sourceClassification);
   const meteoraDammV2CandidatePools = extractMeteoraDammV2CandidatePools(options.rawTx);
+  const pumpSwapCandidatePools = extractPumpSwapCandidatePools(options.rawTx);
 
   let skipReason: string | null = null;
   let errorMessage: string | null = null;
@@ -193,6 +194,7 @@ export async function maybeCreateRedisPilotIntent(
     const reservationPayload = pilotTradeToRedisIntent(reservationRow, 'redis_primary', {
       sourceClassification,
       meteoraDammV2CandidatePools,
+      pumpSwapCandidatePools,
     });
     const reservation = await reserveLivePilotRedisIntentDedupe(reservationPayload);
     if (!reservation.reserved) {
@@ -334,6 +336,7 @@ export async function maybeCreateRedisPilotIntent(
   const payload = pilotTradeToRedisIntent(row, 'redis_primary', {
       sourceClassification,
       meteoraDammV2CandidatePools,
+      pumpSwapCandidatePools,
   });
   let result: Awaited<ReturnType<typeof publishLivePilotRedisIntent>>;
   try {
@@ -364,6 +367,7 @@ export async function maybeCreateRedisPilotIntent(
     leaderType: row.leader_type,
     sourceSummary,
     meteoraDammV2CandidatePools: meteoraDammV2CandidatePools.join(','),
+    pumpSwapCandidatePools: pumpSwapCandidatePools.join(','),
     redisStreamId: result.streamId,
   });
 

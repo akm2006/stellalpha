@@ -1,6 +1,7 @@
 import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
+import { PUMPSWAP_PROGRAM_ID } from '@/lib/ingestion/trade-source-classifier';
 
-export const METEORA_DAMM_V2_PROGRAM_ID = 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG';
+export const PUMPSWAP_PROGRAM_ID_STRING = PUMPSWAP_PROGRAM_ID;
 
 const MAX_ENTRIES = 500;
 const candidatePoolsBySignature = new Map<string, string[]>();
@@ -57,12 +58,11 @@ function collectInstructions(raw: any) {
   return instructions;
 }
 
-export function extractMeteoraDammV2CandidatePools(raw: any) {
+export function extractPumpSwapCandidatePools(raw: any) {
   const candidates = new Set<string>();
 
-  // Support for standard Solana instruction structures
   for (const instruction of collectInstructions(raw)) {
-    if (instructionProgramId(instruction) !== METEORA_DAMM_V2_PROGRAM_ID) {
+    if (instructionProgramId(instruction) !== PUMPSWAP_PROGRAM_ID_STRING) {
       continue;
     }
 
@@ -73,23 +73,10 @@ export function extractMeteoraDammV2CandidatePools(raw: any) {
     }
   }
 
-  // Support for Carbon parser custom payload from worker/index.ts
-  if (Array.isArray(raw?.__decoderCandidates)) {
-    for (const candidate of raw.__decoderCandidates) {
-      if (typeof candidate === 'string' && candidate.length >= 32 && candidate.length <= 44) {
-        candidates.add(candidate);
-      }
-    }
-  }
-
-  // If the program ID is present but no candidates were found in instructions,
-  // we might want to check all account keys as a last resort, but decoder_candidates
-  // from Carbon is usually more precise.
-
   return [...candidates];
 }
 
-export function rememberLivePilotMeteoraDammV2CandidatePools(
+export function rememberLivePilotPumpSwapCandidatePools(
   signature: string | null | undefined,
   candidates: string[],
 ) {
@@ -103,17 +90,17 @@ export function rememberLivePilotMeteoraDammV2CandidatePools(
   }
 }
 
-export function getLivePilotMeteoraDammV2CandidatePools(signature: string | null | undefined) {
+export function getLivePilotPumpSwapCandidatePools(signature: string | null | undefined) {
   if (!signature) return [];
   return candidatePoolsBySignature.get(signature) || [];
 }
 
-export function isMeteoraDammV2Source(classification: TradeSourceClassification | null | undefined) {
+export function isPumpSwapSource(classification: TradeSourceClassification | null | undefined) {
   return Boolean(
     classification
     && (
-      classification.protocols?.includes('meteora_damm_v2')
-      || classification.programIds.includes(METEORA_DAMM_V2_PROGRAM_ID)
-    ),
+      classification.protocols?.includes('pumpswap')
+      || classification.programIds.includes(PUMPSWAP_PROGRAM_ID_STRING)
+    )
   );
 }

@@ -25,9 +25,12 @@ import { classifyTradeSource, formatTradeSourceClassification } from '@/lib/inge
 import { rememberLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
 import {
   extractMeteoraDammV2CandidatePools,
-  isMeteoraDammV2Source,
   rememberLivePilotMeteoraDammV2CandidatePools,
 } from '@/lib/live-pilot/meteora-damm-v2-cache';
+import {
+  extractPumpSwapCandidatePools,
+  rememberLivePilotPumpSwapCandidatePools,
+} from '@/lib/live-pilot/pump-swap-cache';
 import { findPilotWalletForStarTrader, getLivePilotPublicConfig } from '@/lib/live-pilot/config';
 import { getTokenSymbol } from '@/lib/services/token-service';
 import {
@@ -147,6 +150,10 @@ export async function maybeCreatePilotIntent(
   const candidatePools = extractMeteoraDammV2CandidatePools(options.rawTx);
   if (candidatePools.length > 0) {
     rememberLivePilotMeteoraDammV2CandidatePools(trade.signature, candidatePools);
+  }
+  const pumpSwapCandidatePools = extractPumpSwapCandidatePools(options.rawTx);
+  if (pumpSwapCandidatePools.length > 0) {
+    rememberLivePilotPumpSwapCandidatePools(trade.signature, pumpSwapCandidatePools);
   }
 
   if (isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled) {

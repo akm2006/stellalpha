@@ -29,6 +29,7 @@ import {
 import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 import { rememberLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
 import { rememberLivePilotMeteoraDammV2CandidatePools } from '@/lib/live-pilot/meteora-damm-v2-cache';
+import { rememberLivePilotPumpSwapCandidatePools } from '@/lib/live-pilot/pump-swap-cache';
 import { getLivePilotConfig, findPilotWalletByAlias } from '@/lib/live-pilot/config';
 import { enqueueLiquidationIntentsForWallet } from '@/lib/live-pilot/liquidation';
 import { enqueueResidualExitIntentsForWallet } from '@/lib/live-pilot/residual-exits';
@@ -117,6 +118,14 @@ function hydrateRedisIntentExecutionMetadata(message: LivePilotRedisStreamMessag
     .filter(Boolean);
   if (candidatePools.length > 0) {
     rememberLivePilotMeteoraDammV2CandidatePools(signature, candidatePools);
+  }
+
+  const pumpSwapCandidatePools = (message.payload.pumpSwapCandidatePools || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (pumpSwapCandidatePools.length > 0) {
+    rememberLivePilotPumpSwapCandidatePools(signature, pumpSwapCandidatePools);
   }
 }
 

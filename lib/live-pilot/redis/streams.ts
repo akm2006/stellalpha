@@ -35,6 +35,7 @@ export type LivePilotRedisIntentPayload = {
   copiedPositionAfter: string | null;
   sourceClassificationJson: string | null;
   meteoraDammV2CandidatePools: string | null;
+  pumpSwapCandidatePools: string | null;
   source: 'db_mirror' | 'redis_primary' | 'recovery' | 'liquidation' | 'residual';
   createdAt: string;
 };
@@ -67,6 +68,7 @@ export function pilotTradeToRedisIntent(
   metadata: {
     sourceClassification?: TradeSourceClassification | null;
     meteoraDammV2CandidatePools?: string[];
+    pumpSwapCandidatePools?: string[];
   } = {},
 ): LivePilotRedisIntentPayload {
   return {
@@ -96,6 +98,9 @@ export function pilotTradeToRedisIntent(
       : null,
     meteoraDammV2CandidatePools: metadata.meteoraDammV2CandidatePools?.length
       ? metadata.meteoraDammV2CandidatePools.join(',')
+      : null,
+    pumpSwapCandidatePools: metadata.pumpSwapCandidatePools?.length
+      ? metadata.pumpSwapCandidatePools.join(',')
       : null,
     source,
     createdAt: new Date().toISOString(),
@@ -184,6 +189,7 @@ function decodeIntent(streamId: string, message: Record<string, unknown>): LiveP
       copiedPositionAfter: parseNullable(message.copiedPositionAfter),
       sourceClassificationJson: parseNullable(message.sourceClassificationJson),
       meteoraDammV2CandidatePools: parseNullable(message.meteoraDammV2CandidatePools),
+      pumpSwapCandidatePools: parseNullable(message.pumpSwapCandidatePools),
       source: (message.source || 'db_mirror') as LivePilotRedisIntentPayload['source'],
       createdAt: String(message.createdAt || new Date().toISOString()),
     },

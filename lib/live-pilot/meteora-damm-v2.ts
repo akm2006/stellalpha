@@ -73,7 +73,11 @@ function readNonNegativeIntEnv(name: string, fallback: number) {
 
 export const meteoraDammV2LivePilotConfig = {
   enabled: readBooleanEnv('LIVE_PILOT_METEORA_DAMM_V2_ENABLED', false),
-  buyFirst: readBooleanEnv('LIVE_PILOT_METEORA_DAMM_V2_BUY_FIRST', false),
+  directFirst: readBooleanEnv('LIVE_PILOT_METEORA_DAMM_V2_FIRST', false),
+  buyFirst: readBooleanEnv('LIVE_PILOT_METEORA_DAMM_V2_FIRST', false)
+    || readBooleanEnv('LIVE_PILOT_METEORA_DAMM_V2_BUY_FIRST', false),
+  sellFirst: readBooleanEnv('LIVE_PILOT_METEORA_DAMM_V2_FIRST', false)
+    || readBooleanEnv('LIVE_PILOT_METEORA_DAMM_V2_SELL_FIRST', false),
   skipPreflight: readBooleanEnv('LIVE_PILOT_METEORA_SKIP_PREFLIGHT', true),
   slippageBps: readPositiveIntEnv('LIVE_PILOT_METEORA_SLIPPAGE_BPS', DEFAULT_METEORA_SLIPPAGE_BPS),
   computeUnitLimit: readPositiveIntEnv('LIVE_PILOT_METEORA_COMPUTE_UNIT_LIMIT', DEFAULT_METEORA_COMPUTE_UNIT_LIMIT),
@@ -179,10 +183,16 @@ async function resolveMeteoraDammV2Pool(args: {
 export function shouldUseMeteoraDammV2ForBuy(plan: {
   sourceClassification?: TradeSourceClassification;
 }, leaderType: string | null | undefined) {
+  return shouldUseMeteoraDammV2ForSwap(plan, leaderType) && leaderType === 'buy';
+}
+
+export function shouldUseMeteoraDammV2ForSwap(plan: {
+  sourceClassification?: TradeSourceClassification;
+}, leaderType: string | null | undefined) {
   return (
     meteoraDammV2LivePilotConfig.enabled
-    && leaderType === 'buy'
-    && (!plan.sourceClassification || isMeteoraDammV2Source(plan.sourceClassification))
+    && (leaderType === 'buy' || leaderType === 'sell')
+    && isMeteoraDammV2Source(plan.sourceClassification)
   );
 }
 
@@ -197,7 +207,25 @@ export function shouldUseMeteoraDammV2BuyFirst(plan: {
   );
 }
 
-export async function executeMeteoraDammV2BuySwap(args: {
+export function shouldUseMeteoraDammV2SellFirst(plan: {
+  sourceClassification?: TradeSourceClassification;
+}, leaderType: string | null | undefined) {
+  return (
+    meteoraDammV2LivePilotConfig.enabled
+    && meteoraDammV2LivePilotConfig.sellFirst
+    && leaderType === 'sell'
+    && isMeteoraDammV2Source(plan.sourceClassification)
+  );
+}
+
+export function shouldUseMeteoraDammV2First(plan: {
+  sourceClassification?: TradeSourceClassification;
+}, leaderType: string | null | undefined) {
+  return shouldUseMeteoraDammV2BuyFirst(plan, leaderType)
+    || shouldUseMeteoraDammV2SellFirst(plan, leaderType);
+}
+
+export async function executeMeteoraDammV2Swap(args: {
   connection: Connection;
   keypair: Keypair;
   leaderSignature: string | null | undefined;
@@ -347,3 +375,5 @@ export async function executeMeteoraDammV2BuySwap(args: {
     programId: METEORA_DAMM_V2_PROGRAM_ID,
   };
 }
+
+export const executeMeteoraDammV2BuySwap = executeMeteoraDammV2Swap;
