@@ -32,10 +32,6 @@ import {
   recordSuccessfulCopiedBuy,
   recordSuccessfulCopiedSell,
 } from '@/lib/repositories/copy-position-states.repo';
-import {
-  recordRedisSuccessfulCopiedBuy,
-  recordRedisSuccessfulCopiedSell,
-} from '@/lib/live-pilot/redis/state';
 import { jupiterFetch } from '@/lib/jupiter/client';
 import {
   getCachedSolBalance,
@@ -1084,16 +1080,6 @@ export async function recordConfirmedCopyPositionMutation(args: {
       copiedBuyAmount,
       copiedCostUsd,
     });
-    await recordRedisSuccessfulCopiedBuy({
-      walletAlias: wallet.alias,
-      starTrader: trade.star_trader || wallet.starTrader || '',
-      mint: trade.token_out_mint,
-      tokenSymbol: getTokenSymbol(trade.token_out_mint),
-      tradeSignature: trade.star_trade_signature,
-      tradeTimestampIso,
-      copiedBuyAmount,
-      copiedCostUsd,
-    });
 
     return {
       copiedPositionAfter: lifecycle.copiedPositionAfter,
@@ -1112,15 +1098,6 @@ export async function recordConfirmedCopyPositionMutation(args: {
     };
     const lifecycle = await recordSuccessfulCopiedSell({
       ...metadata,
-      copiedSellAmount: Math.max(inputAmount || 0, 0),
-    });
-    await recordRedisSuccessfulCopiedSell({
-      walletAlias: wallet.alias,
-      starTrader: metadata.starTrader,
-      mint: metadata.mint,
-      tokenSymbol: metadata.tokenSymbol,
-      tradeSignature: metadata.tradeSignature,
-      tradeTimestampIso,
       copiedSellAmount: Math.max(inputAmount || 0, 0),
     });
 
