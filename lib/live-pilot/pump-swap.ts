@@ -170,9 +170,31 @@ export function shouldUsePumpSwapFirst(plan: PumpSwapRoutePlan, leaderType: stri
   return shouldUsePumpSwapBuyFirst(plan, leaderType) || shouldUsePumpSwapSellFirst(plan, leaderType);
 }
 
-function poolMatchesPlan(poolState: any, baseMint: string) {
-  return poolState?.baseMint?.toBase58?.() === baseMint
-    && poolState?.quoteMint?.toBase58?.() === SOL_MINT;
+function poolMints(poolState: any) {
+  return {
+    baseMint: poolState?.baseMint?.toBase58?.() || null,
+    quoteMint: poolState?.quoteMint?.toBase58?.() || null,
+  };
+}
+
+function poolMatchesPlan(poolState: any, tokenMint: string) {
+  const mints = poolMints(poolState);
+  return (
+    mints.baseMint === tokenMint && mints.quoteMint === SOL_MINT
+  ) || (
+    mints.baseMint === SOL_MINT && mints.quoteMint === tokenMint
+  );
+}
+
+function poolOrientation(poolState: any, tokenMint: string): 'token_base' | 'token_quote' | null {
+  const mints = poolMints(poolState);
+  if (mints.baseMint === tokenMint && mints.quoteMint === SOL_MINT) {
+    return 'token_base';
+  }
+  if (mints.baseMint === SOL_MINT && mints.quoteMint === tokenMint) {
+    return 'token_quote';
+  }
+  return null;
 }
 
 async function fetchLeaderTransactionForPoolCandidates(connection: Connection, signature: string) {
@@ -286,9 +308,18 @@ export async function executePumpSwap(args: {
   let instructions: Awaited<ReturnType<typeof PUMP_AMM_SDK.buyQuoteInput>>;
   let quotedOutputRaw: string | null = null;
   let priceImpactPct = 0;
+  const orientation = poolOrientation(resolved.state.pool, baseMint.toBase58());
+
+  if (!orientation) {
+    throw createPumpSwapError(
+      'pumpswap_pool_unresolved',
+      `PumpSwap pool orientation did not match ${baseMint.toBase58()}`,
+      plan.sourceClassification,
+    );
+  }
 
   try {
-    if (isBuy) {
+    if (isBuy && orientation === 'token_base') {
       const quote = buyQuoteInput({
         quote: amountIn,
         slippage: slippagePct,
@@ -308,7 +339,7 @@ export async function executePumpSwap(args: {
         actualOutputRaw: quote.base,
       });
       instructions = await PUMP_AMM_SDK.buyQuoteInput(resolved.state, amountIn, slippagePct);
-    } else {
+    } else if (!isBuy && orientation === 'token_base') {
       const quote = sellBaseInput({
         base: amountIn,
         slippage: slippagePct,
@@ -328,6 +359,46 @@ export async function executePumpSwap(args: {
         actualOutputRaw: quote.uiQuote,
       });
       instructions = await PUMP_AMM_SDK.sellBaseInput(resolved.state, amountIn, slippagePct);
+    } else if (isBuy && orientation === 'token_quote') {
+      const quote = sellBaseInput({
+        base: amountIn,
+        slippage: slippagePct,
+        baseReserve: resolved.state.poolBaseAmount,
+        quoteReserve: resolved.state.poolQuoteAmount,
+        globalConfig: resolved.state.globalConfig,
+        baseMintAccount: resolved.state.baseMintAccount,
+        baseMint: resolved.state.pool.baseMint,
+        coinCreator: resolved.state.pool.coinCreator,
+        creator: resolved.state.pool.creator,
+        feeConfig: resolved.state.feeConfig,
+      });
+      quotedOutputRaw = quote.uiQuote.toString();
+      const expectedAtSpot = resolved.state.poolQuoteAmount.mul(amountIn).div(resolved.state.poolBaseAmount);
+      priceImpactPct = computePriceImpactPct({
+        expectedOutputRaw: expectedAtSpot,
+        actualOutputRaw: quote.uiQuote,
+      });
+      instructions = await PUMP_AMM_SDK.sellBaseInput(resolved.state, amountIn, slippagePct);
+    } else {
+      const quote = buyQuoteInput({
+        quote: amountIn,
+        slippage: slippagePct,
+        baseReserve: resolved.state.poolBaseAmount,
+        quoteReserve: resolved.state.poolQuoteAmount,
+        globalConfig: resolved.state.globalConfig,
+        baseMintAccount: resolved.state.baseMintAccount,
+        baseMint: resolved.state.pool.baseMint,
+        coinCreator: resolved.state.pool.coinCreator,
+        creator: resolved.state.pool.creator,
+        feeConfig: resolved.state.feeConfig,
+      });
+      quotedOutputRaw = quote.base.toString();
+      const expectedAtSpot = resolved.state.poolBaseAmount.mul(amountIn).div(resolved.state.poolQuoteAmount);
+      priceImpactPct = computePriceImpactPct({
+        expectedOutputRaw: expectedAtSpot,
+        actualOutputRaw: quote.base,
+      });
+      instructions = await PUMP_AMM_SDK.buyQuoteInput(resolved.state, amountIn, slippagePct);
     }
   } catch (error) {
     throw createPumpSwapError(
