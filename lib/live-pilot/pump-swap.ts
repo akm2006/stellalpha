@@ -19,6 +19,7 @@ import {
 } from '@pump-fun/pump-swap-sdk';
 import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 import {
+  extractPumpSwapCandidatePools,
   getLivePilotPumpSwapCandidatePools,
   isPumpSwapSource,
 } from '@/lib/live-pilot/pump-swap-cache';
@@ -174,6 +175,18 @@ function poolMatchesPlan(poolState: any, baseMint: string) {
     && poolState?.quoteMint?.toBase58?.() === SOL_MINT;
 }
 
+async function fetchLeaderTransactionForPoolCandidates(connection: Connection, signature: string) {
+  try {
+    return await connection.getParsedTransaction(signature, {
+      commitment: 'confirmed',
+      maxSupportedTransactionVersion: 0,
+    });
+  } catch (error) {
+    console.warn('[LIVE_PILOT_PUMPSWAP] Failed to fetch leader transaction for pool resolution:', error);
+    return null;
+  }
+}
+
 async function resolvePumpSwapPool(args: {
   connection: Connection;
   signature: string | null | undefined;
@@ -182,23 +195,44 @@ async function resolvePumpSwapPool(args: {
 }) {
   const sdk = new OnlinePumpAmmSdk(args.connection);
   const candidateSet = new Set(getLivePilotPumpSwapCandidatePools(args.signature));
+  const tried = new Set<string>();
 
   candidateSet.add(canonicalPumpPoolPda(args.baseMint).toBase58());
   candidateSet.add(poolV2Pda(args.baseMint).toBase58());
 
-  for (const candidate of candidateSet) {
-    try {
-      const pool = new PublicKey(candidate);
-      const state = await sdk.swapSolanaState(pool, args.user);
-      if (poolMatchesPlan(state.pool, args.baseMint.toBase58())) {
-        return { pool, state };
+  const tryResolveCandidates = async () => {
+    for (const candidate of candidateSet) {
+      if (tried.has(candidate)) {
+        continue;
       }
-    } catch {
-      // PumpSwap instructions contain many non-pool accounts; skip anything that cannot decode as a pool.
+      tried.add(candidate);
+
+      try {
+        const pool = new PublicKey(candidate);
+        const state = await sdk.swapSolanaState(pool, args.user);
+        if (poolMatchesPlan(state.pool, args.baseMint.toBase58())) {
+          return { pool, state };
+        }
+      } catch {
+        // PumpSwap instructions contain many non-pool accounts; skip anything that cannot decode as a pool.
+      }
+    }
+    return null;
+  };
+
+  const cachedResolved = await tryResolveCandidates();
+  if (cachedResolved) {
+    return cachedResolved;
+  }
+
+  if (args.signature) {
+    const rawTx = await fetchLeaderTransactionForPoolCandidates(args.connection, args.signature);
+    for (const candidate of extractPumpSwapCandidatePools(rawTx)) {
+      candidateSet.add(candidate);
     }
   }
 
-  return null;
+  return tryResolveCandidates();
 }
 
 function computePriceImpactPct(args: {

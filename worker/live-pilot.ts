@@ -135,6 +135,25 @@ function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function logRedisIntentDecision(
+  level: 'warn' | 'log',
+  reason: string,
+  message: LivePilotRedisStreamMessage,
+  extra: string = '',
+) {
+  const text =
+    `[LIVE_PILOT_REDIS_DECISION] reason=${reason} stream=${message.streamId} `
+    + `intent=${message.payload.intentId} wallet=${message.payload.walletAlias} `
+    + `leader=${message.payload.starTradeSignature || 'unknown'} type=${message.payload.leaderType || 'unknown'}`
+    + (extra ? ` ${extra}` : '');
+
+  if (level === 'warn') {
+    console.warn(text);
+  } else {
+    console.log(text);
+  }
+}
+
 function scheduleQueueDrain() {
   if (isShuttingDown || isQueueDrainScheduled || Date.now() < queueBackoffUntil) {
     return;
@@ -636,6 +655,7 @@ async function processRedisIntentMessage(
   const wallet = findPilotWalletByAlias(config, trade.wallet_alias);
 
   if (!wallet || !wallet.isEnabled || !wallet.isComplete || !wallet.hasSecret) {
+    logRedisIntentDecision('warn', 'wallet_not_ready', message);
     await publishLivePilotRedisAudit({
       source: 'redis_intent_skipped',
       reason: 'wallet_not_ready',
@@ -650,6 +670,7 @@ async function processRedisIntentMessage(
   const walletControl = controlSnapshot.wallets.find((row) => row.scope_key === wallet.alias);
   const isLiquidationTrade = trade.trigger_kind === 'liquidation';
   if (!isLiquidationTrade && (controlSnapshot.global.kill_switch_active || walletControl?.kill_switch_active)) {
+    logRedisIntentDecision('warn', 'kill_switch_active', message);
     await publishLivePilotRedisAudit({
       source: 'redis_intent_skipped',
       reason: 'kill_switch_active',
@@ -662,6 +683,11 @@ async function processRedisIntentMessage(
   }
 
   if (!isLiquidationTrade && (controlSnapshot.global.is_paused || walletControl?.is_paused)) {
+    logRedisIntentDecision(
+      'log',
+      controlSnapshot.global.is_paused ? 'global_paused' : 'wallet_paused',
+      message,
+    );
     await publishLivePilotRedisAudit({
       source: 'redis_intent_skipped',
       reason: controlSnapshot.global.is_paused ? 'global_paused' : 'wallet_paused',
@@ -675,6 +701,7 @@ async function processRedisIntentMessage(
 
   const staleBuy = shouldSkipStaleBuyAtExecution(trade);
   if (staleBuy.stale && message.payload.source !== 'db_mirror') {
+    logRedisIntentDecision('warn', 'stale_buy', message, `ageMs=${Math.round(staleBuy.ageMs)}`);
     await publishLivePilotRedisAudit({
       source: 'redis_intent_skipped',
       reason: 'stale_buy',
@@ -724,6 +751,7 @@ async function processRedisIntentMessage(
   const redisLockOwner = `${redisConsumerName}:${message.streamId}`;
   const lockAcquired = await acquireLivePilotRedisWalletLock(wallet.alias, redisLockOwner);
   if (!lockAcquired) {
+    logRedisIntentDecision('warn', 'wallet_busy', message);
     await publishLivePilotRedisAudit({
       source: 'redis_intent_deferred',
       reason: 'wallet_busy',

@@ -1,4 +1,10 @@
 import { RawTrade } from '@/lib/trade-parser';
+import {
+  collectSolanaAccountKeys,
+  collectSolanaInstructions,
+  normalizePublicKey,
+  resolveSolanaInstructionProgramId,
+} from '@/lib/ingestion/solana-raw-instructions';
 
 const METEORA_PROGRAM_IDS = new Set([
   'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', // Meteora DLMM
@@ -73,17 +79,30 @@ function collectStringValues(value: unknown, output: Set<string>) {
 
 function collectProgramIds(raw: any) {
   const output = new Set<string>();
+  const accountKeys = collectSolanaAccountKeys(raw);
   collectStringValues(raw?.top_level_program_ids, output);
   collectStringValues(raw?.inner_program_ids, output);
   collectStringValues(raw?.__programIds, output);
   collectStringValues(raw?.protocol?.address, output);
   collectStringValues(raw?.source_protocol?.address, output);
   collectStringValues(raw?.actions?.map((entry: any) => entry?.source_protocol?.address), output);
-  collectStringValues(raw?.transaction?.message?.accountKeys?.map((entry: any) => entry?.pubkey || entry), output);
+  collectStringValues(accountKeys, output);
   collectStringValues(raw?.transaction?.message?.instructions?.map((entry: any) => entry?.programId), output);
-  collectStringValues(raw?.accountKeys?.map((entry: any) => entry?.pubkey || entry), output);
   collectStringValues(raw?.message?.instructions?.map((entry: any) => entry?.programId), output);
-  collectStringValues(raw?.instructions?.map((entry: any) => entry?.programId || entry?.programIdIndex), output);
+
+  for (const instruction of collectSolanaInstructions(raw)) {
+    const programId = resolveSolanaInstructionProgramId(instruction, accountKeys);
+    if (programId) {
+      output.add(programId);
+      continue;
+    }
+
+    const direct = normalizePublicKey(instruction?.programId);
+    if (direct) {
+      output.add(direct);
+    }
+  }
+
   return [...output].filter((entry) => entry.length >= 32 && entry.length <= 44);
 }
 

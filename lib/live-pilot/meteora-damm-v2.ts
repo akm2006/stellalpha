@@ -10,6 +10,7 @@ import {
 import {
   CpAmm,
   getCurrentPoint,
+  getTokenProgram,
   SwapMode,
   type PoolState,
 } from '@meteora-ag/cp-amm-sdk';
@@ -157,27 +158,45 @@ async function resolveMeteoraDammV2Pool(args: {
   outputMint: string;
 }) {
   const candidateSet = new Set(getLivePilotMeteoraDammV2CandidatePools(args.signature));
+  const tried = new Set<string>();
 
-  if (candidateSet.size === 0 && args.signature) {
-    const rawTx = await fetchLeaderTransactionForPoolCandidates(args.connection, args.signature);
-    for (const candidate of extractMeteoraDammV2CandidatePools(rawTx)) {
-      candidateSet.add(candidate);
+  const tryResolveCandidates = async () => {
+    for (const candidate of candidateSet) {
+      if (tried.has(candidate)) {
+        continue;
+      }
+      tried.add(candidate);
+
+      try {
+        const pool = new PublicKey(candidate);
+        const poolState = await args.cpAmm.fetchPoolState(pool);
+        if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
+          return { pool, poolState };
+        }
+      } catch {
+        // Candidate account lists contain mints, vaults, programs, and users too.
+      }
     }
+    return null;
+  };
+
+  const cachedResolved = await tryResolveCandidates();
+  if (cachedResolved) {
+    return cachedResolved;
   }
 
-  for (const candidate of candidateSet) {
+  if (args.signature) {
     try {
-      const pool = new PublicKey(candidate);
-      const poolState = await args.cpAmm.fetchPoolState(pool);
-      if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
-        return { pool, poolState };
+      const rawTx = await fetchLeaderTransactionForPoolCandidates(args.connection, args.signature);
+      for (const candidate of extractMeteoraDammV2CandidatePools(rawTx)) {
+        candidateSet.add(candidate);
       }
     } catch {
-      // Candidate account lists contain mints, vaults, programs, and users too.
+      // fetchLeaderTransactionForPoolCandidates already logs transport failures.
     }
   }
 
-  return null;
+  return tryResolveCandidates();
 }
 
 export function shouldUseMeteoraDammV2ForBuy(plan: {
@@ -293,6 +312,11 @@ export async function executeMeteoraDammV2Swap(args: {
 
   let transaction: Transaction;
   try {
+    const tokenAProgram = (resolved.poolState as any).tokenAProgram
+      || getTokenProgram((resolved.poolState as any).tokenAFlag);
+    const tokenBProgram = (resolved.poolState as any).tokenBProgram
+      || getTokenProgram((resolved.poolState as any).tokenBFlag);
+
     transaction = await cpAmm.swap2({
       payer: keypair.publicKey,
       pool: resolved.pool,
@@ -302,8 +326,8 @@ export async function executeMeteoraDammV2Swap(args: {
       tokenBMint: (resolved.poolState as any).tokenBMint,
       tokenAVault: (resolved.poolState as any).tokenAVault,
       tokenBVault: (resolved.poolState as any).tokenBVault,
-      tokenAProgram: (resolved.poolState as any).tokenAProgram,
-      tokenBProgram: (resolved.poolState as any).tokenBProgram,
+      tokenAProgram,
+      tokenBProgram,
       referralTokenAccount: null,
       poolState: resolved.poolState,
       swapMode: SwapMode.ExactIn,

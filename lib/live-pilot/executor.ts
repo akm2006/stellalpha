@@ -1741,9 +1741,21 @@ async function noteDirectFallbackToJupiter(args: {
   attemptId: string;
   mode: string;
   error: any;
+  trade: Pick<PilotTradeRow, 'id' | 'leader_type' | 'star_trade_signature'>;
+  walletAlias: string;
 }) {
   const code = String(args.error?.code ?? 'direct_unhandled');
   const message = args.error?.message || 'Direct venue path unavailable; falling back to Jupiter';
+  const sourceClassification = args.error?.sourceClassification as TradeSourceClassification | undefined;
+  const sourceDebug = sourceClassification
+    ? ` source_venue=${sourceClassification.venue} source_protocols=${sourceClassification.protocols?.join(',') || 'none'}`
+      + ` source_programs=${sourceClassification.programIds.slice(0, 8).join(',') || 'none'}`
+    : '';
+  console.warn(
+    `[LIVE_PILOT_DIRECT_FALLBACK] trade=${args.trade.id} wallet=${args.walletAlias} `
+    + `type=${args.trade.leader_type} leader=${args.trade.star_trade_signature || 'unknown'} `
+    + `mode=${args.mode} fallback=jupiter code=${code} message=${message}${sourceDebug}`,
+  );
   await updatePilotTradeAttempt(args.attemptId, {
     execution_mode: `${args.mode}_then_managed_order_execute`,
     error_code: code,
@@ -1829,6 +1841,8 @@ export async function executePilotTrade(
           attemptId: attempt.id,
           mode: 'meteora_damm_v2_direct',
           error: directError,
+          trade,
+          walletAlias: wallet.alias,
         });
       }
     }
@@ -1851,6 +1865,8 @@ export async function executePilotTrade(
           attemptId: attempt.id,
           mode: 'pump_swap_direct',
           error: directError,
+          trade,
+          walletAlias: wallet.alias,
         });
       }
     }
@@ -1885,6 +1901,8 @@ export async function executePilotTrade(
               attemptId: attempt.id,
               mode: 'pump_fun_direct_pumpswap_direct',
               error: pumpSwapError,
+              trade,
+              walletAlias: wallet.alias,
             });
           }
         } else {
@@ -1895,6 +1913,8 @@ export async function executePilotTrade(
             attemptId: attempt.id,
             mode: 'pump_fun_direct',
             error: directError,
+            trade,
+            walletAlias: wallet.alias,
           });
         }
       }
