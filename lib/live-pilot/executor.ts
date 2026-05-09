@@ -26,6 +26,7 @@ import {
   updatePilotTrade,
   updatePilotTradeIfStatus,
 } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import { setRedisSubmittedTrade } from '@/lib/live-pilot/redis/state';
 import {
   getCopyPositionState,
   reconcileCopiedPositionAmount,
@@ -281,11 +282,17 @@ export function isRetryableSellExecutionFailure(
   const lower = message.toLowerCase();
   return (
     code === '15001'
+    || code === '6002'
     || code === '6001'
     || code === '6017'
     || lower.includes('15001')
+    || lower.includes('6002')
     || lower.includes('6001')
     || lower.includes('6017')
+    || lower.includes('"custom":6002')
+    || lower.includes('custom program error: 0x1772')
+    || lower.includes('exceeded slippage')
+    || lower.includes('exceededslippage')
     || lower.includes('slippage tolerance exceeded')
     || lower.includes('slippage limit exceeded')
     || lower.includes('slippagelimitexceeded')
@@ -1397,6 +1404,22 @@ async function executeMeteoraDammV2SwapAndRecord(args: {
     );
   }
 
+  const meteoraSubmittedPatch: Partial<PilotTradeRow> = {
+    status: 'submitted',
+    quote_received_at: result.quoteReceivedAt,
+    quoted_input_amount: result.quotedInputAmount,
+    quoted_output_amount: result.quotedOutputAmount,
+    quoted_input_amount_raw: result.quotedInputRaw,
+    price_impact_pct: result.priceImpactPct,
+    tx_built_at: result.txBuiltAt,
+    tx_submitted_at: result.txSubmittedAt,
+    tx_signature: result.signature,
+    actual_input_amount: result.quotedInputAmount,
+    actual_output_amount: result.quotedOutputAmount,
+    next_retry_at: null,
+    error_message: null,
+  };
+
   await Promise.all([
     updatePilotTradeAttempt(attempt.id, {
       execution_mode: 'meteora_damm_v2_direct',
@@ -1414,26 +1437,13 @@ async function executeMeteoraDammV2SwapAndRecord(args: {
       error_code: null,
       error_message: null,
     }),
-    updatePilotTrade(trade.id, {
-      status: 'submitted',
-      quote_received_at: result.quoteReceivedAt,
-      quoted_input_amount: result.quotedInputAmount,
-      quoted_output_amount: result.quotedOutputAmount,
-      quoted_input_amount_raw: result.quotedInputRaw,
-      price_impact_pct: result.priceImpactPct,
-      tx_built_at: result.txBuiltAt,
-      tx_submitted_at: result.txSubmittedAt,
-      tx_signature: result.signature,
-      actual_input_amount: result.quotedInputAmount,
-      actual_output_amount: result.quotedOutputAmount,
-      next_retry_at: null,
-      error_message: null,
-    }),
+    updatePilotTrade(trade.id, meteoraSubmittedPatch),
     updatePilotRuntimeState(wallet.alias, {
       last_submitted_tx_signature: result.signature,
       last_error: null,
     }),
   ]);
+  await rememberRedisSubmittedTradeIfNeeded(trade, meteoraSubmittedPatch);
 
   recordSubmittedSwapInCache({
     ownerAddress: wallet.publicKey,
@@ -1529,6 +1539,22 @@ async function executePumpFunSwapAndRecord(args: {
     }
   }
 
+  const pumpFunSubmittedPatch: Partial<PilotTradeRow> = {
+    status: 'submitted',
+    quote_received_at: result.quoteReceivedAt,
+    quoted_input_amount: result.quotedInputAmount,
+    quoted_output_amount: result.quotedOutputAmount,
+    quoted_input_amount_raw: result.quotedInputRaw,
+    price_impact_pct: result.priceImpactPct,
+    tx_built_at: result.txBuiltAt,
+    tx_submitted_at: result.txSubmittedAt,
+    tx_signature: result.signature,
+    actual_input_amount: result.quotedInputAmount,
+    actual_output_amount: result.quotedOutputAmount,
+    next_retry_at: null,
+    error_message: null,
+  };
+
   await Promise.all([
     updatePilotTradeAttempt(attempt.id, {
       execution_mode: 'pump_fun_direct',
@@ -1546,26 +1572,13 @@ async function executePumpFunSwapAndRecord(args: {
       error_code: null,
       error_message: null,
     }),
-    updatePilotTrade(trade.id, {
-      status: 'submitted',
-      quote_received_at: result.quoteReceivedAt,
-      quoted_input_amount: result.quotedInputAmount,
-      quoted_output_amount: result.quotedOutputAmount,
-      quoted_input_amount_raw: result.quotedInputRaw,
-      price_impact_pct: result.priceImpactPct,
-      tx_built_at: result.txBuiltAt,
-      tx_submitted_at: result.txSubmittedAt,
-      tx_signature: result.signature,
-      actual_input_amount: result.quotedInputAmount,
-      actual_output_amount: result.quotedOutputAmount,
-      next_retry_at: null,
-      error_message: null,
-    }),
+    updatePilotTrade(trade.id, pumpFunSubmittedPatch),
     updatePilotRuntimeState(wallet.alias, {
       last_submitted_tx_signature: result.signature,
       last_error: null,
     }),
   ]);
+  await rememberRedisSubmittedTradeIfNeeded(trade, pumpFunSubmittedPatch);
 
   recordSubmittedSwapInCache({
     ownerAddress: wallet.publicKey,
@@ -1579,6 +1592,17 @@ async function executePumpFunSwapAndRecord(args: {
   });
   await maybeAlertTradeSubmitted(trade, wallet.alias, result.signature);
   return { outcome: 'submitted' as const, signature: result.signature };
+}
+
+async function rememberRedisSubmittedTradeIfNeeded(
+  trade: PilotTradeRow,
+  patch: Partial<PilotTradeRow>,
+) {
+  if (!trade.id.startsWith('redis:') || patch.status !== 'submitted') {
+    return;
+  }
+
+  await setRedisSubmittedTrade({ trade, patch });
 }
 
 async function executePumpSwapAndRecord(args: {
@@ -1662,6 +1686,22 @@ async function executePumpSwapAndRecord(args: {
     }
   }
 
+  const tradeSubmittedPatch: Partial<PilotTradeRow> = {
+    status: 'submitted',
+    quote_received_at: result.quoteReceivedAt,
+    quoted_input_amount: result.quotedInputAmount,
+    quoted_output_amount: result.quotedOutputAmount,
+    quoted_input_amount_raw: result.quotedInputRaw,
+    price_impact_pct: result.priceImpactPct,
+    tx_built_at: result.txBuiltAt,
+    tx_submitted_at: result.txSubmittedAt,
+    tx_signature: result.signature,
+    actual_input_amount: result.quotedInputAmount,
+    actual_output_amount: result.quotedOutputAmount,
+    next_retry_at: null,
+    error_message: null,
+  };
+
   await Promise.all([
     updatePilotTradeAttempt(attempt.id, {
       execution_mode: 'pump_swap_direct',
@@ -1679,26 +1719,13 @@ async function executePumpSwapAndRecord(args: {
       error_code: null,
       error_message: null,
     }),
-    updatePilotTrade(trade.id, {
-      status: 'submitted',
-      quote_received_at: result.quoteReceivedAt,
-      quoted_input_amount: result.quotedInputAmount,
-      quoted_output_amount: result.quotedOutputAmount,
-      quoted_input_amount_raw: result.quotedInputRaw,
-      price_impact_pct: result.priceImpactPct,
-      tx_built_at: result.txBuiltAt,
-      tx_submitted_at: result.txSubmittedAt,
-      tx_signature: result.signature,
-      actual_input_amount: result.quotedInputAmount,
-      actual_output_amount: result.quotedOutputAmount,
-      next_retry_at: null,
-      error_message: null,
-    }),
+    updatePilotTrade(trade.id, tradeSubmittedPatch),
     updatePilotRuntimeState(wallet.alias, {
       last_submitted_tx_signature: result.signature,
       last_error: null,
     }),
   ]);
+  await rememberRedisSubmittedTradeIfNeeded(trade, tradeSubmittedPatch);
 
   recordSubmittedSwapInCache({
     ownerAddress: wallet.publicKey,
@@ -2167,6 +2194,22 @@ export async function executePilotTrade(
       throw executeError;
     }
 
+    const jupiterSubmittedPatch: Partial<PilotTradeRow> = {
+      status: 'submitted',
+      quote_received_at: quoteReceivedAt,
+      quoted_input_amount: quotedInputAmount,
+      quoted_output_amount: quotedOutputAmount,
+      quoted_input_amount_raw: quotedInputRaw,
+      price_impact_pct: priceImpactPct,
+      tx_built_at: txBuiltAt,
+      tx_submitted_at: txSubmittedAt,
+      tx_signature: txSignature,
+      actual_input_amount: actualInputAmount,
+      actual_output_amount: actualOutputAmount,
+      next_retry_at: null,
+      error_message: null,
+    };
+
     await Promise.all([
       updatePilotTradeAttempt(attempt.id, {
         status: 'submitted',
@@ -2184,26 +2227,13 @@ export async function executePilotTrade(
         error_code: null,
         error_message: null,
       }),
-      updatePilotTrade(trade.id, {
-        status: 'submitted',
-        quote_received_at: quoteReceivedAt,
-        quoted_input_amount: quotedInputAmount,
-        quoted_output_amount: quotedOutputAmount,
-        quoted_input_amount_raw: quotedInputRaw,
-        price_impact_pct: priceImpactPct,
-        tx_built_at: txBuiltAt,
-        tx_submitted_at: txSubmittedAt,
-        tx_signature: txSignature,
-        actual_input_amount: actualInputAmount,
-        actual_output_amount: actualOutputAmount,
-        next_retry_at: null,
-        error_message: null,
-      }),
+      updatePilotTrade(trade.id, jupiterSubmittedPatch),
       updatePilotRuntimeState(wallet.alias, {
         last_submitted_tx_signature: txSignature,
         last_error: null,
       }),
     ]);
+    await rememberRedisSubmittedTradeIfNeeded(trade, jupiterSubmittedPatch);
     recordSubmittedSwapInCache({
       ownerAddress: wallet.publicKey,
       inputMint: plan.inputMint,

@@ -109,17 +109,23 @@ RESUME_STATE.md
 
 # Cursor IDE rules
 .cursorrules
+.cursor/
 
 # Aider agent configuration
 .aider*
 
 # Internal agent / planning files
 AGENTS.md
+CLAUDE.md
+GEMINI.md
 ai/
+.codex/
+.gemini/
 context/
 experiments/
 
-CLAUDE.md
+# Generated local knowledge graph.
+graphify-out/
 
 # Carbon parser build artifacts (Rust source is tracked in carbon-parser/)
 carbon-parser/target/

@@ -33,6 +33,7 @@ export type LivePilotRedisIntentPayload = {
   leaderPositionAfter: string | null;
   copiedPositionBefore: string | null;
   copiedPositionAfter: string | null;
+  attemptCount: string | null;
   sourceClassificationJson: string | null;
   meteoraDammV2CandidatePools: string | null;
   pumpSwapCandidatePools: string | null;
@@ -53,6 +54,11 @@ function stringifyNullable(value: unknown) {
 function parseNullable(value: unknown) {
   const text = typeof value === 'string' ? value : String(value ?? '');
   return text === '' ? null : text;
+}
+
+function parseAttemptCount(value: string | null) {
+  const parsed = Number(value || 1);
+  return Number.isFinite(parsed) ? Math.max(parsed, 1) : 1;
 }
 
 export function buildLivePilotIntentId(trade: Pick<PilotTradeRow, 'wallet_alias' | 'star_trade_signature' | 'leader_type' | 'id'>) {
@@ -93,6 +99,7 @@ export function pilotTradeToRedisIntent(
     leaderPositionAfter: stringifyNullable(trade.leader_position_after) || null,
     copiedPositionBefore: stringifyNullable(trade.copied_position_before) || null,
     copiedPositionAfter: stringifyNullable(trade.copied_position_after) || null,
+    attemptCount: stringifyNullable(trade.attempt_count) || null,
     sourceClassificationJson: metadata.sourceClassification
       ? JSON.stringify(metadata.sourceClassification)
       : null,
@@ -144,7 +151,7 @@ export function redisIntentToPilotTrade(payload: LivePilotRedisIntentPayload): P
     deployable_sol_at_intent: null,
     sol_price_at_intent: null,
     next_retry_at: null,
-    attempt_count: 1,
+    attempt_count: parseAttemptCount(payload.attemptCount),
     winning_attempt_id: null,
     status: 'queued',
     skip_reason: null,
@@ -187,6 +194,7 @@ function decodeIntent(streamId: string, message: Record<string, unknown>): LiveP
       leaderPositionAfter: parseNullable(message.leaderPositionAfter),
       copiedPositionBefore: parseNullable(message.copiedPositionBefore),
       copiedPositionAfter: parseNullable(message.copiedPositionAfter),
+      attemptCount: parseNullable(message.attemptCount),
       sourceClassificationJson: parseNullable(message.sourceClassificationJson),
       meteoraDammV2CandidatePools: parseNullable(message.meteoraDammV2CandidatePools),
       pumpSwapCandidatePools: parseNullable(message.pumpSwapCandidatePools),

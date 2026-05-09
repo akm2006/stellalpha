@@ -42,9 +42,16 @@ import {
   mirrorRedisTradeEvent,
 } from '@/lib/live-pilot/redis/state';
 import {
+  pilotTradeToRedisIntent,
+  publishLivePilotRedisIntent,
+} from '@/lib/live-pilot/redis/streams';
+import {
   acquireLivePilotRedisWalletLock,
   releaseLivePilotRedisWalletLock,
 } from '@/lib/live-pilot/redis/locks';
+import { getLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
+import { getLivePilotMeteoraDammV2CandidatePools } from '@/lib/live-pilot/meteora-damm-v2-cache';
+import { getLivePilotPumpSwapCandidatePools } from '@/lib/live-pilot/pump-swap-cache';
 
 const BLOCK_EXPIRY_SAFETY_BUFFER = 10;
 const PENDING_EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
@@ -60,6 +67,15 @@ function emptyRecoverySummary(scanned = 0) {
     pending: 0,
     busy: 0,
   };
+}
+
+function classifyOnchainFailureCode(serializedErr: string) {
+  const lower = serializedErr.toLowerCase();
+  if (lower.includes('"custom":6002') || lower.includes('6002')) return '6002';
+  if (lower.includes('15001')) return '15001';
+  if (lower.includes('6001')) return '6001';
+  if (lower.includes('6017')) return '6017';
+  return 'chain_failure';
 }
 
 async function ensureRecoveryLock(walletAlias: string, lockOwner: string) {
@@ -476,13 +492,68 @@ export async function recoverRedisSubmittedPilotTrades(args: {
       }
 
       if (status.err) {
+        const serializedErr = JSON.stringify(status.err);
+        const code = classifyOnchainFailureCode(serializedErr);
+        const message = `Submitted transaction failed on chain: ${serializedErr}`;
+        const retryable =
+          isRetryableExecutionCode(code)
+          || isRetryableSellExecutionFailure(trade, code, message)
+          || isRetryableBuyExecutionFailure(trade, code, message);
+        const maxAttempts = getPilotTradeMaxAttempts(wallet, trade);
+
         await mirrorRedisTradeEvent({
           source: 'redis_submitted_recovery_failed_onchain',
           tradeId: trade.id,
           walletAlias: wallet.alias,
           txSignature: signature,
-          errorMessage: JSON.stringify(status.err),
+          errorCode: code,
+          errorMessage: message,
         });
+
+        if (retryable && trade.attempt_count < maxAttempts) {
+          const nextTrade = {
+            ...trade,
+            status: 'queued' as const,
+            attempt_count: trade.attempt_count + 1,
+            tx_signature: null,
+            tx_submitted_at: null,
+            tx_confirmed_at: null,
+            confirmation_slot: null,
+            next_retry_at: new Date(
+              Date.now() + getTradeRetryDelayMs(trade, trade.attempt_count, code, message),
+            ).toISOString(),
+            error_message: message,
+          };
+          const sourceClassification = getLivePilotSourceClassification(nextTrade.star_trade_signature);
+          const payload = pilotTradeToRedisIntent(nextTrade, 'recovery', {
+            sourceClassification,
+            meteoraDammV2CandidatePools: getLivePilotMeteoraDammV2CandidatePools(nextTrade.star_trade_signature),
+            pumpSwapCandidatePools: getLivePilotPumpSwapCandidatePools(nextTrade.star_trade_signature),
+          });
+          const publishResult = await publishLivePilotRedisIntent(payload, {
+            dedupeAlreadyReserved: true,
+          });
+          await mirrorRedisTradeEvent({
+            source: 'redis_submitted_recovery_requeued',
+            tradeId: trade.id,
+            walletAlias: wallet.alias,
+            txSignature: signature,
+            nextAttemptCount: nextTrade.attempt_count,
+            nextRetryAt: nextTrade.next_retry_at,
+            published: publishResult.published,
+            streamId: 'streamId' in publishResult ? publishResult.streamId : '',
+            reason: 'reason' in publishResult ? publishResult.reason : '',
+            errorCode: code,
+          });
+          await deleteRedisSubmittedTrade(record.key);
+          if (publishResult.published) {
+            summary.requeued += 1;
+          } else {
+            summary.failed += 1;
+          }
+          continue;
+        }
+
         await deleteRedisSubmittedTrade(record.key);
         summary.failed += 1;
         continue;
@@ -605,7 +676,7 @@ export async function recoverSubmittedPilotTrades(args: {
 
         if (status?.err) {
           const serializedErr = JSON.stringify(status.err);
-          const code = serializedErr.includes('15001') ? '15001' : 'chain_failure';
+          const code = classifyOnchainFailureCode(serializedErr);
           const message = `Submitted transaction failed on chain: ${serializedErr}`;
     const retryable =
       isRetryableExecutionCode(code)
