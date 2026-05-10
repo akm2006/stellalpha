@@ -1,0 +1,149 @@
+\documentclass[12pt,a4paper]{article}
+
+% ------------------
+% Packages
+% ------------------
+\usepackage[margin=1in,headheight=14pt]{geometry}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{parskip}    % Fixes vertical stretching by using fixed paragraph spacing
+\usepackage[section]{placeins} % Prevents tables from floating into next sections
+
+% Bibliography
+\usepackage[backend=biber,style=numeric]{biblatex}
+\addbibresource{references.bib}
+
+% Define professional color scheme (matches app theme)
+\definecolor{primarycolor}{RGB}{16, 185, 129}    % Emerald-500
+\definecolor{accentcolor}{RGB}{5, 150, 105}      % Emerald-600
+\definecolor{linkcolor}{RGB}{16, 185, 129}       % Emerald-500
+
+\setstretch{1.1} % Slightly tighter line spacing for technical feel
+\hypersetup{
+  colorlinks=true,
+  linkcolor=primarycolor,
+  urlcolor=linkcolor,
+  citecolor=primarycolor
+}
+
+% Section formatting
+\titleformat{\section}
+  {\color{primarycolor}\Large\bfseries}
+  {\thesection}{1em}{}
+\titleformat{\subsection}
+  {\color{primarycolor}\large\bfseries}
+  {\thesubsection}{1em}{}
+
+% Prevent vertical justification gaps
+\raggedbottom
+
+% Better list spacing
+\setlist{itemsep=0.2em, topsep=0.2em, parsep=0em}
+
+% ------------------
+% Header & Footer
+% ------------------
+\pagestyle{fancy}
+\fancyhf{}
+
+% Header
+\fancyhead[L]{\small Whitepaper Version 1.3}
+\fancyhead[C]{}
+\fancyhead[R]{\small \url{www.stellalpha.xyz}}
+
+% Footer
+\fancyfoot[L]{\small Stellalpha}
+\fancyfoot[C]{}
+\fancyfoot[R]{\small Page \thepage\ of \pageref{LastPage}}
+
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% ------------------
+% Title Info
+% ------------------
+\title{
+\vspace{-1.5cm}
+\includegraphics[width=0.35\textwidth]{stellalpha_logo.png}\\[0.6cm]        
+\textbf{\Huge Stellalpha}\\[0.2cm]
+\Large High-Fidelity Non-Custodial Execution Layer for Solana\\[0.6cm]     
+\large Whitepaper
+}
+
+\author{}
+\date{
+Version 1.3\\
+May 2026
+}
+
+% ==================
+\begin{document}
+
+% ------------------
+% Title Page
+% ------------------
+\maketitle
+\thispagestyle{fancy}
+\vfill
+
+\begin{center}
+\small
+\url{www.stellalpha.vercel.app}
+\end{center}
+
+\newpage
+
+% ------------------
+% Table of Contents
+% ------------------
+\tableofcontents
+\newpage
+
+% ==================
+% Content Sections
+% ==================
+
+\input{sections/abstract}
+\FloatBarrier
+
+\input{sections/introduction}
+\input{sections/problem_statement}
+\FloatBarrier
+
+\input{sections/mathematical_models}
+\FloatBarrier
+
+% Architecture
+\input{sections/architecture}
+\input{sections/risk_mitigation}
+\FloatBarrier
+
+\input{sections/simulation}
+\FloatBarrier
+
+\input{sections/tokenomics}
+\input{sections/roadmap}
+\FloatBarrier
+
+\input{sections/competitive_analysis}
+\FloatBarrier
+
+\input{sections/team_legal}
+
+% ==================
+% References
+% ==================
+\clearpage
+\printbibliography
+
+\end{document}

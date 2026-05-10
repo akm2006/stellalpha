@@ -1,0 +1,57 @@
+\section{Protocol / Architecture Overview}
+
+Stellalpha is architected on the Solana blockchain using the Anchor Framework, optimized for sub-second execution and secure non-custodial capital management.
+
+\subsection{Non-Custodial Vault Enforcement}
+
+The foundation of the protocol is the User Vault system. Unlike custodial platforms, Stellalpha utilizes Program Derived Addresses (PDAs) to ensure that user capital never leaves the cryptographic control of the owner.
+\[
+\text{UserVault} = \text{seeds}[b"\text{user\_vault\_v1}", \text{user\_pubkey}]
+\]
+
+This architecture guarantees:
+\begin{itemize}
+  \item \textbf{Sovereignty}: The vault is program-owned but user-governed. Only the user can authorize withdrawals or re-allocate capital between strategy models.
+  \item \textbf{Security}: Funds are secured within the Solana Token Program's safety guarantees. The protocol can only execute trades through user-initialized vaults with predefined constraints.
+  \item \textbf{Constraint Enforcement}: The smart contract enforces strict execution rules, preventing unauthorized transfers or deviations from the selected copy model.
+\end{itemize}
+
+\subsection{Low-Latency Dual-Ingestion Engine}
+
+Execution speed is critical for minimizing slippage and maximizing replication accuracy. Stellalpha employs a high-performance dual-ingestion system to monitor the Star Trader network.
+
+\begin{itemize}
+  \item \textbf{Yellowstone gRPC}: Utilized for ultra-low latency, real-time transaction streaming directly from the validator network. This ensures that trade signals are captured within milliseconds of their inclusion in a block.
+  \item \textbf{Helius Webhooks}: Provides a robust secondary ingestion layer, ensuring redundant coverage and reliable transaction confirmation data.
+  \item \textbf{Custom Rust Parser}: A high-performance off-chain processing engine built in Rust that decodes raw Solana transaction data. It identifies complex trade intents (multi-hop swaps, liquidity provision) and converts them into actionable signal packets.
+\end{itemize}
+
+\subsection{Intent-Based Strategy Synthesis}
+
+Stellalpha moves beyond naive mirroring by synthesizing the \textit{strategic intent} of a trader. The protocol calculates the relative portfolio weight of every signal to determine the optimal allocation for the follower.
+
+\begin{itemize}
+  \item \textbf{Conviction Weighting}: Buy orders are sized based on the ratio of the trade value to the leader's available liquid equity.
+  \[
+  \text{ExecutionRatio} = \frac{\text{LeaderTradeValue}_{\text{USD}}}{\text{LeaderTotalBuyingPower}_{\text{USD}}}
+  \]
+  \item \textbf{Dynamic Normalization}: Execution is automatically adjusted based on the follower's specific risk settings and vault balance.
+\end{itemize}
+
+\subsection{The Strategy Registry}
+
+Users can select from a curated list of proprietary execution models, each designed for specific trader profiles:
+\begin{enumerate}
+  \item \textbf{Balanced Hybrid}: Protocol baseline that sets a safety envelope for capital while maintaining high conviction signals.
+  \item \textbf{Trader Ratio}: Direct replication of the leader's conviction signals based on liquid balance.
+  \item \textbf{Fixed \% Free Cash}: Optimized for compounding and high-frequency liquidity preservation.
+\end{enumerate}
+
+\subsection{Jupiter CPI Execution Engine}
+
+The protocol utilizes Jupiter's Cross-Program Invocation (CPI) interface for optimal routing and settlement.
+
+\begin{enumerate}
+  \item \textbf{Route Computation}: The ingestion engine calculates the optimal execution path via the Jupiter API to minimize price impact.
+  \item \textbf{CPI Execution}: The Stellalpha program invokes the Jupiter CPI to settle the swap. The \texttt{TraderState} PDA signs for the transaction via \texttt{invoke\_signed}, ensuring non-custodial integrity throughout the entire swap lifecycle.
+\end{enumerate}

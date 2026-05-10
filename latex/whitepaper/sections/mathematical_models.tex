@@ -1,0 +1,53 @@
+\section{Mathematical Execution Models}
+
+Stellalpha's core innovation is the decoupling of the \textit{signal} from the \textit{execution size}. While legacy systems use a static multiplier, Stellalpha utilizes five distinct mathematical models to synthesize the leader's intent into an optimized follower execution.
+
+\subsection{Model 1: Balanced Hybrid (Protocol Baseline)}
+
+The Balanced Hybrid model is designed for maximum strategy preservation with a strict safety envelope. It calculates the execution size by taking the leader's relative conviction and applying it within a user-defined liquid cash limit.
+
+\[
+\text{Size}_{\text{USD}} = \min\left( \text{Limit}_{\text{USD}}, \text{Limit}_{\text{USD}} \times \frac{\text{LeaderTradeValue}_{\text{USD}}}{\text{LeaderAvailableCash}_{\text{USD}}} \right)
+\]
+
+\textbf{Best For}: High-volatility meme-cycles and long-tail alpha where capital preservation is paramount.
+
+\subsection{Model 2: Trader Ratio (Direct Conviction)}
+
+This model directly replicates the leader's conviction signal. It scales the trade size based on the ratio of the follower's balance to the leader's balance at the moment of execution.
+
+\[
+\text{Size}_{\text{Follower}} = \text{Size}_{\text{Leader}} \times \frac{\text{Balance}_{\text{Follower}}}{\text{Balance}_{\text{Leader}}}
+\]
+
+\textbf{Best For}: Mirroring institutional-grade traders or portfolios with similar liquidity profiles.
+
+\subsection{Model 3: Fixed \% of Free Cash (Compounding)}
+
+An dynamic model that allocates a consistent percentage of the follower's current available liquid capital to every buy signal.
+
+\[
+\text{Size}_{\text{USD}} = \text{FreeCash}_{\text{Follower}} \times \text{ConfiguredPercentage}
+\]
+
+\textbf{Best For}: High-frequency traders where maintaining a consistent presence in every trade is the primary edge.
+
+\subsection{Model 4: Fixed \% of Starting Funds (Stable)}
+
+A conservative model that uses a percentage of the follower's initial starting capital as the base for every execution, regardless of current PnL.
+
+\[
+\text{Size}_{\text{USD}} = \text{InitialCapital}_{\text{Follower}} \times \text{ConfiguredPercentage}
+\]
+
+\textbf{Best For}: Stable participation and risk-parity strategies where drawdowns should not decay the entry size.
+
+\subsection{Model 5: Trader Buy \% With Cap (Risk-Bounded)}
+
+Replicates the leader's relative buy size but enforces a hard USD cap on any single entry to prevent over-exposure to illiquid assets.
+
+\[
+\text{Size}_{\text{USD}} = \min\left( \text{HardCap}_{\text{USD}}, \text{LeaderTradeValue}_{\text{USD}} \times \text{ScalingFactor} \right)
+\]
+
+\textbf{Best For}: Following traders with aggressive conviction who may occasionally size into positions that exceed the follower's risk tolerance.

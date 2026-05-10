@@ -518,6 +518,9 @@ export default function DemoVaultPage() {
     if (isConnected && walletAddress) {
       fetchVault();
       fetchStarTraders();
+    } else {
+      // Still need star traders for the default view
+      fetchStarTraders();
     }
   }, [isConnected, walletAddress, fetchVault, fetchStarTraders]);
   
@@ -716,69 +719,29 @@ export default function DemoVaultPage() {
       `}</style>
       <main className="cyber-vault-content w-full px-4 sm:px-5 py-4 pt-20">
         
-        {/* Not Connected */}
-        {!isConnected && (
-          <div className="cyber-panel max-w-lg mx-auto mt-8 border overflow-hidden animate-fade-up">
-            <div className="relative p-10 text-center overflow-hidden">
-              <div className="relative z-10">
-                <div className="w-14 h-14 mx-auto mb-5 border flex items-center justify-center" style={{ borderColor: 'rgba(0,255,133,0.35)', backgroundColor: '#050505' }}>
-                  <Wallet size={26} style={{ color: COLORS.acid }} />
-                </div>
-                <h2 className="text-lg font-semibold mb-2 tracking-tight">Connect Your Wallet</h2>
-                <p className="text-sm mb-6 leading-relaxed max-w-xs mx-auto" style={{ color: COLORS.data }}>Connect your Solana wallet to access your demo vault with $1,000 virtual USD</p>
-                <button
-                  onClick={openWalletModal}
-                  className="cyber-action-primary inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold transition-all duration-200 hover:opacity-90 active:scale-95 rounded-none"
-                  style={{ backgroundColor: COLORS.acid, color: '#050505' }}
-                >
-                  <Wallet size={15} />
-                  Connect Wallet
-                </button>
-              </div>
-            </div>
+        {/* Error */}
+        {error && (
+          <div className="cyber-panel cyber-system-alert border px-4 py-3 mb-3 flex items-center gap-3 text-sm text-red-300 bg-red-500/10 animate-fade-up">
+            <AlertCircle size={18} className="shrink-0 text-red-400" />
+            <span className="cyber-command hidden sm:inline text-[10px] text-red-400">System Alert</span>
+            <span className="min-w-0 flex-1">{error}</span>
+            <button
+              onClick={() => setError(null)}
+              className="cyber-icon-button ml-auto px-2 py-1 text-sm text-red-300 border border-red-500/30 hover:bg-red-500/10"
+              aria-label="Dismiss error"
+            >
+              x
+            </button>
           </div>
         )}
         
-        {/* Connected but Not Authenticated */}
-        {isConnected && !isAuthenticated && !authLoading && (
-          <div className="cyber-panel max-w-lg mx-auto mt-8 border overflow-hidden animate-fade-up">
-            <div className="relative p-10 text-center overflow-hidden">
-              <div className="relative z-10">
-                <div className="w-14 h-14 mx-auto mb-5 border flex items-center justify-center" style={{ borderColor: 'rgba(0,255,133,0.35)', backgroundColor: '#050505' }}>
-                  <LogIn size={26} style={{ color: COLORS.acid }} />
-                </div>
-                <h2 className="text-lg font-semibold mb-2 tracking-tight">Signature Required</h2>
-                <p className="text-sm mb-6 leading-relaxed max-w-xs mx-auto" style={{ color: COLORS.data }}>Sign a message with your wallet to verify ownership and access your vault.</p>
-                <button
-                  onClick={signIn}
-                  disabled={authLoading}
-                  className="cyber-action-primary inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold transition-all duration-200 hover:opacity-90 active:scale-95 disabled:opacity-50 rounded-none"
-                  style={{ backgroundColor: COLORS.acid, color: '#050505' }}
-                >
-                  {authLoading ? <Loader2 className="animate-spin" size={15} /> : <LogIn size={15} />}
-                  Sign In with Wallet
-                </button>
-              </div>
-            </div>
-          </div>
+        {/* Loading */}
+        {(loading || (isConnected && isAuthenticated && !hasCheckedVault)) && (
+          <PageLoader />
         )}
-        
-        {/* Auth Loading */}
-        {isConnected && authLoading && (
-          <div className="cyber-panel max-w-sm mx-auto mt-8 border overflow-hidden animate-fade-up">
-            <div className="flex flex-col items-center gap-4 p-8">
-              <div className="cyber-command text-[10px]" style={{ color: COLORS.acid }}>Wallet Check</div>
-              <Loader2 size={28} className="animate-spin" style={{ color: COLORS.acid }} />
-              <span className="text-sm" style={{ color: COLORS.data }}>Verifying wallet ownership...</span>
-              <div className="cyber-loading-track mt-1">
-                <span />
-              </div>
-            </div>
-          </div>
-        )}
-        
-        {/* No Vault */}
-        {isConnected && isAuthenticated && !vault && !loading && hasCheckedVault && (
+
+        {/* Universal Entry View: Shown if No Vault OR if Not Connected/Authenticated */}
+        {(!vault && hasCheckedVault) || !isAuthenticated ? (
           <div className="max-w-4xl mx-auto animate-fade-up">
             <div className="cyber-panel border overflow-hidden">
               {/* Hero Section */}
@@ -826,52 +789,58 @@ export default function DemoVaultPage() {
 
               {/* Action Area */}
               <div className="p-8 text-center bg-white/[0.02]">
-                <button
-                  onClick={deployVault}
-                  disabled={deploying}
-                  className="cyber-action-primary px-8 py-3 text-sm font-semibold transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:scale-100 rounded-none"
-                  style={{ backgroundColor: COLORS.acid, color: '#050505' }}
-                >
-                  {deploying ? (
-                    <span className="flex items-center gap-2">
-                      <Loader2 size={16} className="animate-spin" />
-                      Initializing Vault...
-                    </span>
-                  ) : (
-                    'Deploy Demo Vault & Start Trading'
-                  )}
-                </button>
+                {!isConnected ? (
+                  <button
+                    onClick={openWalletModal}
+                    className="cyber-action-primary px-8 py-3 text-sm font-semibold transition-transform hover:scale-105 active:scale-95 rounded-none"
+                    style={{ backgroundColor: COLORS.acid, color: '#050505' }}
+                  >
+                    <Wallet size={16} className="inline mr-2 mb-0.5" />
+                    Connect Wallet to Deploy
+                  </button>
+                ) : !isAuthenticated ? (
+                  <button
+                    onClick={signIn}
+                    disabled={authLoading}
+                    className="cyber-action-primary px-8 py-3 text-sm font-semibold transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 rounded-none"
+                    style={{ backgroundColor: COLORS.acid, color: '#050505' }}
+                  >
+                    {authLoading ? (
+                      <span className="flex items-center gap-2">
+                        <Loader2 size={16} className="animate-spin" />
+                        Verifying...
+                      </span>
+                    ) : (
+                      <>
+                        <LogIn size={16} className="inline mr-2 mb-0.5" />
+                        Sign In to Access Vault
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    onClick={deployVault}
+                    disabled={deploying}
+                    className="cyber-action-primary px-8 py-3 text-sm font-semibold transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:scale-100 rounded-none"
+                    style={{ backgroundColor: COLORS.acid, color: '#050505' }}
+                  >
+                    {deploying ? (
+                      <span className="flex items-center gap-2">
+                        <Loader2 size={16} className="animate-spin" />
+                        Initializing Vault...
+                      </span>
+                    ) : (
+                      'Deploy Demo Vault & Start Trading'
+                    )}
+                  </button>
+                )}
                 <p className="mt-4 text-xs" style={{ color: COLORS.data }}>
                   Takes less than 10 seconds • No gas fees • No real funds required
                 </p>
               </div>
             </div>
           </div>
-        )}
-        
-        {/* Loading */}
-        {(loading || (isConnected && isAuthenticated && !hasCheckedVault)) && (
-          <PageLoader />
-        )}
-        
-        {/* Error */}
-        {error && (
-          <div className="cyber-panel cyber-system-alert border px-4 py-3 mb-3 flex items-center gap-3 text-sm text-red-300 bg-red-500/10 animate-fade-up">
-            <AlertCircle size={18} className="shrink-0 text-red-400" />
-            <span className="cyber-command hidden sm:inline text-[10px] text-red-400">System Alert</span>
-            <span className="min-w-0 flex-1">{error}</span>
-            <button
-              onClick={() => setError(null)}
-              className="cyber-icon-button ml-auto px-2 py-1 text-sm text-red-300 border border-red-500/30 hover:bg-red-500/10"
-              aria-label="Dismiss error"
-            >
-              x
-            </button>
-          </div>
-        )}
-        
-        {/* ===== VAULT DASHBOARD ===== */}
-        {isConnected && isAuthenticated && vault && (
+        ) : vault && (
           <>
             {/* Page Header */}
             <div className="mb-4 animate-fade-up">

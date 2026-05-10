@@ -7,7 +7,8 @@ import AppWalletProvider from "@/components/providers/AppWalletProvider"
 import { AuthProvider } from "@/contexts/auth-context"
 import { OnboardingProvider } from "@/contexts/onboarding-context"
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard"
-
+import { HeaderSwitcher } from "@/components/header-switcher"
+import { OnboardingGuard } from "@/components/onboarding/OnboardingGuard"
 
 const inter = Inter({
   subsets: ["latin"],
@@ -37,8 +38,12 @@ export default function RootLayout({
         <AppWalletProvider>
           <AuthProvider>
             <OnboardingProvider>
-              <ModernHeader />
-              <main className="relative z-10">{children}</main>
+              <HeaderSwitcher />
+              <main className="relative z-10">
+                <OnboardingGuard>
+                  {children}
+                </OnboardingGuard>
+              </main>
               <OnboardingWizard />
             </OnboardingProvider>
           </AuthProvider>

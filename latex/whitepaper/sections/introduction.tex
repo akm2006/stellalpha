@@ -1,0 +1,21 @@
+\section{Introduction}
+
+Decentralized finance (DeFi) has entered an era where speed and precision are the primary determinants of alpha. However, for most users, capturing high-performance on-chain strategies remains a manual and risky endeavor. Traditional ``copy-trading'' has historically relied on naive wallet mirroring or custodial key-sharing, both of which are fundamentally incompatible with secure institutional-grade capital management.
+
+Stellalpha represents a paradigm shift in automated capital allocation. It is an intent-based, non-custodial layer built on Solana that moves beyond simple mirroring to replicate the \textit{strategic intent} of proven performers. 
+
+By analyzing the relative conviction and portfolio weighting of ``Star Traders,'' the protocol enables stablecoin capital to flow into high-signal opportunities with the security of on-chain vault enforcement.
+
+Stellalpha bridges the gap between sophisticated trading and secure capital management through:
+\begin{itemize}
+  \item \textbf{Intent-Based Replication}: Automatically adjusting execution based on relative portfolio weights rather than raw token amounts.
+  \item \textbf{Non-Custodial Sovereignty}: Users retain full control over their funds in segregated Program-Derived Addresses (PDAs).
+  \item \textbf{High-Fidelity Infrastructure}: A dual-ingestion engine (Yellowstone gRPC + Helius) combined with a custom Rust parser for sub-second execution latency.
+  \item \textbf{Strategy Synthesis}: A curated registry of proprietary execution models designed to match specific trader styles and risk profiles.
+\end{itemize}
+
+\textbf{Protocol Ecosystem}:
+
+\noindent Execution Layer: \url{https://github.com/akm2006/stellalpha}
+
+\noindent Vault Infrastructure: \url{https://github.com/akm2006/stellalpha_vault}

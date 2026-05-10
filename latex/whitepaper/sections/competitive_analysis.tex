@@ -1,0 +1,23 @@
+\section{Competitive Analysis}
+
+Stellalpha's positioning as an intent-based execution layer distinguishes it from legacy copy-trading platforms. The following analysis summarizes the technical moats provided by the protocol:
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{2.8cm} p{3.2cm} p{4.2cm} p{3.8cm}}
+\toprule
+\textbf{Feature} & \textbf{Stellalpha} & \textbf{Centralized Platforms} & \textbf{API / TG Bots} \\
+\midrule
+Custody & Non-Custodial (PDA) & Custodial (Exchange) & Exchange / Shared Keys \\
+Security Model & PDA Vault Enforcement & Trust-Based & Private Key Risk \\ 
+Signal Type & \textbf{Intent-Based} & Naive Mirroring & Raw Mirroring \\
+Execution & On-Chain (Jupiter) & Opaque Off-Chain & Semi-Opaque API \\ 
+Transparency & 100\% Verified & Low (Opaque) & Variable \\        
+Latency & \textbf{Sub-800ms} & High (API Overhead) & Variable (Polling) \\
+\bottomrule
+\end{tabular}
+\caption{Technical comparison of Stellalpha with legacy alternatives}      
+\end{table}
+
+Stellalpha's primary competitive advantage lies in the synthesis of \textit{strategic intent}. While legacy systems simply copy raw token amounts, Stellalpha normalizes signals based on relative conviction and portfolio weighting, providing institutional-grade risk management that is otherwise unavailable in the retail market.

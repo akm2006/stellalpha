@@ -1,0 +1,10 @@
+\section{Problem Statement}
+
+\begin{enumerate}
+  \item \textbf{Manual Monitoring is Impractical}: Cryptocurrency markets operate 24/7 with high volatility. For retail traders, manually tracking and mirroring the trades of professional "alpha" wallets is physically impossible without automated tools, leading to missed opportunities and suboptimal entry prices.
+  \item \textbf{Custodial Risk in Centralized Platforms}: Traditional copy-trading platforms (e.g., eToro, Bybit) require users to deposit funds into centralized exchange wallets. This exposes users to counterparty risks, insolvency events (e.g., FTX), and potential withdrawal freezes.
+  \item \textbf{Key-Sharing Risks in Botting}: Existing on-chain automation tools often require users to export their private keys or API keys to third-party servers. This creates a massive security vulnerability, where a single server breach could result in total loss of user funds.
+  \item \textbf{High Costs on EVM Chains}: Ethereum-based solutions suffer from high gas fees and slow finality. This makes high-frequency copy-trading prohibitively expensive for smaller portfolios, as transaction costs erode potential profits.
+  \item \textbf{Lack of Trustless Standards}: There is currently no standardized, trustless protocol for on-chain copy trading that guarantees execution transparency without relying on opaque off-chain logic or custodial bridges.
+  \item \textbf{Convergent Mirroring and Liquidity Crushing}: Naive wallet mirroring protocols typically copy raw token amounts or fixed percentages without regard for the follower's relative liquidity or the trader's total conviction. When multiple followers attempt to mirror a single high-signal trade simultaneously, they create an artificial demand spike that ``crushes'' available liquidity, resulting in massive slippage for the followers and eroding the original strategy's alpha.
+\end{enumerate}

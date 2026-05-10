@@ -50,15 +50,17 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     
     // Only open if not completed AND not dismissed
     if (!isCompleted && !isDismissed) {
-       // If not completed, open wizard
-       // But only if we are on the home page or demo-vault page to avoid annoying users on other pages?
-       // Requirement: "when a user lands in any page of the app with 0 trader state"
-       setIsOpen(true);
-       if (savedStep) {
-         setStep(savedStep as OnboardingStep);
+       // Only auto-open on internal app pages (demo-vault and star-traders)
+       const isAppPage = pathname?.includes('/demo-vault') || pathname?.includes('/star-traders');
+       
+       if (isAppPage) {
+         setIsOpen(true);
+         if (savedStep) {
+           setStep(savedStep as OnboardingStep);
+         }
        }
     }
-  }, []);
+  }, [pathname]);
 
   // Check for vault existence AND trader states to auto-skip
   useEffect(() => {

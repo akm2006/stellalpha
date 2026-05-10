@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Github } from "lucide-react";
+import { FileText, Github } from "lucide-react";
 
 const XLogo = ({ size = 16 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -9,67 +9,74 @@ const XLogo = ({ size = 16 }: { size?: number }) => (
   </svg>
 );
 
-const DoraHacksLogo = ({ size = 16 }: { size?: number }) => (
-  <span
-    className="flex items-center justify-center rounded-sm bg-white p-0.5"
-    style={{ width: size + 4, height: size + 4 }}
-  >
-    <img
-      src="https://cdn.dorahacks.io/static/files/189f8f1398ad4732d09ce824ea48afa3.png"
-      alt="DoraHacks"
-      className="h-full w-full object-contain"
-    />
-  </span>
+const StellalphaLogo = () => (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 445 436"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className="text-emerald-500"
+    >
+      <path d="M187.43 331.101L368.93 196.101L443.93 175.601L301.93 282.101L162.43 384.101L187.43 331.101Z" fill="currentColor" />
+      <path d="M268.43 176.101L373.43 193.601L441.43 176.101L286.93 148.601L268.43 176.101Z" fill="currentColor" />
+      <path d="M221.93 0.601471L286.93 149.101L268.43 177.101L221.93 76.6015V0.601471Z" fill="currentColor" />
+      <path d="M155.43 148.601L222.93 1.60147L220.93 76.1015L175.43 176.601L155.43 148.601Z" fill="currentColor" />
+      <path d="M0.929932 174.601L154.93 148.601L174.93 176.101L74.4299 193.601L0.929932 174.601Z" fill="currentColor" />
+      <path d="M122.43 272.101L0.929932 176.101L73.4299 194.101L136.93 243.101L122.43 272.101Z" fill="currentColor" />
+      <path d="M367.93 432.101L309.43 312.101L284.43 330.601L320.43 405.101L367.93 432.101Z" fill="currentColor" />
+      <path d="M122.93 402.601L76.4299 431.601L222.43 133.101V201.101L122.93 402.601Z" fill="currentColor" />
+      <path d="M245.93 248.101L222.43 201.101V133.101L270.43 228.101L245.93 248.101Z" fill="currentColor" />
+    </svg>
 );
 
 const FOOTER_LINKS = [
-  {
-    label: "Main Repo",
-    href: "https://github.com/akm2006/stellalpha",
-    icon: Github,
-  },
-  {
-    label: "Vault Repo",
-    href: "https://github.com/akm2006/stellalpha_vault",
-    icon: Github,
-  },
-  {
-    label: "DoraHacks",
-    href: "https://dorahacks.io/buidl/32072",
-    icon: DoraHacksLogo,
-  },
-  {
-    label: "X",
-    href: "https://x.com/stellalpha_",
-    icon: XLogo,
-  },
+  { label: "Github", href: "https://github.com/akm2006/stellalpha", icon: Github },
+  { label: "Vault Repo", href: "https://github.com/akm2006/stellalpha_vault", icon: Github, dev: true },
+  { label: "X", href: "https://x.com/stellalpha_", icon: XLogo },
+  { label: "Whitepaper", href: "/whitepaper.pdf", icon: FileText },
 ];
 
 export const Footer = () => (
-  <footer className="border-t border-white/5 bg-[#050505] px-6 py-12">
-    <div className="mx-auto flex max-w-7xl flex-col gap-8 md:flex-row md:items-end md:justify-between">
-      <div className="max-w-md">
-        <h3 className="mb-2 text-lg font-medium text-white">Stellalpha</h3>
-        <p className="text-xs leading-relaxed text-slate-500">
-          Non-custodial autonomous copy trading infrastructure. Copy high-performance
-          traders without compromising key security.
+  <footer className="w-full border-t border-white/5 bg-[#050505] px-6 py-12">
+    <div className="mx-auto flex max-w-7xl flex-col gap-10 md:flex-row md:items-start md:justify-between">
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <StellalphaLogo />
+          <span className="text-xl font-semibold tracking-tighter text-white uppercase">Stellalpha</span>
+        </div>
+        <p className="max-w-sm text-xs leading-relaxed text-slate-500 font-mono uppercase tracking-wider">
+          Non-custodial execution layer for curated Solana strategies. 
+          Precision intent replication with strategy-aware capital control.
         </p>
       </div>
 
-      <div className="md:text-right">
-        <div className="flex flex-wrap gap-3 md:justify-end">
-          {FOOTER_LINKS.map((link) => (
-            <a
-              key={link.label}
-              href={link.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] font-mono uppercase tracking-[0.16em] text-slate-400 transition-colors hover:border-emerald-500/30 hover:bg-emerald-500/5 hover:text-emerald-400"
-            >
-              <link.icon size={15} />
-              <span>{link.label}</span>
-            </a>
-          ))}
+      <div className="flex flex-col gap-8 md:flex-row md:gap-16">
+        <div className="space-y-6">
+          <h4 className="text-[10px] font-mono uppercase tracking-[0.25em] text-slate-400">Links</h4>
+          <div className="flex flex-wrap gap-3">
+            {FOOTER_LINKS.map((link) => (
+              <div key={link.label} className="flex flex-col items-start gap-1">
+                <a
+                  href={link.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-2 border border-white/5 bg-white/[0.02] px-4 py-2 text-[10px] font-mono uppercase tracking-widest text-slate-400 transition-all hover:border-emerald-500/30 hover:bg-emerald-500/5 hover:text-emerald-400 cyber-panel-soft w-fit"
+                >
+                  <link.icon size={14} />
+                  <span>{link.label}</span>
+                </a>
+                {link.dev && (
+                  <span className="text-[7px] font-mono text-amber-500/60 uppercase tracking-[0.2em] pl-1">
+                    [ IN DEVELOPMENT ]
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="text-[10px] font-mono text-slate-600 uppercase tracking-widest pt-4">
+            © {new Date().getFullYear()} Stellalpha Protocol
+          </div>
         </div>
       </div>
     </div>

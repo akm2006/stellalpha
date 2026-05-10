@@ -1,0 +1,48 @@
+\section{Execution Safety \& Risk Mitigation}
+
+Solana's high-throughput environment requires rigorous on-chain and off-chain safety checks to ensure that follower execution matches the strategic intent without exposure to extreme market volatility or malicious actors.
+
+\subsection{Programmatic Slippage Guardrails}
+
+The Stellalpha smart contract enforces deterministic slippage checks for every swap. Before invoking the Jupiter CPI, the program validates that the resulting token amount meets the minimum threshold defined by the follower.
+
+\[
+\text{MinOut} = \text{ExpectedOut} \times (1 - \text{SlippageTolerance})
+\]
+
+If the market moves against the trade during the sub-second ingestion-to-execution window, the transaction reverts on-chain, protecting the user's capital from suboptimal entry prices.
+
+\subsection{Anti-MEV Strategy (Jito Integration)}
+
+Followers are particularly vulnerable to sandwich attacks and front-running in a public copy-trading environment. To mitigate this, Stellalpha utilizes Jito Bundles and Tip-Cap logic.
+
+\begin{itemize}
+  \item \textbf{Private Bundle Submission}: Strategic execution packets are submitted as atomic bundles to Jito validators, bypassing the public mempool.
+  \item \textbf{Dynamic Priority Fees}: The execution engine automatically calculates and attaches the optimal Jito Tip to ensure high inclusion rates even during periods of heavy network congestion.
+\end{itemize}
+
+\subsection{Execution Latency Benchmarks}
+
+The dual-ingestion engine is calibrated for sub-second precision. By utilizing Yellowstone gRPC, Stellalpha captures signals at the moment of block inclusion.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{l l l}
+\toprule
+\textbf{Pipeline Stage} & \textbf{Mechanism} & \textbf{Target Latency} \\
+\midrule
+Signal Capture & Yellowstone gRPC & < 50ms \\
+Intent Decoding & Rust Custom Parser & < 100ms \\
+Route Optimization & Jupiter SDK & < 200ms \\
+On-Chain Settlement & Solana RPC / Jito & < 400ms \\
+\midrule
+\textbf{Total Pipeline} & & \textbf{< 750ms} \\
+\bottomrule
+\end{tabular}
+\caption{System Latency Benchmarks}
+\end{table}
+
+\subsection{Vault Integrity \& PDA Security}
+
+Stellalpha utilizes a "Restricted Signature" model. While the protocol is authorized to sign for swaps via the user's initialized `TraderState` PDA, it cannot sign for withdrawals or transfers to external wallets. Only the original user wallet (the PDA seed) has the authority to reclaim capital, ensuring that a protocol-level breach cannot result in the theft of user funds.

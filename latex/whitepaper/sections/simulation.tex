@@ -1,0 +1,23 @@
+\section{Simulation \& Functional Validation}
+
+To ensure users can verify the integrity of the protocol before committing capital, Stellalpha provides a dedicated functional validation layer: the Demo Vault.
+
+\subsection{The Demo Vault Architecture}
+
+The Demo Vault is a complete mirroring of the production execution environment, but it operates with virtualized capital. Every demo vault is pre-funded with **\$1,000.00 virtual USD**, which can be allocated across curated Star Traders.
+
+\begin{itemize}
+  \item \textbf{Logic Parity}: The same Rust parser and dual-ingestion engine drive both real and demo executions. 
+  \item \textbf{Synthesized PnL}: Results are calculated in real-time based on live market price marks (via Jupiter API), providing a high-fidelity representation of expected performance.
+  \item \textbf{Risk-Free Onboarding}: Users can test complex combinations of copy models and trader conviction signals without gas fees or financial risk.
+\end{itemize}
+
+\subsection{Curation Criteria for Star Traders}
+
+Stellalpha's performance is tied to the quality of its signal sources. The protocol utilizes a multi-metric filtering system to whitelist traders for the "Star Trader" registry.
+
+\begin{itemize}
+  \item \textbf{Strategic Consistency}: Traders must demonstrate consistent strategic intent (e.g., focus on specific sectors or token classes) rather than random noise.
+  \item \textbf{Max Drawdown}: Only wallets with historical drawdowns within acceptable protocol limits are whitelisted.
+  \item \textbf{Liquidity Compliance}: Trader conviction must align with available DEX liquidity to prevent the "Convergent Mirroring" failure identified in Section 3.
+\end{itemize}

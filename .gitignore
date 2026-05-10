@@ -104,9 +104,19 @@ migrations/
 # Claude Code configuration and state
 .claude/
 
+# LaTeX Source Tracking
+!latex/
+latex/*
+!latex/whitepaper/
+latex/whitepaper/*
+!latex/whitepaper/sections/
+!latex/whitepaper/*.tex
+!latex/whitepaper/*.bib
+!latex/whitepaper/stellalpha_logo.png
+!latex/whitepaper/sections/*.tex
+
 # Claude session state (project instructions CLAUDE.md should be tracked)
 RESUME_STATE.md
-
 # Cursor IDE rules
 .cursorrules
 .cursor/

@@ -5,13 +5,14 @@ import { motion, AnimatePresence } from "framer-motion";
 import { COLORS } from "@/lib/theme";
 
 const TERMINAL_LOGS = [
-  { type: "INFO", msg: "Yellowstone gRPC active. Monitoring tracked Star Trader wallets." },
-  { type: "WARN", msg: "Signal detected: 8x...F29a swapped 500 USDC -> SOL." },
-  { type: "EXEC", msg: "Normalized trade intent and follower ratio from leader state." },
-  { type: "EXEC", msg: "Calculating Jupiter route for delegated vault execution..." },
-  { type: "INFO", msg: "Best route selected with slippage and fee constraints." },
-  { type: "EXEC", msg: "Executing through the Stellalpha PDA vault path..." },
-  { type: "SUCCESS", msg: "Vault state updated. Mainnet copy execution confirmed." },
+  { type: "INFO", msg: "Signal detected from curated wallet." },
+  { type: "INFO", msg: "Applying Fixed % copy model." },
+  { type: "EXEC", msg: "Initializing non-custodial vault execution." },
+  { type: "EXEC", msg: "Verifying strategy-specific risk parameters." },
+  { type: "WARN", msg: "Stale-buy guard: signal latency check failed." },
+  { type: "EXEC", msg: "Routing intent through user-controlled vault." },
+  { type: "INFO", msg: "Leader to Copy latency: 842ms." },
+  { type: "SUCCESS", msg: "Execution complete. Custody remains local." },
 ];
 
 export const Terminal = () => {
@@ -29,16 +30,16 @@ export const Terminal = () => {
   }, []);
 
   return (
-    <div className="w-full h-full bg-[#050505] border border-white/10 font-mono text-[10px] md:text-xs p-4 md:p-6 flex flex-col shadow-2xl relative overflow-hidden group">
+    <div className="cyber-panel relative flex h-full w-full flex-col overflow-hidden bg-[#000000] p-4 font-mono text-[10px] md:p-6 md:text-xs border border-white/10">
+      {/* Removed subtle gradient overlay for actual black terminal look */}
       
-      <div className="flex items-center justify-between mb-4 border-b border-slate-800/50 pb-3 select-none relative z-10">
-        <div /> {/* Spacer to keep justify-between working if needed, or just empty */}
+      <div className="cyber-table-header flex items-center justify-between mb-4 border-b border-white/5 px-4 py-2.5 select-none relative z-10 -mx-4 -mt-4 md:-mx-6 md:-mt-6 mb-6">
+        <span className="text-[9px] uppercase tracking-[0.24em] text-white/50">
+          terminal :: core_router
+        </span>
         <div className="flex items-center gap-2.5">
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: COLORS.brand }}></span>
-            <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ backgroundColor: COLORS.brand }}></span>
-          </span>
-          <span className="text-[9px] tracking-wider font-medium text-emerald-400/90">YELLOWSTONE_GRPC :: ACTIVE</span>
+          <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="text-[9px] tracking-wider font-medium text-emerald-400/80">STATUS_OK</span>
         </div>
       </div>
       
@@ -46,26 +47,22 @@ export const Terminal = () => {
         <AnimatePresence mode='popLayout'>
           {logs.map((log, i) => (
             <motion.div 
-              key={`${i}-${log.msg.substring(0, 5)}`} // Ensure unique key
-              initial={{ opacity: 0, x: -10, height: 0 }}
-              animate={{ opacity: 1, x: 0, height: 'auto' }}
+              key={`${i}-${log.msg.substring(0, 5)}`}
+              initial={{ opacity: 0, x: -5 }}
+              animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
+              transition={{ duration: 0.15 }}
               className="flex gap-2 md:gap-3 items-start min-w-0"
             >
-              <span className="shrink-0 whitespace-nowrap opacity-40 font-mono text-[9px] pt-0.5" style={{ color: COLORS.data }}>
+              <span className="shrink-0 whitespace-nowrap opacity-30 font-mono text-[9px] pt-0.5 text-slate-500">
                 [{new Date().toLocaleTimeString('en-US', { hour12: false })}]
               </span>
               
-              <span className={`shrink-0 w-12 md:w-16 font-bold text-[9px] border px-1 text-center pt-[1px]`} style={{ 
-                borderColor: log.type === 'SUCCESS' ? 'rgba(16, 185, 129, 0.2)' : 
-                             log.type === 'WARN' ? 'rgba(245, 158, 11, 0.2)' : 
-                             log.type === 'EXEC' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(163, 163, 163, 0.1)',
-                color: log.type === 'SUCCESS' ? COLORS.brand : 
-                       log.type === 'WARN' ? '#F59E0B' : 
-                       log.type === 'EXEC' ? '#3B82F6' : COLORS.data,
-                backgroundColor: log.type === 'SUCCESS' ? 'rgba(16, 185, 129, 0.05)' : 'transparent'
-              }}>
+              <span className={`shrink-0 w-12 md:w-16 font-bold text-[9px] border px-1 text-center pt-[1px] ${
+                log.type === 'SUCCESS' ? 'border-emerald-500/30 text-emerald-500' : 
+                log.type === 'WARN' ? 'border-amber-500/30 text-amber-500' : 
+                log.type === 'EXEC' ? 'border-blue-500/30 text-blue-500' : 'border-white/10 text-slate-500'
+              }`}>
                 {log.type}
               </span>
               
@@ -76,13 +73,9 @@ export const Terminal = () => {
           ))}
         </AnimatePresence>
         {logs.length < TERMINAL_LOGS.length && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="flex items-center gap-2 pl-2"
-          >
-             <div className="w-1.5 h-3 animate-pulse bg-emerald-500/50" />
-          </motion.div>
+          <div className="flex items-center gap-2 pl-2">
+             <div className="w-1.5 h-3 animate-pulse bg-emerald-500/30" />
+          </div>
         )}
       </div>
     </div>

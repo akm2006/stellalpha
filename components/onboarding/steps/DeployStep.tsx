@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useOnboarding } from '@/contexts/onboarding-context';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Server, CheckCircle, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
+import { X, Server, CheckCircle, AlertCircle, Loader2, ArrowRight, Terminal } from 'lucide-react';
 import { COLORS } from '@/lib/theme';
 
 export function DeployStep() {
@@ -48,26 +48,30 @@ export function DeployStep() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+        className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
       >
         <motion.div
-          initial={{ scale: 0.9, opacity: 0, y: 20 }}
+          initial={{ scale: 0.95, opacity: 0, y: 30 }}
           animate={{ scale: 1, opacity: 1, y: 0 }}
-          exit={{ scale: 0.9, opacity: 0, y: 20 }}
-          transition={{ type: "spring", stiffness: 300, damping: 25 }}
-          className="relative w-full max-w-md bg-[#0A0A0A] border border-[#262626] rounded-2xl shadow-2xl overflow-hidden"
+          exit={{ scale: 0.95, opacity: 0, y: 30 }}
+          transition={{ type: "spring", stiffness: 260, damping: 25 }}
+          className="relative w-full max-w-md bg-[#0A0A0A] border border-white/10 cyber-panel-soft shadow-[0_0_50px_rgba(0,0,0,1)] overflow-hidden"
         >
-           {/* Background */}
-           <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
-            <div className="absolute top-0 right-1/2 translate-x-1/2 w-64 h-64 bg-emerald-500/5 blur-3xl rounded-full" />
-          </div>
+          {/* Industrial Corner Accents */}
+          <div className="absolute top-0 left-0 w-3 h-3 border-t border-l border-emerald-500/50" />
+          <div className="absolute top-0 right-0 w-3 h-3 border-t border-r border-emerald-500/50" />
+          <div className="absolute bottom-0 left-0 w-3 h-3 border-b border-l border-emerald-500/50" />
+          <div className="absolute bottom-0 right-0 w-3 h-3 border-b border-r border-emerald-500/50" />
 
-          <button onClick={close} className="absolute top-4 right-4 p-2 text-[#A3A3A3] hover:text-[#E5E5E5] transition-colors z-20">
-            <X size={20} />
+          {/* Background Shading */}
+          <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/[0.03] to-transparent pointer-events-none" />
+
+          <button onClick={close} className="absolute top-4 right-4 p-2 border border-white/5 bg-white/[0.03] text-white/30 hover:text-white hover:border-white/20 transition-all z-20">
+            <X size={18} />
           </button>
 
-          <div className="relative z-10 p-8 pt-10 text-center">
-            <div className="w-16 h-16 bg-[#262626] rounded-full flex items-center justify-center mx-auto mb-6 ring-1 ring-[#262626]">
+          <div className="relative z-10 p-8 pt-12 text-center">
+            <div className="w-16 h-16 border border-emerald-500/30 bg-emerald-500/5 flex items-center justify-center mx-auto mb-8 shadow-[0_0_20px_rgba(16,185,129,0.1)]">
               {isDeploying ? (
                  <Loader2 size={32} className="text-emerald-400 animate-spin" />
               ) : isSuccess ? (
@@ -77,57 +81,71 @@ export function DeployStep() {
               )}
             </div>
 
-            <h2 className="text-2xl font-bold text-[#E5E5E5] mb-3 font-heading">
-                {isSuccess ? 'Vault Ready!' : 'Initialize Demo Vault'}
+            <div className="inline-flex items-center gap-2 border border-emerald-500/20 bg-emerald-500/5 px-2 py-0.5 mb-4">
+              <Terminal size={10} className="text-emerald-400" />
+              <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-emerald-400">Environment Setup</span>
+            </div>
+
+            <h2 className="text-xl font-bold text-white tracking-tight uppercase mb-4">
+                {isSuccess ? 'Vault Operational' : 'Initialize Demo Vault'}
             </h2>
             
-            <p className="text-sm text-[#A3A3A3] leading-relaxed mb-8">
+            <p className="text-[13px] text-slate-400 leading-relaxed mb-8 max-w-sm mx-auto">
               {isSuccess ? (
                   <>
-                    Your simulated demo vault has been created and funded with <span className="text-emerald-400">$1,000 virtual USD</span>.
+                    Your simulated demo vault has been created and funded with <span className="text-emerald-400 font-bold">$1,000.00 virtual USD</span>.
                   </>
               ) : (
                   <>
-                    We'll create a dedicated demo vault for you and deposit <span className="text-emerald-400">$1,000 virtual USD</span>. 
+                    We'll create a dedicated demo vault for you and deposit <span className="text-emerald-400 font-bold">$1,000.00 virtual USD</span>. 
                     No gas fees required.
                   </>
               )}
             </p>
 
             {deployError && (
-              <div className="mb-6 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center gap-2 text-xs text-red-400 text-left">
+              <div className="mb-6 p-3 bg-red-500/10 border border-red-500/30 flex items-center gap-3 text-[11px] font-medium text-red-400 text-left">
                 <AlertCircle size={14} className="shrink-0" />
-                {deployError}
+                <span>{deployError}</span>
               </div>
             )}
 
             {isDeploying ? (
-              <div className="w-full bg-[#262626] rounded-full h-2 mb-2 overflow-hidden">
+              <div className="w-full h-4 border border-white/10 bg-white/5 cyber-panel-soft mb-3 overflow-hidden relative">
                 <motion.div 
-                    className="bg-[#10B981] h-full rounded-full"
+                    className="bg-emerald-500/60 h-full shadow-[0_0_10px_rgba(16,185,129,0.5)]"
                     initial={{ width: 0 }}
                     animate={{ width: `${progress}%` }}
                     transition={{ ease: "linear" }}
                 />
+                <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="text-[8px] font-mono font-bold text-white/50 uppercase tracking-widest">Compiling_Logic...</span>
+                </div>
               </div>
             ) : isSuccess ? (
                 <button
                 onClick={handleContinue}
-                className="w-full py-3.5 px-6 bg-[#10B981] hover:bg-[#059669] text-[#050505] font-semibold rounded-lg flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-emerald-500/20 active:scale-[0.98]"
+                className="cyber-action-primary relative w-full h-14 bg-emerald-400 hover:bg-emerald-300 text-black text-[11px] font-black uppercase tracking-[0.3em] flex items-center justify-center gap-3 transition-all overflow-hidden group shadow-[0_0_20px_rgba(16,185,129,0.2)]"
               >
-                Find Traders to Copy <ArrowRight size={18} />
+                Find Star Traders
+                <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent w-full -skew-x-12 -translate-x-[150%] group-hover:translate-x-[150%] transition-transform duration-700" />
               </button>
             ) : (
               <button
                 onClick={handleDeploy}
-                className="w-full py-3.5 px-6 bg-[#10B981] hover:bg-[#059669] text-[#050505] font-semibold rounded-lg flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-emerald-500/20 active:scale-[0.98]"
+                className="cyber-action-primary relative w-full h-14 bg-emerald-400 hover:bg-emerald-300 text-black text-[11px] font-black uppercase tracking-[0.3em] flex items-center justify-center gap-3 transition-all overflow-hidden group shadow-[0_0_20px_rgba(16,185,129,0.2)]"
               >
-                Deploy Vault & Start
+                Deploy Vault
+                <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent w-full -skew-x-12 -translate-x-[150%] group-hover:translate-x-[150%] transition-transform duration-700" />
               </button>
             )}
             
             {isDeploying && (
-                 <p className="text-xs text-[#A3A3A3] mt-2">Setting up simulation environment...</p>
+                 <div className="flex items-center justify-center gap-2 mt-4 text-[9px] font-mono uppercase tracking-[0.2em] text-slate-600 animate-pulse">
+                     <span>Finalizing protocol handshake</span>
+                 </div>
             )}
           </div>
         </motion.div>
