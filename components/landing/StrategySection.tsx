@@ -136,7 +136,7 @@ export const StrategySection = () => {
       <div className="absolute inset-0 pointer-events-none z-10">
         <div className="sticky top-0 h-screen w-full overflow-hidden">
           <motion.div 
-            style={{ x }}
+            style={{ x, willChange: "transform", isolation: "isolate" }}
             className="flex w-[200%] h-full pointer-events-auto items-center"
           >
             
