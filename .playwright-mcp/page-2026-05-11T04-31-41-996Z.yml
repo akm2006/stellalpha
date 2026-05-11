@@ -1,0 +1,347 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]:
+      - img "Animated cybercore grid background"
+      - navigation "Section navigation" [ref=e4]:
+        - generic:
+          - img
+        - generic [ref=e5]:
+          - button "OVERVIEW" [ref=e6] [cursor=pointer]:
+            - generic: OVERVIEW
+          - button "THE PROBLEM" [ref=e8] [cursor=pointer]:
+            - generic: THE PROBLEM
+          - button "SOLUTION" [ref=e10] [cursor=pointer]:
+            - generic: SOLUTION
+          - button "STRATEGY" [ref=e12] [cursor=pointer]:
+            - generic: STRATEGY
+          - button "ROADMAP" [ref=e14] [cursor=pointer]:
+            - generic: ROADMAP
+          - button "GET STARTED" [ref=e16] [cursor=pointer]:
+            - generic: GET STARTED
+      - main [ref=e18]:
+        - generic [ref=e19]:
+          - generic [ref=e21]:
+            - generic [ref=e22]:
+              - link "Stellalpha home" [ref=e23] [cursor=pointer]:
+                - /url: /
+                - generic [ref=e24]:
+                  - img [ref=e25]
+                  - generic [ref=e36]:
+                    - generic [ref=e37]: STELLALPHA
+                    - generic [ref=e38]: .xyz
+              - navigation [ref=e39]:
+                - link "[ Demo Vault ]" [ref=e40] [cursor=pointer]:
+                  - /url: /demo-vault
+                  - generic [ref=e41]: "["
+                  - generic [ref=e42]: Demo Vault
+                  - generic [ref=e43]: "]"
+                - link "[ Star Traders ]" [ref=e44] [cursor=pointer]:
+                  - /url: /star-traders
+                  - generic [ref=e45]: "["
+                  - generic [ref=e46]: Star Traders
+                  - generic [ref=e47]: "]"
+            - button "Connect Wallet" [ref=e50]:
+              - img [ref=e51]
+              - generic [ref=e54]: Connect Wallet
+          - generic [ref=e56]:
+            - generic [ref=e57]:
+              - generic [ref=e58]:
+                - generic [ref=e59]:
+                  - text: Curated traders
+                  - text: Recommended strategy
+                  - text: Non-custodial control
+                - heading "Copy proven Solana traders with the strategy that fits them, without giving up custody." [level=1] [ref=e62]
+              - generic [ref=e63]:
+                - paragraph [ref=e64]: Pick a curated Star Trader and deploy a non-custodial vault. Stellalpha recommends the exact copy logic to fit the trader's history before real capital is allocated.
+                - generic [ref=e65]:
+                  - generic [ref=e66]:
+                    - generic [ref=e67]: Non-custodial Execution
+                    - paragraph [ref=e69]: Unified infrastructure for copying curated Solana strategies.
+                  - generic [ref=e70]:
+                    - generic [ref=e71]: Strategy-Aware
+                    - paragraph [ref=e73]: Proprietary copy logic matched to the trader's edge.
+              - generic [ref=e74]:
+                - link "Explore Star Traders" [ref=e75] [cursor=pointer]:
+                  - /url: /star-traders
+                  - button "Explore Star Traders" [ref=e76]:
+                    - img [ref=e77]
+                    - text: Explore Star Traders
+                - link "Try Demo" [ref=e79] [cursor=pointer]:
+                  - /url: /demo-vault
+                  - button "Try Demo" [ref=e80]
+                - link "Whitepaper" [ref=e81] [cursor=pointer]:
+                  - /url: /whitepaper.pdf
+                  - img [ref=e82]
+                  - text: Whitepaper
+            - generic [ref=e87]:
+              - generic [ref=e88]: "terminal :: core_router"
+              - generic [ref=e91]: STATUS_OK
+          - generic:
+            - generic: Explore
+            - generic:
+              - img
+        - generic [ref=e96]:
+          - generic [ref=e97]:
+            - generic [ref=e98]: "Analysis: Failed Model"
+            - heading "Copy trading is easy to start, but dangerous to trust." [level=2] [ref=e99]
+            - paragraph [ref=e100]: Most platforms require custody of your private keys to function. This leads to a fragmented and high-risk user experience.
+            - generic [ref=e101]:
+              - generic [ref=e102]:
+                - img [ref=e104]
+                - generic [ref=e106]:
+                  - heading "Custody Handover" [level=4] [ref=e107]
+                  - paragraph [ref=e108]: Platforms require your private keys to execute trades.
+              - generic [ref=e109]:
+                - img [ref=e111]
+                - generic [ref=e114]:
+                  - heading "Information Overload" [level=4] [ref=e115]
+                  - paragraph [ref=e116]: Uncurated lists make selecting a trader a guessing game.
+              - generic [ref=e117]:
+                - img [ref=e119]
+                - generic [ref=e123]:
+                  - heading "Manual Complexity" [level=4] [ref=e124]
+                  - paragraph [ref=e125]: Fragmented settings leave the actual strategy unclear.
+          - generic [ref=e126]:
+            - generic [ref=e127]:
+              - generic [ref=e128]:
+                - img [ref=e129]
+                - generic [ref=e131]: legacy copy setup
+              - generic [ref=e132]: vulnerable
+            - generic [ref=e133]:
+              - generic [ref=e134]:
+                - generic [ref=e135]:
+                  - generic [ref=e136]: Custody
+                  - generic [ref=e137]: Requires handover of private keys & full wallet control
+                - generic [ref=e138]:
+                  - generic [ref=e139]: Overload
+                  - generic [ref=e140]: Massive, unfiltered trader lists with fragmented data
+                - generic [ref=e141]:
+                  - generic [ref=e142]: Settings
+                  - generic [ref=e143]: Complex, manual configurations leave the strategy unclear
+              - generic [ref=e145]:
+                - generic [ref=e146]: Execution Integrity
+                - generic [ref=e147]: 12%
+        - generic [ref=e152]:
+          - generic [ref=e154]:
+            - generic [ref=e155]:
+              - generic [ref=e156]:
+                - img [ref=e157]
+                - generic [ref=e160]: stellalpha flow
+              - generic [ref=e161]: non-custodial
+            - generic [ref=e162]:
+              - generic [ref=e163]:
+                - generic [ref=e164]:
+                  - generic [ref=e165]: Trader
+                  - generic [ref=e166]: Curated Star Performer (crypto 挪吒) selected by protocol
+                - generic [ref=e167]:
+                  - generic [ref=e168]: Strategy
+                  - generic [ref=e169]: Exact recommended copy model applied to vault layer
+                - generic [ref=e170]:
+                  - generic [ref=e171]: Vault
+                  - generic [ref=e172]: Non-custodial intent replication enforced by user control
+              - generic [ref=e174]:
+                - generic [ref=e175]: Execution Integrity
+                - generic [ref=e176]: 98%
+          - generic [ref=e179]:
+            - generic [ref=e180]: "Analysis: Stellalpha flow"
+            - heading "Choose a Star Trader. Deploy a non-custodial vault." [level=2] [ref=e181]:
+              - text: Choose a Star Trader.
+              - text: Deploy a non-custodial vault.
+            - paragraph [ref=e182]: Stellalpha bridges the gap between selection and execution. We provide the tools for safe, high-performance copy-trading.
+            - generic [ref=e183]:
+              - generic [ref=e184]:
+                - img [ref=e186]
+                - generic [ref=e190]:
+                  - heading "Curated Star Traders" [level=4] [ref=e191]
+                  - paragraph [ref=e192]: Follow curated, proven performers selected by the protocol.
+              - generic [ref=e193]:
+                - img [ref=e195]
+                - generic [ref=e197]:
+                  - heading "Recommended Strategy" [level=4] [ref=e198]
+                  - paragraph [ref=e199]: Deploy the exact copy model that fits the trader's history.
+              - generic [ref=e200]:
+                - img [ref=e202]
+                - generic [ref=e205]:
+                  - heading "Vault Enforcement" [level=4] [ref=e206]
+                  - paragraph [ref=e207]: Execute trades via a secure, non-custodial vault layer.
+        - generic [ref=e209]:
+          - generic [ref=e212]:
+            - generic [ref=e213]:
+              - generic [ref=e214]: Strategy Synthesis
+              - heading "Match curated performance with precision logic & settings." [level=2] [ref=e215]
+              - paragraph [ref=e216]: Stellalpha analyzes trader history to recommend the exact copy model and execution parameters for their style. Every follow is backed by automated, strategy-aware allocation.
+            - generic [ref=e217]:
+              - generic [ref=e219]:
+                - img "crypto 挪吒" [ref=e220]
+                - generic [ref=e221]:
+                  - heading "crypto 挪吒 Star Trader" [level=3] [ref=e222]:
+                    - text: crypto 挪吒
+                    - generic [ref=e223]: Star Trader
+                  - paragraph [ref=e224]: Performance profile analyzed
+              - generic [ref=e226]:
+                - generic [ref=e227]:
+                  - generic [ref=e228]:
+                    - img [ref=e229]
+                    - text: Recommended Model
+                  - generic [ref=e231]:
+                    - generic [ref=e232]:
+                      - heading "Fixed % of Free Cash" [level=4] [ref=e233]
+                      - img [ref=e234]
+                    - paragraph [ref=e237]: Maintains high liquidity to capture volatile alpha streams. Optimized for high-frequency entry profiles.
+                  - generic [ref=e240]: "Match: Optimized for Volatility"
+                - generic [ref=e241]:
+                  - generic [ref=e242]:
+                    - img [ref=e243]
+                    - text: Recommended Settings
+                  - generic [ref=e245]:
+                    - generic [ref=e246]:
+                      - generic [ref=e247]:
+                        - generic [ref=e248]: Demo Allocation
+                        - generic [ref=e249]: $50.00
+                      - generic [ref=e250]:
+                        - generic [ref=e251]: Risk per Entry
+                        - generic [ref=e252]: 5.0% P.B.
+                      - img [ref=e253]
+                    - generic [ref=e256]:
+                      - img [ref=e257]
+                      - paragraph [ref=e259]: Settings Synthesized for Performance.
+          - generic [ref=e262]:
+            - generic [ref=e263]:
+              - generic [ref=e264]: Model Repository
+              - heading "5 execution models to match your alpha style." [level=2] [ref=e265]
+              - paragraph [ref=e266]: Stellalpha provides the infrastructure for precise intent replication. Choose the copy model that fits your risk appetite and the trader's historical profile.
+            - generic [ref=e267]:
+              - generic [ref=e268]:
+                - generic [ref=e269]:
+                  - img [ref=e271]
+                  - generic [ref=e275]:
+                    - heading "Trader Ratio" [level=4] [ref=e277]
+                    - paragraph [ref=e278]:
+                      - generic [ref=e279]: "Institutional:"
+                      - text: Direct Conviction Scaling
+                    - paragraph [ref=e280]: Derived from the leader's liquid balance. Preserves the leader's exact conviction signal.
+                - generic [ref=e281]:
+                  - generic: Stellalpha native copy model
+                  - generic [ref=e282]:
+                    - img [ref=e283]
+                    - generic [ref=e293]: Original
+              - generic [ref=e295]:
+                - img [ref=e297]
+                - generic [ref=e299]:
+                  - heading "Fixed % of Free Cash" [level=4] [ref=e301]
+                  - paragraph [ref=e302]:
+                    - generic [ref=e303]: "Quantitative:"
+                    - text: High-Frequency Continuity
+                  - paragraph [ref=e304]: Uses the same share of your free cash on every buy. Best for compounding sequence-sensitive traders.
+              - generic [ref=e306]:
+                - img [ref=e308]
+                - generic [ref=e311]:
+                  - heading "Fixed % of Starting Funds" [level=4] [ref=e313]
+                  - paragraph [ref=e314]:
+                    - generic [ref=e315]: "Stable:"
+                    - text: Capital Preservation
+                  - paragraph [ref=e316]: Uses the same share of your starting funds on every buy. Ideal for stable participation regardless of PnL.
+              - generic [ref=e318]:
+                - img [ref=e320]
+                - generic [ref=e323]:
+                  - heading "Trader Buy % With Cap" [level=4] [ref=e325]
+                  - paragraph [ref=e326]:
+                    - generic [ref=e327]: "Industry:"
+                    - text: Risk-Bounded Exposure
+                  - paragraph [ref=e328]: Copies part of each trader buy, with a hard limit to protect your balance from oversized single entries.
+              - generic [ref=e329]:
+                - generic [ref=e330]:
+                  - img [ref=e332]
+                  - generic [ref=e334]:
+                    - heading "Balanced Hybrid" [level=4] [ref=e336]
+                    - paragraph [ref=e337]:
+                      - generic [ref=e338]: "Advanced:"
+                      - text: Volatile Alpha Cycles
+                    - paragraph [ref=e339]: Sets a small cash limit, then adjusts inside it using the trader sizing. Best for meme-copy cycles.
+                - generic [ref=e340]:
+                  - generic: Stellalpha native copy model
+                  - generic [ref=e341]:
+                    - img [ref=e342]
+                    - generic [ref=e352]: Original
+        - generic [ref=e354]:
+          - generic [ref=e355]:
+            - generic [ref=e356]:
+              - generic [ref=e357]: Maturity path
+              - heading "From demo allocation to controlled execution." [level=2] [ref=e358]
+            - paragraph [ref=e359]: The roadmap stays focused on allocation safety, strategy quality, and transparent copy behavior.
+          - generic [ref=e363]:
+            - generic [ref=e366]:
+              - generic [ref=e367]:
+                - generic [ref=e368]: Phase 01
+                - generic [ref=e369]: Verified
+              - heading "Demo Environment" [level=3] [ref=e370]
+              - paragraph [ref=e371]: Virtual-capital simulation proving copy models, latency, and intent replication.
+            - generic [ref=e374]:
+              - generic [ref=e375]:
+                - generic [ref=e376]: Phase 02
+                - generic [ref=e377]: Current
+              - heading "Strategy Synthesis" [level=3] [ref=e378]
+              - paragraph [ref=e379]: Mapping curated Star Traders to proprietary execution models and optimized risk parameters.
+            - generic [ref=e382]:
+              - generic [ref=e384]: Phase 03
+              - heading "Non-custodial Pilot" [level=3] [ref=e385]
+              - paragraph [ref=e386]: Live execution of copy trades through secure, user-controlled vaults and precise sizing limits.
+            - generic [ref=e389]:
+              - generic [ref=e391]: Phase 04
+              - heading "Protocol Expansion" [level=3] [ref=e392]
+              - paragraph [ref=e393]: Deep integration for complex DeFi interactions and a decentralized logic registry.
+        - generic [ref=e394]:
+          - generic [ref=e396]:
+            - generic [ref=e397]:
+              - heading "Activate virtual execution." [level=2] [ref=e398]:
+                - text: Activate virtual
+                - text: execution.
+              - paragraph [ref=e399]: Deploy a non-custodial terminal with $1,000.00 in virtual capital. Test curated models and professional replication logic in a risk-free environment.
+            - generic [ref=e400]:
+              - generic [ref=e401]:
+                - img [ref=e403]
+                - generic [ref=e407]: VIRTUAL_CAPITAL
+                - paragraph [ref=e408]: Immediate $1,000.00 virtual allocation for strategy testing.
+              - generic [ref=e409]:
+                - img [ref=e411]
+                - generic [ref=e413]: High_Fidelity_Demo
+                - paragraph [ref=e414]: Precision mirroring of curated trade signals and sizing.
+              - generic [ref=e415]:
+                - img [ref=e417]
+                - generic [ref=e419]: Performance_Analysis
+                - paragraph [ref=e420]: Transparent tracking of simulated vault states and PnL.
+            - link "Initialize Demo Vault" [ref=e422] [cursor=pointer]:
+              - /url: /demo-vault
+              - button "Initialize Demo Vault" [ref=e423]:
+                - text: Initialize Demo Vault
+                - img [ref=e424]
+          - generic [ref=e427]:
+            - generic [ref=e428]:
+              - generic [ref=e429]:
+                - img [ref=e430]
+                - generic [ref=e440]: Stellalpha
+              - paragraph [ref=e441]: Non-custodial execution layer for curated Solana strategies. Precision intent replication with strategy-aware capital control.
+            - generic [ref=e443]:
+              - heading "Links" [level=4] [ref=e444]
+              - generic [ref=e445]:
+                - link "Github" [ref=e447] [cursor=pointer]:
+                  - /url: https://github.com/akm2006/stellalpha
+                  - img [ref=e448]
+                  - generic [ref=e451]: Github
+                - generic [ref=e452]:
+                  - link "Vault Repo" [ref=e453] [cursor=pointer]:
+                    - /url: https://github.com/akm2006/stellalpha_vault
+                    - img [ref=e454]
+                    - generic [ref=e457]: Vault Repo
+                  - generic [ref=e458]: "[ IN DEVELOPMENT ]"
+                - link "X" [ref=e460] [cursor=pointer]:
+                  - /url: https://x.com/stellalpha_
+                  - img [ref=e461]
+                  - generic [ref=e463]: X
+                - link "Whitepaper" [ref=e465] [cursor=pointer]:
+                  - /url: /whitepaper.pdf
+                  - img [ref=e466]
+                  - generic [ref=e469]: Whitepaper
+              - generic [ref=e470]: © 2026 Stellalpha Protocol
+  - button "Open Next.js Dev Tools" [ref=e476] [cursor=pointer]:
+    - img [ref=e477]

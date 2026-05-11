@@ -135,15 +135,15 @@ export const StrategySection = () => {
 
       <div className="absolute inset-0 pointer-events-none z-10">
         <div className="sticky top-0 h-screen w-full overflow-hidden">
-          <motion.div 
-            style={{ x, willChange: "transform", isolation: "isolate" }}
-            className="flex w-[200%] h-full pointer-events-auto items-center"
-          >
+          {/* Layered container for slides to prevent GPU transparency glitches */}
+          <div className="relative w-full h-full">
             
             {/* View 1: Synthesis */}
             <motion.div 
-              style={{ opacity: opacity1, scale: scale1 }}
-              className="w-1/2 h-full flex flex-col justify-center px-6"
+              key="synthesis-view"
+              initial={{ opacity: 1 }}
+              style={{ opacity: opacity1, scale: scale1, zIndex: 10, position: 'absolute', inset: 0, backfaceVisibility: 'hidden', isolation: 'isolate' }}
+              className="flex flex-col justify-center px-6 pointer-events-auto"
             >
               <div className="mx-auto max-w-7xl w-full py-4 md:py-6">
                   <div className="grid lg:grid-cols-[0.95fr_1.05fr] gap-8 lg:gap-12 items-center">
@@ -224,8 +224,9 @@ export const StrategySection = () => {
 
             {/* View 2: Repository */}
             <motion.div 
-              style={{ opacity: opacity2, scale: scale2 }}
-              className="w-1/2 h-full flex flex-col justify-center px-6"
+              key="repository-view"
+              style={{ opacity: opacity2, scale: scale2, zIndex: 20, position: 'absolute', inset: 0, backfaceVisibility: 'hidden', isolation: 'isolate' }}
+              className="flex flex-col justify-center px-6 pointer-events-auto"
             >
               <div className="mx-auto max-w-7xl w-full">
                 <motion.div 
@@ -274,6 +275,8 @@ export const StrategySection = () => {
                 </motion.div>
               </div>
             </motion.div>
+          </div>
+        </div>
 
           </motion.div>
         </div>
