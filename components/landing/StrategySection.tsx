@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence, useScroll, useTransform, Variants } from "framer-motion";
+import { useRef } from "react";
+import { motion, useScroll, useTransform } from "framer-motion";
 import { 
   Zap, 
   Activity, 
@@ -10,8 +10,7 @@ import {
   Target, 
   ShieldAlert, 
   Cpu, 
-  ShieldCheck,
-  Binary
+  ShieldCheck
 } from "lucide-react";
 import { useScrollContainer } from "./ScrollProvider";
 
@@ -35,19 +34,6 @@ const StellalphaLogo = ({ size = 12 }: { size?: number }) => (
     <path d="M245.93 248.101L222.43 201.101V133.101L270.43 228.101L245.93 248.101Z" fill="currentColor" />
   </svg>
 );
-
-const containerVariants: Variants = {
-  hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: { staggerChildren: 0.1 }
-  }
-};
-
-const itemVariants: Variants = {
-  hidden: { opacity: 0, y: 15 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } }
-};
 
 const COPY_MODELS = [
   {
@@ -119,9 +105,6 @@ export const StrategySection = () => {
     target: targetRef,
     offset: ["start start", "end end"]
   });
-
-  const x = useTransform(scrollYProgress, [0, 1], ["0%", "-50%"]);
-  
   const opacity1 = useTransform(scrollYProgress, [0, 0.4, 0.5], [1, 1, 0.2]);
   const scale1 = useTransform(scrollYProgress, [0, 0.4, 0.5], [1, 1, 0.95]);
   
@@ -229,11 +212,7 @@ export const StrategySection = () => {
               className="flex flex-col justify-center px-6 pointer-events-auto"
             >
               <div className="mx-auto max-w-7xl w-full">
-                <motion.div 
-                  initial="hidden"
-                  whileInView="visible"
-                  viewport={{ once: true, amount: 0.3 }}
-                  variants={containerVariants}
+                <div
                   className="grid lg:grid-cols-[0.85fr_1.15fr] gap-6 lg:gap-12 items-center"
                 >
                   <div className="text-left">
@@ -272,13 +251,10 @@ export const StrategySection = () => {
                         </div>
                     ))}
                   </div>
-                </motion.div>
+                </div>
               </div>
             </motion.div>
           </div>
-        </div>
-
-          </motion.div>
         </div>
       </div>
     </section>
