@@ -1,7 +1,5 @@
 "use client";
 
-import { useRef } from "react";
-import { motion, useScroll, useTransform } from "framer-motion";
 import { 
   Zap, 
   Activity, 
@@ -12,7 +10,6 @@ import {
   Cpu, 
   ShieldCheck
 } from "lucide-react";
-import { useScrollContainer } from "./ScrollProvider";
 
 const StellalphaLogo = ({ size = 12 }: { size?: number }) => (
   <svg
@@ -98,165 +95,126 @@ const OriginalBadge = () => {
 };
 
 export const StrategySection = () => {
-  const scrollRef = useScrollContainer();
-  const targetRef = useRef<HTMLDivElement>(null);
-  const { scrollYProgress } = useScroll({
-    container: scrollRef as any,
-    target: targetRef,
-    offset: ["start start", "end end"]
-  });
-  const opacity1 = useTransform(scrollYProgress, [0, 0.4, 0.5], [1, 1, 0.2]);
-  const scale1 = useTransform(scrollYProgress, [0, 0.4, 0.5], [1, 1, 0.95]);
-  
-  const opacity2 = useTransform(scrollYProgress, [0.5, 0.6, 1], [0.2, 1, 1]);
-  const scale2 = useTransform(scrollYProgress, [0.5, 0.6, 1], [0.95, 1, 1]);
-
   return (
-    <section ref={targetRef} id="strategy-container" className="relative">
-      <div id="strategy-synthesis" className="landing-section h-screen snap-start w-full pointer-events-none" />
-      <div id="strategy-library" className="landing-section h-screen snap-start w-full pointer-events-none" />
+    <section id="strategy-container" className="relative">
+      <section id="strategy-synthesis" className="landing-section h-screen snap-start flex flex-col justify-center px-6">
+        <div className="mx-auto max-w-7xl w-full py-4 md:py-6">
+          <div className="grid lg:grid-cols-[0.95fr_1.05fr] gap-8 lg:gap-12 items-center">
+            <div className="max-w-lg text-left">
+              <span className="cyber-command mb-3 block text-[10px] text-cyan-200/80 uppercase tracking-[0.2em]">Strategy Synthesis</span>
+              <h2 className="mb-4 text-2xl font-medium tracking-tight text-white md:text-3xl leading-tight">
+                Match curated performance with <span className="text-emerald-400 font-bold">precision logic & settings</span>.
+              </h2>
+              <p className="text-sm leading-relaxed text-slate-400">
+                Stellalpha analyzes trader history to recommend the exact copy model and execution parameters for their style. Every follow is backed by automated, strategy-aware allocation.
+              </p>
+            </div>
 
-      <div className="absolute inset-0 pointer-events-none z-10">
-        <div className="sticky top-0 h-screen w-full overflow-hidden">
-          {/* Layered container for slides to prevent GPU transparency glitches */}
-          <div className="relative w-full h-full">
-            
-            {/* View 1: Synthesis */}
-            <motion.div 
-              key="synthesis-view"
-              initial={{ opacity: 1 }}
-              style={{ opacity: opacity1, scale: scale1, zIndex: 10, position: 'absolute', inset: 0, backfaceVisibility: 'hidden', isolation: 'isolate' }}
-              className="flex flex-col justify-center px-6 pointer-events-auto"
-            >
-              <div className="mx-auto max-w-7xl w-full py-4 md:py-6">
-                  <div className="grid lg:grid-cols-[0.95fr_1.05fr] gap-8 lg:gap-12 items-center">
-                      <div className="max-w-lg text-left">
-                          <span className="cyber-command mb-3 block text-[10px] text-cyan-200/80 uppercase tracking-[0.2em]">Strategy Synthesis</span>
-                          <h2 className="mb-4 text-2xl font-medium tracking-tight text-white md:text-3xl leading-tight">
-                              Match curated performance with <span className="text-emerald-400 font-bold">precision logic & settings</span>.
-                          </h2>
-                          <p className="text-sm leading-relaxed text-slate-400">
-                              Stellalpha analyzes trader history to recommend the exact copy model and execution parameters for their style. Every follow is backed by automated, strategy-aware allocation.
-                          </p>
-                      </div>
-
-                      <div className="cyber-panel border border-white/10 bg-black/35 p-0 min-h-[420px] flex flex-col overflow-hidden">
-                        <div className="cyber-table-header border-b border-white/5 p-6 bg-black/20 shrink-0">
-                            <div className="flex items-center gap-5">
-                              <img src="https://pbs.twimg.com/profile_images/2009524375649996800/sKQZieeJ_400x400.jpg" alt="crypto 挪吒" className="w-14 h-14 border border-white/10 cyber-panel-soft object-cover" />
-                              <div>
-                                  <h3 className="text-xl font-medium text-white mb-0.5 flex items-center gap-2">crypto 挪吒 <span className="text-[9px] px-1.5 py-0.5 border border-emerald-400/30 bg-emerald-400/5 text-emerald-400 uppercase font-mono tracking-tighter">Star Trader</span></h3>
-                                  <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Performance profile analyzed</p>
-                              </div>
-                            </div>
-                        </div>
-                        
-                        <div className="p-6 space-y-6 flex-1 flex flex-col justify-center bg-black/10">
-                          <div className="grid gap-8 md:grid-cols-[1.1fr_0.9fr]">
-                            <div className="space-y-5 text-left">
-                              <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-emerald-400 font-bold">
-                                <Zap size={14} /> Recommended Model
-                              </div>
-                              <div className="cyber-panel-soft cyber-row p-5 border border-emerald-400/30 bg-emerald-400/5 relative group transition-all">
-                                  <div className="flex justify-between items-center mb-3 relative z-10">
-                                      <h4 className="text-sm font-semibold text-white uppercase tracking-wider">Fixed % of Free Cash</h4>
-                                      <CheckCircle2 size={16} className="text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.3)]" />
-                                  </div>
-                                  <p className="text-[11px] text-slate-400 leading-relaxed relative z-10">
-                                      Maintains high liquidity to capture volatile alpha streams. 
-                                      Optimized for high-frequency entry profiles.
-                                  </p>
-                              </div>
-                              <div className="flex items-center gap-3 p-3 border border-white/5 bg-white/[0.02] rounded-sm">
-                                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
-                                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-tight font-medium">Match: Optimized for Volatility</span>
-                              </div>
-                            </div>
-
-                            <div className="space-y-5 text-left">
-                              <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-cyan-400 font-bold">
-                                <Activity size={14} /> Recommended Settings
-                              </div>
-                              <div className="space-y-4">
-                                  <div className="cyber-panel-soft border border-cyan-400/30 bg-cyan-400/5 p-4 relative">
-                                      <div className="flex justify-between items-end mb-2.5 relative z-10">
-                                          <span className="text-[9px] font-mono text-slate-500 uppercase tracking-wider">Demo Allocation</span>
-                                          <span className="text-sm font-bold text-white tracking-tight">$50.00</span>
-                                      </div>
-                                      <div className="flex justify-between items-end relative z-10">
-                                          <span className="text-[9px] font-mono text-slate-500 uppercase tracking-wider">Risk per Entry</span>
-                                          <span className="text-[10px] font-mono text-emerald-400 font-bold">5.0% P.B.</span>
-                                      </div>
-                                      <div className="absolute inset-0 bg-gradient-to-br from-white/[0.02] to-transparent pointer-events-none" />
-                                      <CheckCircle2 size={12} className="absolute -top-1.5 -right-1.5 text-cyan-400 bg-[#050505] rounded-full" />
-                                  </div>
-                                  <div className="flex items-start gap-3 p-1">
-                                      <Info size={14} className="mt-0.5 text-cyan-400 shrink-0 opacity-80" />
-                                      <p className="text-[10px] text-slate-500 leading-snug uppercase tracking-tighter font-mono">
-                                          Settings Synthesized for Performance.
-                                      </p>
-                                  </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                  </div>
-              </div>
-            </motion.div>
-
-            {/* View 2: Repository */}
-            <motion.div 
-              key="repository-view"
-              style={{ opacity: opacity2, scale: scale2, zIndex: 20, position: 'absolute', inset: 0, backfaceVisibility: 'hidden', isolation: 'isolate' }}
-              className="flex flex-col justify-center px-6 pointer-events-auto"
-            >
-              <div className="mx-auto max-w-7xl w-full">
-                <div
-                  className="grid lg:grid-cols-[0.85fr_1.15fr] gap-6 lg:gap-12 items-center"
-                >
-                  <div className="text-left">
-                    <span className="cyber-command mb-3 block text-[10px] text-emerald-400/80">Model Repository</span>
-                    <h2 className="mb-4 text-2xl font-medium tracking-tight text-white md:text-4xl leading-tight">
-                        5 execution models to <span className="text-emerald-400">match your alpha style</span>.
-                    </h2>
-                    <p className="text-sm leading-relaxed text-slate-400 mb-6 max-w-md">
-                        Stellalpha provides the infrastructure for precise intent replication. 
-                        Choose the copy model that fits your risk appetite and the trader's historical profile.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2 max-h-[580px] overflow-y-auto scrollbar-hide pr-2">
-                    {COPY_MODELS.map((model) => (
-                        <div key={model.id} className="relative group text-left">
-                          <div className="cyber-panel-soft cyber-row border border-white/10 bg-black/35 transition-all p-3 flex items-start gap-5">
-                              <div className="p-2 border border-white/10 text-emerald-400 bg-black/40 shrink-0 group-hover:bg-emerald-400/5 transition-colors relative z-10">
-                                  <model.icon size={20} />
-                              </div>
-                              <div className="flex-1 min-w-0 relative z-10">
-                                  <div className="flex justify-between items-center mb-1 pr-28">
-                                      <h4 className="text-[13px] font-bold tracking-wider text-white uppercase">
-                                          {model.label}
-                                      </h4>
-                                  </div>
-                                  <p className="text-[10px] text-cyan-300/80 mb-1 font-medium tracking-tight">
-                                      <span className="text-slate-500 uppercase text-[8px] font-bold tracking-widest mr-2">{model.type}:</span> {model.suitability}
-                                  </p>
-                                  <p className="text-[11px] text-slate-400 leading-snug">
-                                      {model.desc}
-                                  </p>
-                              </div>
-                          </div>
-                          {model.isOriginal && <OriginalBadge key={`${model.id}-badge`} />}
-                        </div>
-                    ))}
+            <div className="cyber-panel border border-white/10 bg-black/35 p-0 min-h-[420px] flex flex-col overflow-hidden">
+              <div className="cyber-table-header border-b border-white/5 p-6 bg-black/20 shrink-0">
+                <div className="flex items-center gap-5">
+                  <img src="https://pbs.twimg.com/profile_images/2009524375649996800/sKQZieeJ_400x400.jpg" alt="crypto 挪吒" className="w-14 h-14 border border-white/10 cyber-panel-soft object-cover" />
+                  <div>
+                    <h3 className="text-xl font-medium text-white mb-0.5 flex items-center gap-2">crypto 挪吒 <span className="text-[9px] px-1.5 py-0.5 border border-emerald-400/30 bg-emerald-400/5 text-emerald-400 uppercase font-mono tracking-tighter">Star Trader</span></h3>
+                    <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Performance profile analyzed</p>
                   </div>
                 </div>
               </div>
-            </motion.div>
+
+              <div className="p-6 space-y-6 flex-1 flex flex-col justify-center bg-black/10">
+                <div className="grid gap-8 md:grid-cols-[1.1fr_0.9fr]">
+                  <div className="space-y-5 text-left">
+                    <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-emerald-400 font-bold">
+                      <Zap size={14} /> Recommended Model
+                    </div>
+                    <div className="cyber-panel-soft cyber-row p-5 border border-emerald-400/30 bg-emerald-400/5 relative group transition-all">
+                      <div className="flex justify-between items-center mb-3 relative z-10">
+                        <h4 className="text-sm font-semibold text-white uppercase tracking-wider">Fixed % of Free Cash</h4>
+                        <CheckCircle2 size={16} className="text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.3)]" />
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed relative z-10">
+                        Maintains high liquidity to capture volatile alpha streams. Optimized for high-frequency entry profiles.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 p-3 border border-white/5 bg-white/[0.02] rounded-sm">
+                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
+                      <span className="text-[10px] font-mono text-slate-400 uppercase tracking-tight font-medium">Match: Optimized for Volatility</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-5 text-left">
+                    <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-cyan-400 font-bold">
+                      <Activity size={14} /> Recommended Settings
+                    </div>
+                    <div className="space-y-4">
+                      <div className="cyber-panel-soft border border-cyan-400/30 bg-cyan-400/5 p-4 relative">
+                        <div className="flex justify-between items-end mb-2.5 relative z-10">
+                          <span className="text-[9px] font-mono text-slate-500 uppercase tracking-wider">Demo Allocation</span>
+                          <span className="text-sm font-bold text-white tracking-tight">$50.00</span>
+                        </div>
+                        <div className="flex justify-between items-end relative z-10">
+                          <span className="text-[9px] font-mono text-slate-500 uppercase tracking-wider">Risk per Entry</span>
+                          <span className="text-[10px] font-mono text-emerald-400 font-bold">5.0% P.B.</span>
+                        </div>
+                        <div className="absolute inset-0 bg-gradient-to-br from-white/[0.02] to-transparent pointer-events-none" />
+                        <CheckCircle2 size={12} className="absolute -top-1.5 -right-1.5 text-cyan-400 bg-[#050505] rounded-full" />
+                      </div>
+                      <div className="flex items-start gap-3 p-1">
+                        <Info size={14} className="mt-0.5 text-cyan-400 shrink-0 opacity-80" />
+                        <p className="text-[10px] text-slate-500 leading-snug uppercase tracking-tighter font-mono">
+                          Settings Synthesized for Performance.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
+
+      <section id="strategy-library" className="landing-section h-screen snap-start flex flex-col justify-center px-6">
+        <div className="mx-auto max-w-7xl w-full">
+          <div className="grid lg:grid-cols-[0.85fr_1.15fr] gap-6 lg:gap-12 items-center">
+            <div className="text-left">
+              <span className="cyber-command mb-3 block text-[10px] text-emerald-400/80">Model Repository</span>
+              <h2 className="mb-4 text-2xl font-medium tracking-tight text-white md:text-4xl leading-tight">
+                5 execution models to <span className="text-emerald-400">match your alpha style</span>.
+              </h2>
+              <p className="text-sm leading-relaxed text-slate-400 mb-6 max-w-md">
+                Stellalpha provides the infrastructure for precise intent replication. Choose the copy model that fits your risk appetite and the trader's historical profile.
+              </p>
+            </div>
+
+            <div className="space-y-2 max-h-[580px] overflow-y-auto scrollbar-hide pr-2">
+              {COPY_MODELS.map((model) => (
+                <div key={model.id} className="relative group text-left">
+                  <div className="cyber-panel-soft cyber-row border border-white/10 bg-black/35 transition-all p-3 flex items-start gap-5">
+                    <div className="p-2 border border-white/10 text-emerald-400 bg-black/40 shrink-0 group-hover:bg-emerald-400/5 transition-colors relative z-10">
+                      <model.icon size={20} />
+                    </div>
+                    <div className="flex-1 min-w-0 relative z-10">
+                      <div className="flex justify-between items-center mb-1 pr-28">
+                        <h4 className="text-[13px] font-bold tracking-wider text-white uppercase">
+                          {model.label}
+                        </h4>
+                      </div>
+                      <p className="text-[10px] text-cyan-300/80 mb-1 font-medium tracking-tight">
+                        <span className="text-slate-500 uppercase text-[8px] font-bold tracking-widest mr-2">{model.type}:</span> {model.suitability}
+                      </p>
+                      <p className="text-[11px] text-slate-400 leading-snug">
+                        {model.desc}
+                      </p>
+                    </div>
+                  </div>
+                  {model.isOriginal && <OriginalBadge key={`${model.id}-badge`} />}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
     </section>
   );
 };
