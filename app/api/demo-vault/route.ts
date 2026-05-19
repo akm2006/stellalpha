@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { createDemoTradeStatsMap } from '@/lib/demo-trade-stats';
 import {
   calculateDemoVaultPortfolioValue,
+  estimateDemoVaultPortfolioValueFromCostBasis,
   fetchDemoVaultPriceMap,
   normalizeDemoVaultPositions,
 } from '@/lib/demo-vault-pricing';
@@ -107,6 +108,7 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const requestedWallet = searchParams.get('wallet');
+  const includeLivePrices = searchParams.get('includeLivePrices') !== '0';
   const wallet = session.user.wallet;
 
   if (requestedWallet && requestedWallet !== wallet) {
@@ -166,29 +168,37 @@ export async function GET(request: NextRequest) {
       }
     }
       
-    // Collect all mints
+    // Collect all mints only when the overview explicitly needs live marks.
     const allMints = new Set<string>();
-    traderStates?.forEach(ts => {
-      const activePositions = normalizeDemoVaultPositions(ts.positions);
-      activePositions.forEach((p) => {
-        if (p.token_mint) allMints.add(p.token_mint);
+    if (includeLivePrices) {
+      traderStates?.forEach(ts => {
+        const activePositions = normalizeDemoVaultPositions(ts.positions);
+        activePositions.forEach((p) => {
+          if (p.token_mint) allMints.add(p.token_mint);
+        });
       });
-    });
+    }
     
-    // Fetch prices only for active positions and use the same chunking path as the detail view.
-    const prices = await fetchDemoVaultPriceMap(Array.from(allMints));
+    // The main dashboard uses cost-basis estimates by default to avoid blocking
+    // page load on Jupiter price fanout across every trader state.
+    const prices = includeLivePrices
+      ? await fetchDemoVaultPriceMap(Array.from(allMints))
+      : new Map();
     
     // Calculate totals per trader state using LIVE prices
     const tradersWithTotals = (traderStates || []).map(ts => {
       const positions = normalizeDemoVaultPositions(ts.positions);
-      const { portfolioValue } = calculateDemoVaultPortfolioValue(positions, prices);
+      const { portfolioValue } = includeLivePrices
+        ? calculateDemoVaultPortfolioValue(positions, prices)
+        : estimateDemoVaultPortfolioValueFromCostBasis(positions);
 
       return {
         ...ts,
         positions,
         totalValue: portfolioValue,
         positionCount: positions.length,
-        tradeStats: tradeStatsMap[ts.id]
+        tradeStats: tradeStatsMap[ts.id],
+        valuationMode: includeLivePrices ? 'live' : 'cost_basis',
       };
     });
     

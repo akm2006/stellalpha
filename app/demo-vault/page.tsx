@@ -23,7 +23,6 @@ import { useRouter } from 'next/navigation';
 import { useAppKitAccount } from '@reown/appkit/react';
 import { useAuth } from '@/contexts/auth-context';
 import { useOnboarding } from '@/contexts/onboarding-context';
-import { getDemoTradeCount } from '@/lib/demo-trade-stats';
 import { COLORS } from '@/lib/theme';
 import { 
   Wallet, 
@@ -103,7 +102,6 @@ type TraderSortKey =
   | 'roi'
   | 'pnl'
   | 'totalValue'
-  | 'trades'
   | 'allocated'
   | 'copyStyle'
   | 'status'
@@ -115,7 +113,6 @@ const TRADER_SORT_OPTIONS: Array<{ key: TraderSortKey; label: string; kind: 'num
   { key: 'roi', label: 'ROI', kind: 'number' },
   { key: 'pnl', label: 'PnL', kind: 'number' },
   { key: 'totalValue', label: 'Total Value', kind: 'number' },
-  { key: 'trades', label: 'Trades', kind: 'number' },
   { key: 'allocated', label: 'Allocated', kind: 'number' },
   { key: 'copyStyle', label: 'Copy Style', kind: 'text' },
   { key: 'status', label: 'Status', kind: 'text' },
@@ -123,7 +120,7 @@ const TRADER_SORT_OPTIONS: Array<{ key: TraderSortKey; label: string; kind: 'num
 ];
 
 const TRADER_TABLE_GRID =
-  'grid-cols-[50px_minmax(150px,1fr)_minmax(185px,1.15fr)_minmax(165px,1fr)_100px_115px_80px_115px_115px]';
+  'grid-cols-[50px_minmax(150px,1fr)_minmax(185px,1.15fr)_minmax(165px,1fr)_100px_115px_115px_115px]';
 
 function getTraderStatePnl(state: TraderState) {
   return Number(state.totalValue || 0) - Number(state.allocated_usd || 0);
@@ -432,7 +429,7 @@ export default function DemoVaultPage() {
     }
     setError(null);
     try {
-      const response = await fetch(`/api/demo-vault?wallet=${walletAddress}`);
+      const response = await fetch(`/api/demo-vault?wallet=${walletAddress}&includeLivePrices=0`);
       const data = await response.json();
 
       if (!response.ok) {
@@ -668,9 +665,6 @@ export default function DemoVaultPage() {
           break;
         case 'totalValue':
           comparison = Number(a.totalValue || 0) - Number(b.totalValue || 0);
-          break;
-        case 'trades':
-          comparison = getDemoTradeCount(a.tradeStats) - getDemoTradeCount(b.tradeStats);
           break;
         case 'allocated':
           comparison = Number(a.allocated_usd || 0) - Number(b.allocated_usd || 0);
@@ -1051,7 +1045,7 @@ export default function DemoVaultPage() {
               {/* Horizontal scroll container for table */}
               <div className="overflow-x-auto">
                 {/* Table Header */}
-                <div className={`cyber-table-header grid ${TRADER_TABLE_GRID} gap-3 px-4 sm:px-5 py-2.5 text-[10px] sm:text-xs uppercase tracking-wider border-b border-white/10 font-mono min-w-[1040px]`} style={{ color: COLORS.data }}>
+                <div className={`cyber-table-header grid ${TRADER_TABLE_GRID} gap-3 px-4 sm:px-5 py-2.5 text-[10px] sm:text-xs uppercase tracking-wider border-b border-white/10 font-mono min-w-[960px]`} style={{ color: COLORS.data }}>
                   <div className="min-w-0 flex items-center gap-1">
                     Rank
                     <InfoTooltip>
@@ -1089,13 +1083,6 @@ export default function DemoVaultPage() {
                        <strong>Profit Factor</strong><br/><br/>
                        Industry standard efficiency metric: (Gross Profit / Gross Loss).<br/><br/>
                        &gt; 1.0 means profitable. Higher is better.
-                    </InfoTooltip>
-                  </div>
-                  <div className="min-w-0 flex items-center gap-1 justify-end text-right">
-                    Trades
-                    <InfoTooltip>
-                       <strong>Total Trades</strong><br/><br/>
-                       Number of buy/sell execution cycles completed by this trader state.
                     </InfoTooltip>
                   </div>
                   <div className="min-w-0 flex items-center gap-1 justify-end text-right">
@@ -1171,7 +1158,6 @@ export default function DemoVaultPage() {
                     
                     // Profit Factor provided by API or default to 0
                     const profitFactor = stats.profitFactor ?? 0;
-                    const totalTrades = getDemoTradeCount(stats);
                     const roi = ts.allocated_usd > 0 ? (pnl / Number(ts.allocated_usd)) * 100 : 0;
                     
                     const isTargetForInit = onboardingStep === 'INITIALIZE' && !ts.is_initialized && !ts.is_settled;
@@ -1195,7 +1181,7 @@ export default function DemoVaultPage() {
                             navigateToState();
                           }
                         }}
-                        className={`cyber-row grid ${TRADER_TABLE_GRID} gap-3 px-4 sm:px-5 py-3 items-center transition-colors min-w-[1040px] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#00FF85]/70 ${index % 2 === 1 ? 'bg-white/[0.02]' : ''} ${isTargetForInit ? 'ring-2 ring-[#00FF85]/50 bg-[#00FF85]/5 relative z-10' : ''}`}
+                        className={`cyber-row grid ${TRADER_TABLE_GRID} gap-3 px-4 sm:px-5 py-3 items-center transition-colors min-w-[960px] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#00FF85]/70 ${index % 2 === 1 ? 'bg-white/[0.02]' : ''} ${isTargetForInit ? 'ring-2 ring-[#00FF85]/50 bg-[#00FF85]/5 relative z-10' : ''}`}
                       >
                         {isTargetForInit && (
                             <div className="absolute -left-2 top-1/2 -translate-y-1/2 -translate-x-full pr-2 hidden xl:block animate-pulse">
@@ -1256,11 +1242,6 @@ export default function DemoVaultPage() {
                         {/* Profit Factor */}
                         <div className={`min-w-0 text-right font-mono text-sm ${profitFactor >= 1 ? 'text-emerald-400' : 'text-red-400'}`}>
                           {profitFactor.toFixed(2)}x
-                        </div>
-                        
-                        {/* Total Trades */}
-                        <div className="min-w-0 text-right font-mono text-sm" style={{ color: COLORS.text }}>
-                          {totalTrades}
                         </div>
                         
                         {/* Allocated */}
@@ -1457,7 +1438,7 @@ export default function DemoVaultPage() {
                                })()}
 
                                {/* Stats Grid */}
-                               <div className="grid grid-cols-3 gap-2">
+                               <div className="grid grid-cols-2 gap-2">
                                   <div>
                                       <div className="text-[10px] uppercase font-mono mb-0.5" style={{ color: COLORS.data }}>Allocated</div>
                                       <div className="text-xs font-semibold font-mono" style={{ color: COLORS.text }}>{formatUsd(ts.allocated_usd)}</div>
@@ -1465,10 +1446,6 @@ export default function DemoVaultPage() {
                                   <div>
                                       <div className="text-[10px] uppercase font-mono mb-0.5" style={{ color: COLORS.data }}>Win Rate</div>
                                       <div className={`text-xs font-semibold font-mono ${winRate >= 50 ? 'text-emerald-400' : 'text-slate-300'}`}>{winRate.toFixed(0)}%</div>
-                                  </div>
-                                  <div>
-                                      <div className="text-[10px] uppercase font-mono mb-0.5" style={{ color: COLORS.data }}>Trades</div>
-                                      <div className="text-xs font-semibold font-mono" style={{ color: COLORS.text }}>{getDemoTradeCount(stats)}</div>
                                   </div>
                                </div>
                              </div>

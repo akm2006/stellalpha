@@ -35,7 +35,20 @@ export async function claimQueuedTrade(tradeId: string, processorId: string) {
     })
     .eq('id', tradeId)
     .eq('status', 'queued')
-    .select('*');
+    .select(`
+      id,
+      trader_state_id,
+      created_at,
+      raw_data,
+      buy_model_key,
+      buy_model_config,
+      buy_sizing_context,
+      leader_usd_value,
+      leader_buy_ratio,
+      leader_before_balance,
+      copy_ratio,
+      copied_position_before
+    `);
 }
 
 export async function updateDemoTrade(tradeId: string, updateData: any) {

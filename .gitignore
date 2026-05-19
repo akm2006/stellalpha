@@ -55,7 +55,7 @@ package-lock.json
 # Next.js generated
 next-env.d.ts
 
-# ===========================================
+# ============R===============================
 # Development / Non-deployment files
 # ===========================================
 
@@ -77,6 +77,7 @@ metircs-doc/
 
 # Supabase migrations (not needed for Vercel)
 supabase/
+migrations/
 
 # Test ledger data
 test-ledger/
@@ -95,7 +96,6 @@ fix_jsx.py
 
 
 tests/
-migrations/
 
 # ===========================================
 # AI Assistant / Agent files

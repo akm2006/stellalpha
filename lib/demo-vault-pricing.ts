@@ -145,3 +145,13 @@ export function calculateDemoVaultPortfolioValue(
     hasStalePrices,
   };
 }
+
+export function estimateDemoVaultPortfolioValueFromCostBasis(
+  positions: NormalizedDemoVaultPosition[]
+) {
+  return {
+    portfolioValue: positions.reduce((sum, position) => sum + Number(position.cost_usd || 0), 0),
+    totalCostBasis: positions.reduce((sum, position) => sum + Number(position.cost_usd || 0), 0),
+    hasStalePrices: false,
+  };
+}

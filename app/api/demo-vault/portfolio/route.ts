@@ -13,6 +13,8 @@ import { getSession } from '@/lib/session';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const SOL_LOGO = 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png';
+const DEFAULT_MAX_PRICED_POSITIONS = 100;
+const MAX_PRICED_POSITIONS_LIMIT = 150;
 
 interface Position {
   mint: string;
@@ -45,6 +47,10 @@ interface PortfolioResponse {
   
   // Positions
   positions: Position[];
+  pricedPositionCount: number;
+  hiddenPositionCount: number;
+  hiddenCostBasisUsd: number;
+  positionLimit: number;
   
   // ============================================
   // METRICS (per authoritative spec)
@@ -76,6 +82,11 @@ function safeDivide(numerator: number, denominator: number, fallback = 0): numbe
   return numerator / denominator;
 }
 
+function positiveInt(value: string | null, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
 // ============================================
 // HELPER: Fetch Jupiter prices with stale handling
 // ============================================
@@ -93,6 +104,10 @@ export async function GET(request: NextRequest) {
     const requestedWallet = searchParams.get('wallet');
     const wallet = session.user.wallet;
     const traderStateId = searchParams.get('traderStateId');
+    const maxPositions = Math.min(
+      positiveInt(searchParams.get('maxPositions'), DEFAULT_MAX_PRICED_POSITIONS),
+      MAX_PRICED_POSITIONS_LIMIT
+    );
 
     if (requestedWallet && requestedWallet !== wallet) {
       return NextResponse.json({ error: 'Forbidden: wallet does not match authenticated user' }, { status: 403 });
@@ -139,9 +154,17 @@ export async function GET(request: NextRequest) {
     
     // Filter out 0-balance positions (they clutter the UI)
     const positions = normalizeDemoVaultPositions(dbPositions);
+    const sortedPositions = [...positions].sort((a, b) => {
+      if (a.token_mint === USDC_MINT) return -1;
+      if (b.token_mint === USDC_MINT) return 1;
+      return (b.cost_usd || 0) - (a.cost_usd || 0);
+    });
+    const pricedPositions = sortedPositions.slice(0, maxPositions);
+    const hiddenPositions = sortedPositions.slice(maxPositions);
+    const hiddenCostBasisUsd = hiddenPositions.reduce((sum, position) => sum + (position.cost_usd || 0), 0);
     
     // 3. Fetch live prices from Jupiter
-    const mints = positions.map(p => p.token_mint);
+    const mints = pricedPositions.map(p => p.token_mint);
     const priceMap = await fetchDemoVaultPriceMap(mints);
     
     // 4. Fetch token metadata
@@ -149,13 +172,15 @@ export async function GET(request: NextRequest) {
     
     // 5. Build enriched positions with per-position metrics
     const { portfolioValue, totalCostBasis, hasStalePrices } = calculateDemoVaultPortfolioValue(
-      positions,
+      pricedPositions,
       priceMap
     );
+    const effectivePortfolioValue = portfolioValue + hiddenCostBasisUsd;
+    const effectiveTotalCostBasis = totalCostBasis + hiddenCostBasisUsd;
     
     const enrichedPositions: Position[] = [];
     
-    for (const pos of positions) {
+    for (const pos of pricedPositions) {
       const amount = pos.size;
       const costBasis = pos.cost_usd;
       const avgCost = pos.avg_cost;
@@ -194,8 +219,8 @@ export async function GET(request: NextRequest) {
     
     // 6. Calculate portfolio percentages
     for (const pos of enrichedPositions) {
-      if (pos.currentValue !== null && portfolioValue > 0) {
-        pos.portfolioPercent = safeDivide(pos.currentValue, portfolioValue) * 100;
+      if (pos.currentValue !== null && effectivePortfolioValue > 0) {
+        pos.portfolioPercent = safeDivide(pos.currentValue, effectivePortfolioValue) * 100;
       }
     }
     
@@ -212,8 +237,8 @@ export async function GET(request: NextRequest) {
     const copyModelConfig = traderState.copy_model_config || {};
     
     // Unrealized = Portfolio Value - Cost Basis (what we'd gain/lose if we sold now)
-    const unrealizedPnL = portfolioValue - totalCostBasis;
-    const unrealizedPnLPercent = safeDivide(unrealizedPnL, totalCostBasis) * 100;
+    const unrealizedPnL = effectivePortfolioValue - effectiveTotalCostBasis;
+    const unrealizedPnLPercent = safeDivide(unrealizedPnL, effectiveTotalCostBasis) * 100;
     
     // THE SINGLE TRUTH: Total PnL = Realized + Unrealized
     const totalPnL = realizedPnlUsd + unrealizedPnL;
@@ -221,11 +246,11 @@ export async function GET(request: NextRequest) {
     
     // Invariant check: portfolioValue should equal allocatedUsd + totalPnL (approximately)
     const expectedPortfolioValue = allocatedUsd + totalPnL;
-    const invariantDiff = Math.abs(portfolioValue - expectedPortfolioValue);
+    const invariantDiff = Math.abs(effectivePortfolioValue - expectedPortfolioValue);
     const invariantValid = invariantDiff < 0.1; // $0.10 tolerance
     
     if (!invariantValid) {
-      console.warn(`Portfolio invariant violation: portfolioValue=${portfolioValue.toFixed(2)}, expected=${expectedPortfolioValue.toFixed(2)}, diff=${invariantDiff.toFixed(2)}`);
+      console.warn(`Portfolio invariant violation: portfolioValue=${effectivePortfolioValue.toFixed(2)}, expected=${expectedPortfolioValue.toFixed(2)}, diff=${invariantDiff.toFixed(2)}`);
     }
     
     // 8. Build response
@@ -243,17 +268,21 @@ export async function GET(request: NextRequest) {
       isSettled: traderState.is_settled,
       
       positions: enrichedPositions,
+      pricedPositionCount: pricedPositions.length,
+      hiddenPositionCount: hiddenPositions.length,
+      hiddenCostBasisUsd,
+      positionLimit: maxPositions,
       
       // Metrics
-      portfolioValue,
-      totalCostBasis,
+      portfolioValue: effectivePortfolioValue,
+      totalCostBasis: effectiveTotalCostBasis,
       totalPnL,
       totalPnLPercent,
       unrealizedPnL,
       unrealizedPnLPercent,
       
       invariantValid,
-      hasStalePrices,
+      hasStalePrices: hasStalePrices || hiddenPositions.length > 0,
       usdcBalance: positions.find(p => p.token_mint === USDC_MINT)?.size || 0, // <--- New Field for V2 Logic
     };
     

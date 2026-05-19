@@ -211,16 +211,31 @@ export default function StarTradersListPage() {
     setError(null);
 
     try {
-      const url = walletAddress ? `/api/star-traders?userWallet=${walletAddress}` : '/api/star-traders';
-      const response = await fetch(url);
-      const data = await response.json();
+      const [tradersResponse, followingResponse] = await Promise.all([
+        fetch('/api/star-traders'),
+        walletAddress
+          ? fetch(`/api/demo-vault/following?wallet=${walletAddress}`)
+          : Promise.resolve(null),
+      ]);
+      const data = await tradersResponse.json();
 
       if (data.error) {
         setError(data.error);
         return;
       }
 
-      setTraders(data.traders || []);
+      let followedTraders = new Set<string>();
+      if (followingResponse) {
+        const followingData = await followingResponse.json();
+        if (followingResponse.ok) {
+          followedTraders = new Set(followingData.followedTraders || []);
+        }
+      }
+
+      setTraders((data.traders || []).map((trader: StarTrader) => ({
+        ...trader,
+        isFollowing: followedTraders.has(trader.wallet),
+      })));
     } catch {
       setError('The trader list could not be refreshed. Please try again.');
     } finally {

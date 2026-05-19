@@ -94,6 +94,10 @@ interface PortfolioData {
   isPaused: boolean;
   isSettled: boolean;
   positions: Position[];
+  pricedPositionCount?: number;
+  hiddenPositionCount?: number;
+  hiddenCostBasisUsd?: number;
+  positionLimit?: number;
   portfolioValue: number;
   totalCostBasis: number;
   totalPnL: number;
@@ -355,10 +359,10 @@ export default function TraderStateDetailPage() {
     setError(null);
     
     try {
-      // 1. Fetch Portfolio
-      const portfolioRes = await fetch(
-        `/api/demo-vault/portfolio?wallet=${walletAddress}&traderStateId=${traderStateId}`
-      );
+      const [portfolioRes, initialTradesRes] = await Promise.all([
+        fetch(`/api/demo-vault/portfolio?wallet=${walletAddress}&traderStateId=${traderStateId}&maxPositions=100`),
+        fetchTradesPage(),
+      ]);
       const portfolioData = await portfolioRes.json();
       
       if (portfolioData.error) {
@@ -369,26 +373,18 @@ export default function TraderStateDetailPage() {
       setPortfolio(portfolioData);
       setStarTraderProfile(null);
 
-       // 2. Fetch Initial Trades (Page 1) directly to populate stats/metadata immediately
-       // We reuse the fetchTradesPage logic but call it manually to init the hook state
-       const initialTradesRes = await fetchTradesPage();
-       setTrades(initialTradesRes.data);
-       setTradesCursor(initialTradesRes.nextCursor);
-       setTradesHasMore(!!initialTradesRes.nextCursor);
+      setTrades(initialTradesRes.data);
+      setTradesCursor(initialTradesRes.nextCursor);
+      setTradesHasMore(!!initialTradesRes.nextCursor);
       
-      // Meta for portfolio
-      const mints = new Set<string>();
-      portfolioData.positions?.forEach((p: Position) => mints.add(p.mint));
-       if (mints.size > 0) {
-         await fetchTokenMetadata(Array.from(mints));
-       }
-
-      // 3. Fetch only the followed trader summary instead of the full leaderboard
-      const traderRes = await fetch(`/api/star-traders/${portfolioData.starTrader}`);
-      const traderData = await traderRes.json();
-      if (traderRes.ok && traderData.trader) {
-        setStarTraderProfile(traderData.trader);
-      }
+      await fetch(`/api/star-traders/${portfolioData.starTrader}`)
+          .then(async (traderRes) => {
+            const traderData = await traderRes.json();
+            if (traderRes.ok && traderData.trader) {
+              setStarTraderProfile(traderData.trader);
+            }
+          })
+          .catch(() => undefined);
       
     } catch {
       setError('Failed to fetch data');
@@ -396,7 +392,7 @@ export default function TraderStateDetailPage() {
       setLoading(false);
       setHasCheckedData(true);
     }
-  }, [walletAddress, traderStateId, fetchTradesPage, fetchTokenMetadata, setTrades, setTradesCursor, setTradesHasMore]);
+  }, [walletAddress, traderStateId, fetchTradesPage, setTrades, setTradesCursor, setTradesHasMore]);
 
   useEffect(() => {
     if (isConnected && walletAddress) {
@@ -521,6 +517,7 @@ export default function TraderStateDetailPage() {
   const modelKey = (copyModelKey || 'current_ratio') as CopyBuyModelKey;
   const dustPositions = positions.filter((position) => (position.currentValue ?? 0) < 0.01 && position.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v').length;
   const stalePriceCount = positions.filter((position) => position.priceStale || position.currentPrice === null).length;
+  const totalPortfolioPositionCount = positions.length + (portfolio.hiddenPositionCount || 0);
   const currentValuePct = allocatedUsd > 0 ? Math.max(0, (portfolioValue / allocatedUsd) * 100) : 0;
   const wins = tradeStats.profitableCount || 0;
   const losses = tradeStats.lossCount || 0;
@@ -764,7 +761,7 @@ export default function TraderStateDetailPage() {
                 }`}
               >
                 <span className="inline-flex items-center gap-2">
-                  Portfolio ({shownPositions.length}/{positions.length})
+                  Portfolio ({shownPositions.length}/{totalPortfolioPositionCount})
                 </span>
               </button>
               <button
@@ -1221,7 +1218,10 @@ export default function TraderStateDetailPage() {
                   </div>
                   <div className="grid grid-cols-[140px_1fr] gap-3">
                     <span className="text-white/45">Open positions</span>
-                    <span>{positions.length} positions, including {dustPositions} near-zero positions</span>
+                    <span>
+                      {totalPortfolioPositionCount} positions, including {dustPositions} visible near-zero positions
+                      {portfolio.hiddenPositionCount ? `; ${portfolio.hiddenPositionCount} tiny positions are carried at cost basis for faster loading` : ''}
+                    </span>
                   </div>
                   <div className="grid grid-cols-[140px_1fr] gap-3">
                     <span className="text-white/45">Result</span>

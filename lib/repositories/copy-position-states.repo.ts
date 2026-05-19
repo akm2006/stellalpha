@@ -88,7 +88,7 @@ async function upsertCopyPositionState(
     payload.last_leader_trade_at = metadata.tradeTimestampIso;
   }
 
-  if (hasPostgresConnection()) {
+  if (shouldUsePostgresForScope(metadata.scopeType)) {
     return pgOne<CopyPositionStateRow>(
       `
         insert into public.copy_position_states (
@@ -200,6 +200,10 @@ function mergeCopyPositionRows(
   );
 }
 
+function shouldUsePostgresForScope(scopeType: CopyPositionScopeType) {
+  return scopeType === 'pilot' && hasPostgresConnection();
+}
+
 async function listRedisLeaderClosedCopiedOpenPilotStates(args: {
   scopeKey: string;
   starTrader: string;
@@ -238,7 +242,7 @@ export async function getCopyPositionState(key: CopyPositionStateKey) {
     }
   }
 
-  if (hasPostgresConnection()) {
+  if (shouldUsePostgresForScope(key.scopeType)) {
     try {
       return await pgMaybeOne<CopyPositionStateRow>(
       `
