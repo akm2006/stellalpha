@@ -72,7 +72,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
 
       if (isAuthenticated && user?.wallet) {
         try {
-          const res = await fetch(`/api/demo-vault?wallet=${user.wallet}`);
+          const res = await fetch(`/api/demo-vault?wallet=${user.wallet}&includeLivePrices=0`);
           const data = await res.json();
           
           if (data.exists) {

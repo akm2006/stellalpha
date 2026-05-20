@@ -360,7 +360,7 @@ export default function TraderStateDetailPage() {
     
     try {
       const [portfolioRes, initialTradesRes] = await Promise.all([
-        fetch(`/api/demo-vault/portfolio?wallet=${walletAddress}&traderStateId=${traderStateId}&maxPositions=100`),
+        fetch(`/api/demo-vault/portfolio?wallet=${walletAddress}&traderStateId=${traderStateId}&maxPositions=50`),
         fetchTradesPage(),
       ]);
       const portfolioData = await portfolioRes.json();

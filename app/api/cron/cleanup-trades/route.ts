@@ -6,6 +6,8 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60; // Set timeout to 60s for vercel
 
 const DELETE_BATCH_SIZE = 500;
+const KEEP_TRADES_PER_WALLET = 1000;
+const DELETE_SCAN_LIMIT = 1000;
 
 function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -49,7 +51,7 @@ export async function GET(request: Request) {
         .select('id')
         .eq('wallet', trader.address)
         .order('block_timestamp', { ascending: false })
-        .range(1000, 10000);
+        .range(KEEP_TRADES_PER_WALLET, KEEP_TRADES_PER_WALLET + DELETE_SCAN_LIMIT - 1);
 
       if (idsError) {
         throw new Error(`Failed to fetch trade IDs for ${trader.address}: ${idsError.message}`);
@@ -60,16 +62,16 @@ export async function GET(request: Request) {
         let deletedForWallet = 0;
 
         for (const idBatch of chunkArray(ids, DELETE_BATCH_SIZE)) {
-          const { count: deleteCount, error } = await supabase
+          const { error } = await supabase
             .from('trades')
-            .delete({ count: 'exact' })
+            .delete()
             .in('id', idBatch);
 
           if (error) {
             throw new Error(`Failed to delete trades for ${trader.address}: ${error.message}`);
           }
 
-          deletedForWallet += deleteCount || 0;
+          deletedForWallet += idBatch.length;
         }
 
         if (deletedForWallet > 0) {

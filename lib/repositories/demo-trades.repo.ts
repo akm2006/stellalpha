@@ -88,7 +88,7 @@ export async function requeueProcessingTrade(tradeId: string) {
 export async function getQueuedTradeCount(traderStateId: string) {
   return supabase
     .from('demo_trades')
-    .select('*', { count: 'exact', head: true })
+    .select('id', { count: 'planned', head: true })
     .eq('trader_state_id', traderStateId)
     .eq('status', 'queued');
 }

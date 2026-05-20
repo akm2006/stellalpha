@@ -13,7 +13,7 @@ import { getSession } from '@/lib/session';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const SOL_LOGO = 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png';
-const DEFAULT_MAX_PRICED_POSITIONS = 100;
+const DEFAULT_MAX_PRICED_POSITIONS = 50;
 const MAX_PRICED_POSITIONS_LIMIT = 150;
 
 interface Position {

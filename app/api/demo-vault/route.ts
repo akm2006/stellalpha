@@ -3,11 +3,16 @@ import { supabase } from '@/lib/supabase';
 import { createDemoTradeStatsMap } from '@/lib/demo-trade-stats';
 import {
   calculateDemoVaultPortfolioValue,
-  estimateDemoVaultPortfolioValueFromCostBasis,
   fetchDemoVaultPriceMap,
   normalizeDemoVaultPositions,
 } from '@/lib/demo-vault-pricing';
 import { getSession } from '@/lib/session';
+
+type PositionSummary = {
+  trader_state_id: string;
+  position_count: number | string | null;
+  cost_basis_usd: number | string | null;
+};
 
 // GET: Fetch user's demo vault with trader states
 // (Implementation moved below to use price fetching)
@@ -132,7 +137,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ vault: null, exists: false });
     }
     
-    // Fetch trader states with their positions
+    // Fetch trader states without embedding positions. The dashboard needs
+    // summary values only; raw positions belong on the detail page.
     const { data: traderStates } = await supabase
       .from('demo_trader_states')
       .select(`
@@ -148,55 +154,89 @@ export async function GET(request: NextRequest) {
         is_syncing,
         is_initialized,
         is_paused,
-        is_settled,
-        positions:demo_positions(token_mint, token_symbol, size, cost_usd)
+        is_settled
       `)
       .eq('vault_id', vault.id);
 
     const traderStateIds = (traderStates || []).map((state) => state.id);
     let tradeStatsMap = createDemoTradeStatsMap(traderStateIds, []);
+    const positionSummaryMap = new Map<string, { positionCount: number; costBasisUsd: number }>();
 
     if (traderStateIds.length > 0) {
-      const { data: tradeStatsRows, error: tradeStatsError } = await supabase.rpc('get_demo_trade_stats', {
-        p_trader_state_ids: traderStateIds,
-      });
+      const [tradeStatsResult, positionSummaryResult] = await Promise.all([
+        supabase.rpc('get_demo_trade_stats', {
+          p_trader_state_ids: traderStateIds,
+        }),
+        supabase.rpc('get_demo_position_summaries', {
+          p_trader_state_ids: traderStateIds,
+        }),
+      ]);
+
+      const { data: tradeStatsRows, error: tradeStatsError } = tradeStatsResult;
 
       if (tradeStatsError) {
         console.warn('Demo vault stats fetch failed; continuing without aggregate stats:', tradeStatsError);
       } else {
         tradeStatsMap = createDemoTradeStatsMap(traderStateIds, tradeStatsRows);
       }
+
+      const { data: positionSummaryRows, error: positionSummaryError } = positionSummaryResult;
+      if (positionSummaryError) {
+        console.warn('Demo vault position summary fetch failed; using zero position summaries:', positionSummaryError);
+      } else {
+        for (const row of (positionSummaryRows || []) as PositionSummary[]) {
+          positionSummaryMap.set(row.trader_state_id, {
+            positionCount: Number(row.position_count || 0),
+            costBasisUsd: Number(row.cost_basis_usd || 0),
+          });
+        }
+      }
     }
       
-    // Collect all mints only when the overview explicitly needs live marks.
-    const allMints = new Set<string>();
+    // Live pricing is intentionally opt-in. It requires raw position rows and
+    // should not be used by the main dashboard load path.
+    const livePositionsByState = new Map<string, any[]>();
     if (includeLivePrices) {
-      traderStates?.forEach(ts => {
-        const activePositions = normalizeDemoVaultPositions(ts.positions);
-        activePositions.forEach((p) => {
-          if (p.token_mint) allMints.add(p.token_mint);
-        });
-      });
+      const { data: livePositions, error: livePositionsError } = await supabase
+        .from('demo_positions')
+        .select('trader_state_id, token_mint, token_symbol, size, cost_usd')
+        .in('trader_state_id', traderStateIds)
+        .gt('size', 0);
+
+      if (livePositionsError) {
+        console.warn('Demo vault live position fetch failed; falling back to cost basis:', livePositionsError);
+      } else {
+        for (const position of livePositions || []) {
+          const list = livePositionsByState.get(position.trader_state_id) || [];
+          list.push(position);
+          livePositionsByState.set(position.trader_state_id, list);
+        }
+      }
     }
     
-    // The main dashboard uses cost-basis estimates by default to avoid blocking
-    // page load on Jupiter price fanout across every trader state.
+    const allMints = new Set<string>();
+    for (const positions of livePositionsByState.values()) {
+      normalizeDemoVaultPositions(positions).forEach((position) => {
+        if (position.token_mint) allMints.add(position.token_mint);
+      });
+    }
+
     const prices = includeLivePrices
       ? await fetchDemoVaultPriceMap(Array.from(allMints))
       : new Map();
     
-    // Calculate totals per trader state using LIVE prices
     const tradersWithTotals = (traderStates || []).map(ts => {
-      const positions = normalizeDemoVaultPositions(ts.positions);
-      const { portfolioValue } = includeLivePrices
-        ? calculateDemoVaultPortfolioValue(positions, prices)
-        : estimateDemoVaultPortfolioValueFromCostBasis(positions);
+      const summary = positionSummaryMap.get(ts.id) || { positionCount: 0, costBasisUsd: 0 };
+      const livePositions = normalizeDemoVaultPositions(livePositionsByState.get(ts.id));
+      const { portfolioValue } = includeLivePrices && livePositions.length > 0
+        ? calculateDemoVaultPortfolioValue(livePositions, prices)
+        : { portfolioValue: summary.costBasisUsd };
 
       return {
         ...ts,
-        positions,
+        positions: includeLivePrices ? livePositions : [],
         totalValue: portfolioValue,
-        positionCount: positions.length,
+        positionCount: includeLivePrices ? livePositions.length : summary.positionCount,
         tradeStats: tradeStatsMap[ts.id],
         valuationMode: includeLivePrices ? 'live' : 'cost_basis',
       };

@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const DEFAULT_BATCH_SIZE = 5000;
+const DEFAULT_BATCH_SIZE = 500;
 
 function positiveInt(value: string | null, fallback: number) {
   const parsed = Number(value);

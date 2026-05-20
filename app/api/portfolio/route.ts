@@ -20,6 +20,8 @@ const BATCH_SIZE = 30; // Jupiter works well with ~30 tokens per request
 const REQUEST_TIMEOUT_MS = 8000; // 8 seconds timeout per batch
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 500;
+const DEFAULT_MAX_TOKENS = 100;
+const MAX_TOKEN_WINDOW = 200;
 
 interface PortfolioItem {
   mint: string;
@@ -129,6 +131,11 @@ async function fetchJupiterPrices(mints: string[]): Promise<Record<string, numbe
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const wallet = searchParams.get('wallet');
+  const requestedMaxTokens = Number(searchParams.get('maxTokens') || DEFAULT_MAX_TOKENS);
+  const maxTokens = Number.isFinite(requestedMaxTokens)
+    ? Math.min(MAX_TOKEN_WINDOW, Math.max(20, Math.floor(requestedMaxTokens)))
+    : DEFAULT_MAX_TOKENS;
+  const heliusAssetLimit = Math.min(500, Math.max(maxTokens * 4, maxTokens));
   
   if (!wallet) {
     return NextResponse.json({ error: 'Wallet address required' }, { status: 400 });
@@ -150,7 +157,7 @@ export async function GET(request: NextRequest) {
         params: {
           ownerAddress: wallet,
           page: 1,
-          limit: 1000,
+          limit: heliusAssetLimit,
           displayOptions: {
             showFungible: true,
             showNativeBalance: true
@@ -215,19 +222,30 @@ export async function GET(request: NextRequest) {
         });
       }
     }
+
+    const rankedItems = items.sort((a, b) => {
+      if (a.isNative) return -1;
+      if (b.isNative) return 1;
+      const aStable = STABLE_MINTS.includes(a.mint);
+      const bStable = STABLE_MINTS.includes(b.mint);
+      if (aStable !== bStable) return aStable ? -1 : 1;
+      return b.balance - a.balance;
+    });
+    const boundedItems = rankedItems.slice(0, maxTokens);
+    const hiddenTokenCount = Math.max(0, rankedItems.length - boundedItems.length);
     
     // Get mints for price fetching (use SOL_MINT for both native and wrapped SOL price)
-    const mintsForPricing = items.map(item => item.mint === NATIVE_SOL ? SOL_MINT : item.mint);
+    const mintsForPricing = boundedItems.map(item => item.mint === NATIVE_SOL ? SOL_MINT : item.mint);
     const uniqueMints = [...new Set(mintsForPricing)];
     
     // Fetch prices and token metadata from Jupiter (unified cache with demo vault)
     const [prices, tokenMeta] = await Promise.all([
       fetchJupiterPrices(uniqueMints),
-      getTokensMetadata(items.filter(i => !i.isNative).map(i => i.mint))
+      getTokensMetadata(boundedItems.filter(i => !i.isNative).map(i => i.mint))
     ]);
     
     // Apply Jupiter metadata to items (overrides stale Helius data)
-    for (const item of items) {
+    for (const item of boundedItems) {
       if (!item.isNative && tokenMeta[item.mint]) {
         const meta = tokenMeta[item.mint];
         item.symbol = meta.symbol || item.symbol;
@@ -240,7 +258,7 @@ export async function GET(request: NextRequest) {
     let totalPortfolioValue = 0;
     const portfolioItems: PortfolioItem[] = [];
     
-    for (const item of items) {
+    for (const item of boundedItems) {
       // For native SOL, use the wSOL price
       const priceMint = item.mint === NATIVE_SOL ? SOL_MINT : item.mint;
       const price = prices[priceMint] || null;
@@ -294,13 +312,21 @@ export async function GET(request: NextRequest) {
     // Tokens list (excludes native SOL, but includes wrapped SOL if any)
     const tokens = portfolioItems.filter(p => !p.isNative);
     
-    return NextResponse.json({
-      wallet,
-      solBalance,
-      tokens,
-      totalTokens: tokens.length,
-      totalPortfolioValue
-    });
+    return NextResponse.json(
+      {
+        wallet,
+        solBalance,
+        tokens,
+        totalTokens: tokens.length,
+        hiddenTokenCount,
+        totalPortfolioValue,
+      },
+      {
+        headers: {
+          'Cache-Control': 'public, max-age=15, s-maxage=30, stale-while-revalidate=60',
+        },
+      },
+    );
   } catch (error) {
     console.error('Portfolio fetch error:', error);
     return NextResponse.json({ error: 'Failed to fetch portfolio' }, { status: 500 });

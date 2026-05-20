@@ -226,7 +226,8 @@ export default function TraderDetailPage() {
   const [tokenMeta, setTokenMeta] = useState<Record<string, TokenMeta>>({});
   const [bootstrapping, setBootstrapping] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [portfolioLoading, setPortfolioLoading] = useState(true);
+  const [portfolioLoading, setPortfolioLoading] = useState(false);
+  const [portfolioLoaded, setPortfolioLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<TraderStats | null>(null);
   const [copied, setCopied] = useState(false);
@@ -239,7 +240,7 @@ export default function TraderDetailPage() {
   const [recommendedModelSummary, setRecommendedModelSummary] = useState<string | null>(null);
   const [recommendedModelReason, setRecommendedModelReason] = useState<string | null>(null);
 
-  const fetchTokenMetadata = async (mints: string[]) => {
+  const fetchTokenMetadata = useCallback(async (mints: string[]) => {
     if (mints.length === 0) return;
 
     try {
@@ -260,9 +261,9 @@ export default function TraderDetailPage() {
     } catch (tokenError) {
       console.error('Failed to fetch token metadata:', tokenError);
     }
-  };
+  }, []);
 
-  const fetchTraderProfile = async () => {
+  const fetchTraderProfile = useCallback(async () => {
     const response = await fetch(`/api/star-traders/${wallet}`);
     const data = await response.json();
 
@@ -281,7 +282,7 @@ export default function TraderDetailPage() {
       setRecommendedModelSummary(trader.recommendedCopyModelSummary || null);
       setRecommendedModelReason(trader.recommendedCopyModelReason || null);
     }
-  };
+  }, [wallet]);
 
   const fetchTrades = useCallback(
     async (cursor?: string): Promise<{ data: Trade[]; nextCursor: string | null }> => {
@@ -311,7 +312,7 @@ export default function TraderDetailPage() {
         nextCursor: data.nextCursor,
       };
     },
-    [wallet],
+    [fetchTokenMetadata, wallet],
   );
 
   const {
@@ -328,10 +329,10 @@ export default function TraderDetailPage() {
     rootMargin: '0px 0px 280px 0px',
   });
 
-  const fetchPortfolioData = async () => {
+  const fetchPortfolioData = useCallback(async () => {
     setPortfolioLoading(true);
     try {
-      const response = await fetch(`/api/portfolio?wallet=${wallet}`);
+      const response = await fetch(`/api/portfolio?wallet=${wallet}&maxTokens=100`);
       const portfolioData = await response.json();
 
       if (portfolioData.error) {
@@ -341,16 +342,11 @@ export default function TraderDetailPage() {
       setPortfolioTokens(portfolioData.tokens || []);
       setSolBalance(portfolioData.solBalance || null);
       setTotalPortfolioValue(portfolioData.totalPortfolioValue || 0);
-
-      const mints = new Set<string>();
-      (portfolioData.tokens || []).forEach((token: PortfolioToken) => mints.add(token.mint));
-      if (mints.size > 0) {
-        await fetchTokenMetadata(Array.from(mints));
-      }
+      setPortfolioLoaded(true);
     } finally {
       setPortfolioLoading(false);
     }
-  };
+  }, [wallet]);
 
   const refreshData = useCallback(
     async (initial = false) => {
@@ -364,7 +360,11 @@ export default function TraderDetailPage() {
       reset();
 
       try {
-        await Promise.all([fetchTraderProfile(), fetchPortfolioData(), loadMore()]);
+        const tasks: Promise<unknown>[] = [fetchTraderProfile(), loadMore()];
+        if (activeTab === 'portfolio' || portfolioLoaded) {
+          tasks.push(fetchPortfolioData());
+        }
+        await Promise.all(tasks);
       } catch (fetchError) {
         console.error(fetchError);
         setError(fetchError instanceof Error ? fetchError.message : 'Failed to fetch trader data');
@@ -376,14 +376,50 @@ export default function TraderDetailPage() {
         }
       }
     },
-    [loadMore, reset],
+    [activeTab, fetchPortfolioData, fetchTraderProfile, loadMore, portfolioLoaded, reset],
   );
 
   useEffect(() => {
-    if (wallet) {
-      void refreshData(true);
+    if (!wallet) return;
+
+    let cancelled = false;
+
+    async function loadInitial() {
+      setBootstrapping(true);
+      setError(null);
+      setPortfolioLoaded(false);
+      setPortfolioLoading(false);
+      setPortfolioTokens([]);
+      setSolBalance(null);
+      setTotalPortfolioValue(0);
+      reset();
+
+      try {
+        await Promise.all([fetchTraderProfile(), loadMore()]);
+      } catch (fetchError) {
+        console.error(fetchError);
+        if (!cancelled) {
+          setError(fetchError instanceof Error ? fetchError.message : 'Failed to fetch trader data');
+        }
+      } finally {
+        if (!cancelled) {
+          setBootstrapping(false);
+        }
+      }
     }
-  }, [wallet, user?.wallet, refreshData]);
+
+    void loadInitial();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchTraderProfile, loadMore, reset, user?.wallet, wallet]);
+
+  useEffect(() => {
+    if (activeTab === 'portfolio' && !portfolioLoaded && !portfolioLoading) {
+      void fetchPortfolioData();
+    }
+  }, [activeTab, fetchPortfolioData, portfolioLoaded, portfolioLoading]);
 
   const copyAddress = () => {
     navigator.clipboard.writeText(wallet);
@@ -602,15 +638,21 @@ export default function TraderDetailPage() {
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <MetricTile
                   label="Portfolio Value"
-                  value={portfolioLoading ? <Loader2 size={18} className="animate-spin text-white/50" /> : formatUsd(totalPortfolioValue)}
+                  value={
+                    portfolioLoading
+                      ? <Loader2 size={18} className="animate-spin text-white/50" />
+                      : portfolioLoaded
+                        ? formatUsd(totalPortfolioValue)
+                        : 'Open tab'
+                  }
                   helper={
                     <span className="inline-flex items-center gap-1">
-                      Live wallet valuation including SOL.
+                      Live wallet valuation loads only when needed.
                       <InfoTooltip>
                         <strong>Portfolio value</strong>
                         <br />
                         <br />
-                        Current USD value of token balances fetched for this wallet, including native SOL.
+                        Current USD value of token balances fetched for this wallet, including native SOL. Open Portfolio to load it.
                       </InfoTooltip>
                     </span>
                   }
@@ -685,7 +727,12 @@ export default function TraderDetailPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveTab('portfolio')}
+                  onClick={() => {
+                    setActiveTab('portfolio');
+                    if (!portfolioLoaded && !portfolioLoading) {
+                      void fetchPortfolioData();
+                    }
+                  }}
                   className={`cyber-control relative px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition ${
                     activeTab === 'portfolio'
                       ? '!border-[#00FF85] !bg-[#00FF85] !text-black shadow-[0_0_22px_rgba(0,255,133,0.2),inset_0_-2px_0_rgba(0,0,0,0.35)]'
@@ -693,7 +740,9 @@ export default function TraderDetailPage() {
                   }`}
                   aria-current={activeTab === 'portfolio' ? 'page' : undefined}
                 >
-                  <span className="inline-flex items-center gap-2">Portfolio ({portfolioTokens.length})</span>
+                  <span className="inline-flex items-center gap-2">
+                    Portfolio{portfolioLoaded ? ` (${portfolioTokens.length})` : ''}
+                  </span>
                 </button>
               </div>
 

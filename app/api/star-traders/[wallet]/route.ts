@@ -41,13 +41,15 @@ export async function GET(
         .single();
 
       if (userVault?.id) {
-        const { count } = await supabase
+        const { data: followedState } = await supabase
           .from('demo_trader_states')
-          .select('id', { head: true, count: 'exact' })
+          .select('id')
           .eq('vault_id', userVault.id)
-          .eq('star_trader', wallet);
+          .eq('star_trader', wallet)
+          .limit(1)
+          .maybeSingle();
 
-        isFollowing = Boolean((count || 0) > 0);
+        isFollowing = Boolean(followedState?.id);
       }
     }
     const stats = normalizeStarTraderStatsRow(statsRows?.[0]);
