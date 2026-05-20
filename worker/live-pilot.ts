@@ -59,6 +59,7 @@ import {
   getRedisPilotControlSnapshot,
   hydrateRedisPilotControlState,
 } from '@/lib/live-pilot/redis/control';
+import { logLivePilotTrace } from '@/lib/live-pilot/trace';
 
 const QUEUE_POLL_INTERVAL_MS = 1_000;
 const RECOVERY_INTERVAL_MS = 5_000;
@@ -652,6 +653,11 @@ async function processRedisIntentMessage(
   let dbMirrorTradeIdToClaim: string | null = null;
   let dbMirrorNextAttemptCount = 1;
   hydrateRedisIntentExecutionMetadata(message);
+  logLivePilotTrace('redis_consume', trade, {
+    streamId: message.streamId,
+    intentId: message.payload.intentId,
+    source: message.payload.source,
+  });
   const wallet = findPilotWalletByAlias(config, trade.wallet_alias);
 
   if (!wallet || !wallet.isEnabled || !wallet.isComplete || !wallet.hasSecret) {
@@ -761,6 +767,10 @@ async function processRedisIntentMessage(
     });
     return;
   }
+  logLivePilotTrace('wallet_lock_acquired', trade, {
+    streamId: message.streamId,
+    lockOwner: redisLockOwner,
+  });
 
   if (dbMirrorTradeIdToClaim) {
     const claimedTrade = await claimQueuedPilotTrade(dbMirrorTradeIdToClaim, dbMirrorNextAttemptCount);

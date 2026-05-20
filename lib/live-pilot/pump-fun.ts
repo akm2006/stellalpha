@@ -1,4 +1,3 @@
-import bs58 from 'bs58';
 import BN from 'bn.js';
 import { createRequire } from 'module';
 import {
@@ -20,6 +19,7 @@ import {
   PUMP_BONDING_CURVE_PROGRAM_ID,
   type TradeSourceClassification,
 } from '@/lib/ingestion/trade-source-classifier';
+import { sendLivePilotTransaction } from '@/lib/live-pilot/fast-sender';
 
 interface PumpFunSwapPlan {
   inputMint: string;
@@ -356,6 +356,14 @@ export async function executePumpFunSwap(args: {
     );
   }
 
+  if (quotedOutputRaw === '0') {
+    throw createPumpFunError(
+      'pumpfun_zero_output',
+      'Pump.fun quote returned zero output; falling back before submitting a zero-output swap',
+      plan.sourceClassification,
+    );
+  }
+
   const transaction = new Transaction();
 
   if (pumpFunLivePilotConfig.computeUnitLimit > 0) {
@@ -371,20 +379,14 @@ export async function executePumpFunSwap(args: {
   }
 
   transaction.add(...instructions);
-  transaction.feePayer = keypair.publicKey;
-  transaction.recentBlockhash = (await connection.getLatestBlockhash('confirmed')).blockhash;
-  transaction.sign(keypair);
-
-  const txBuiltAt = new Date().toISOString();
-  const derivedSignature = transaction.signature ? bs58.encode(transaction.signature) : null;
-  const signedTransaction = transaction.serialize().toString('base64');
-
-  let signature: string;
+  let sent: Awaited<ReturnType<typeof sendLivePilotTransaction>>;
   try {
-    signature = await connection.sendRawTransaction(transaction.serialize(), {
-      maxRetries: 0,
+    sent = await sendLivePilotTransaction({
+      connection,
+      keypair,
+      transaction,
       skipPreflight: pumpFunLivePilotConfig.skipPreflight,
-      preflightCommitment: 'processed',
+      label: 'pump_fun',
     });
   } catch (error) {
     throw createPumpFunError(
@@ -394,23 +396,17 @@ export async function executePumpFunSwap(args: {
     );
   }
 
-  if (derivedSignature && signature !== derivedSignature) {
-    console.warn(
-      `[LIVE_PILOT_PUMPFUN] RPC returned signature ${signature}, derived signature ${derivedSignature}`,
-    );
-  }
-
   return {
-    signature,
-    signedTransaction,
+    signature: sent.signature,
+    signedTransaction: sent.signedTransaction,
     quotedInputRaw: plan.inputAmountRaw,
     quotedOutputRaw,
     quotedInputAmount: rawToUi(plan.inputAmountRaw, plan.inputDecimals),
     quotedOutputAmount: quotedOutputRaw ? rawToUi(quotedOutputRaw, plan.outputDecimals) : null,
     priceImpactPct: 0,
     quoteReceivedAt,
-    txBuiltAt,
-    txSubmittedAt: new Date().toISOString(),
+    txBuiltAt: sent.txBuiltAt,
+    txSubmittedAt: sent.txSubmittedAt,
     programId: PUMP_PROGRAM_ID.toBase58(),
   };
 }

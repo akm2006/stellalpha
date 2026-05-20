@@ -60,6 +60,7 @@ import {
   shouldUsePumpSwapForGraduatedPump,
   shouldUsePumpSwapForSwap,
 } from '@/lib/live-pilot/pump-swap';
+import { logLivePilotTrace } from '@/lib/live-pilot/trace';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HELIUS_GATEKEEPER_ENABLED = ['1', 'true', 'yes', 'on']
@@ -86,6 +87,7 @@ const DEFAULT_BUY_ORDER_TIMEOUT_MS = 2_500;
 const DEFAULT_BUY_EXECUTE_TIMEOUT_MS = 2_500;
 const DEFAULT_SELL_ORDER_TIMEOUT_MS = 6_000;
 const DEFAULT_SELL_EXECUTE_TIMEOUT_MS = 6_000;
+const DEFAULT_SELL_FINAL_SLIPPAGE_BPS = 9_500;
 export const LIVE_PILOT_TECHNICAL_MIN_SOL = 0;
 const BUY_RETRY_SLIPPAGE_LADDER_BPS = [1000, 1500, 2000];
 const SELL_SLIPPAGE_LADDER_BPS = [1000, 3000, 5000, 8000];
@@ -180,6 +182,10 @@ function readPositiveIntEnv(name: string, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
+function clampSlippageBps(value: number) {
+  return Math.min(Math.max(Math.floor(value), 1), 10_000);
+}
+
 function isOlderThan(timestamp: string | null | undefined, ms: number) {
   if (!timestamp) {
     return false;
@@ -266,8 +272,19 @@ export function getBuySlippageBps(attemptNumber: number) {
 }
 
 export function buildSellSlippageLadderBps(wallet: LivePilotWalletConfig) {
-  const firstAttemptBps = Math.max(wallet.sellSlippageRetryBps || 0, SELL_SLIPPAGE_LADDER_BPS[0]);
-  return [firstAttemptBps, ...SELL_SLIPPAGE_LADDER_BPS.filter((bps) => bps > firstAttemptBps)];
+  const firstAttemptBps = clampSlippageBps(Math.max(wallet.sellSlippageRetryBps || 0, SELL_SLIPPAGE_LADDER_BPS[0]));
+  const finalAttemptBps = clampSlippageBps(readPositiveIntEnv(
+    'PILOT_SELL_FINAL_SLIPPAGE_BPS',
+    DEFAULT_SELL_FINAL_SLIPPAGE_BPS,
+  ));
+
+  return Array.from(new Set([
+    firstAttemptBps,
+    ...SELL_SLIPPAGE_LADDER_BPS,
+    finalAttemptBps,
+  ].map(clampSlippageBps)))
+    .filter((bps) => bps >= firstAttemptBps)
+    .sort((a, b) => a - b);
 }
 
 export function isRetryableSellExecutionFailure(
@@ -1757,10 +1774,13 @@ function canFallbackToJupiterAfterDirectError(error: any) {
     'pumpswap_pool_unresolved',
     'pumpswap_unsupported_pair',
     'pumpswap_quote_or_build_failed',
+    'pumpswap_zero_output',
     'pumpfun_graduated_or_invalid',
     'pumpfun_state_fetch_failed',
     'pumpfun_unsupported_quote_mint',
     'pumpfun_build_failed',
+    'pumpfun_zero_output',
+    'meteora_zero_output',
   ].includes(code);
 }
 
@@ -1812,6 +1832,10 @@ export async function executePilotTrade(
   }
 
   const plan = await buildExecutionPlan(trade, wallet, connection);
+  logLivePilotTrace('plan_built', trade, {
+    planKind: plan.kind,
+    route: plan.kind === 'swap' ? getInitialExecutionMode(plan, trade.leader_type) : plan.reason,
+  });
   if (plan.kind === 'skip') {
     await updatePilotTrade(trade.id, {
       status: 'skipped',
@@ -1847,6 +1871,11 @@ export async function executePilotTrade(
     execution_mode: getInitialExecutionMode(plan, trade.leader_type),
     slippage_bps: plan.slippageBps,
     status: 'building',
+  });
+  logLivePilotTrace('attempt_created', trade, {
+    attemptId: attempt.id,
+    executionMode: attempt.execution_mode,
+    slippageBps: attempt.slippage_bps,
   });
 
   try {

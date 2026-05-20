@@ -1,4 +1,3 @@
-import bs58 from 'bs58';
 import BN from 'bn.js';
 import {
   ComputeBudgetProgram,
@@ -16,11 +15,15 @@ import {
 } from '@meteora-ag/cp-amm-sdk';
 import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 import {
-  extractMeteoraDammV2CandidatePools,
   getLivePilotMeteoraDammV2CandidatePools,
   isMeteoraDammV2Source,
   METEORA_DAMM_V2_PROGRAM_ID,
 } from '@/lib/live-pilot/meteora-damm-v2-cache';
+import {
+  resolveWithinBudget,
+  uniqueBoundedCandidates,
+} from '@/lib/live-pilot/direct-route-resolution';
+import { sendLivePilotTransaction } from '@/lib/live-pilot/fast-sender';
 
 interface MeteoraDammV2SwapPlan {
   inputMint: string;
@@ -138,65 +141,33 @@ function poolMatchesPair(poolState: PoolState, inputMint: string, outputMint: st
   );
 }
 
-async function fetchLeaderTransactionForPoolCandidates(connection: Connection, signature: string) {
-  try {
-    return await connection.getParsedTransaction(signature, {
-      commitment: 'confirmed',
-      maxSupportedTransactionVersion: 0,
-    });
-  } catch (error) {
-    console.warn('[LIVE_PILOT_METEORA] Failed to fetch leader transaction for pool resolution:', error);
-    return null;
-  }
-}
-
 async function resolveMeteoraDammV2Pool(args: {
-  connection: Connection;
   cpAmm: CpAmm;
   signature: string | null | undefined;
   inputMint: string;
   outputMint: string;
 }) {
-  const candidateSet = new Set(getLivePilotMeteoraDammV2CandidatePools(args.signature));
-  const tried = new Set<string>();
-
-  const tryResolveCandidates = async () => {
-    for (const candidate of candidateSet) {
-      if (tried.has(candidate)) {
-        continue;
-      }
-      tried.add(candidate);
-
-      try {
-        const pool = new PublicKey(candidate);
-        const poolState = await args.cpAmm.fetchPoolState(pool);
-        if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
-          return { pool, poolState };
-        }
-      } catch {
-        // Candidate account lists contain mints, vaults, programs, and users too.
-      }
-    }
+  const candidates = uniqueBoundedCandidates(getLivePilotMeteoraDammV2CandidatePools(args.signature));
+  if (!candidates.length) {
     return null;
-  };
-
-  const cachedResolved = await tryResolveCandidates();
-  if (cachedResolved) {
-    return cachedResolved;
   }
 
-  if (args.signature) {
-    try {
-      const rawTx = await fetchLeaderTransactionForPoolCandidates(args.connection, args.signature);
-      for (const candidate of extractMeteoraDammV2CandidatePools(rawTx)) {
-        candidateSet.add(candidate);
-      }
-    } catch {
-      // fetchLeaderTransactionForPoolCandidates already logs transport failures.
-    }
-  }
-
-  return tryResolveCandidates();
+  return resolveWithinBudget(
+    Promise.all(
+      candidates.map(async (candidate) => {
+        try {
+          const pool = new PublicKey(candidate);
+          const poolState = await args.cpAmm.fetchPoolState(pool);
+          if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
+            return { pool, poolState };
+          }
+        } catch {
+          // Candidate account lists contain mints, vaults, programs, and users too.
+        }
+        return null;
+      }),
+    ).then((results) => results.find((result) => Boolean(result)) ?? null),
+  );
 }
 
 export function shouldUseMeteoraDammV2ForBuy(plan: {
@@ -254,7 +225,6 @@ export async function executeMeteoraDammV2Swap(args: {
   const cpAmm = new CpAmm(connection);
 
   const resolved = await resolveMeteoraDammV2Pool({
-    connection,
     cpAmm,
     signature: leaderSignature,
     inputMint: plan.inputMint,
@@ -302,6 +272,15 @@ export async function executeMeteoraDammV2Swap(args: {
   }
 
   const priceImpactPct = decimalToNumber(quote.priceImpact);
+  const quotedOutputRaw = quote.outputAmount?.toString?.() || null;
+  if (quotedOutputRaw === '0') {
+    throw createMeteoraError(
+      'meteora_zero_output',
+      'Meteora DAMM v2 quote returned zero output; falling back before submitting a zero-output swap',
+      plan.sourceClassification,
+    );
+  }
+
   if (plan.maxPriceImpactPct > 0 && Math.abs(priceImpactPct) > plan.maxPriceImpactPct) {
     throw createMeteoraError(
       'price_impact_too_high',
@@ -354,20 +333,14 @@ export async function executeMeteoraDammV2Swap(args: {
     }));
   }
 
-  transaction.feePayer = keypair.publicKey;
-  transaction.recentBlockhash = (await connection.getLatestBlockhash('confirmed')).blockhash;
-  transaction.sign(keypair);
-
-  const txBuiltAt = new Date().toISOString();
-  const derivedSignature = transaction.signature ? bs58.encode(transaction.signature) : null;
-  const signedTransaction = transaction.serialize().toString('base64');
-
-  let signature: string;
+  let sent: Awaited<ReturnType<typeof sendLivePilotTransaction>>;
   try {
-    signature = await connection.sendRawTransaction(transaction.serialize(), {
-      maxRetries: 0,
+    sent = await sendLivePilotTransaction({
+      connection,
+      keypair,
+      transaction,
       skipPreflight: meteoraDammV2LivePilotConfig.skipPreflight,
-      preflightCommitment: 'processed',
+      label: 'meteora_damm_v2',
     });
   } catch (error) {
     throw createMeteoraError(
@@ -377,25 +350,18 @@ export async function executeMeteoraDammV2Swap(args: {
     );
   }
 
-  if (derivedSignature && signature !== derivedSignature) {
-    console.warn(
-      `[LIVE_PILOT_METEORA] RPC returned signature ${signature}, derived signature ${derivedSignature}`,
-    );
-  }
-
-  const quotedOutputRaw = quote.outputAmount?.toString?.() || null;
   return {
     pool: resolved.pool.toBase58(),
-    signature,
-    signedTransaction,
+    signature: sent.signature,
+    signedTransaction: sent.signedTransaction,
     quotedInputRaw: plan.inputAmountRaw,
     quotedOutputRaw,
     quotedInputAmount: rawToUi(plan.inputAmountRaw, plan.inputDecimals),
     quotedOutputAmount: quotedOutputRaw ? rawToUi(quotedOutputRaw, plan.outputDecimals) : null,
     priceImpactPct,
     quoteReceivedAt,
-    txBuiltAt,
-    txSubmittedAt: new Date().toISOString(),
+    txBuiltAt: sent.txBuiltAt,
+    txSubmittedAt: sent.txSubmittedAt,
     programId: METEORA_DAMM_V2_PROGRAM_ID,
   };
 }

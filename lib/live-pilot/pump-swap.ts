@@ -1,4 +1,3 @@
-import bs58 from 'bs58';
 import BN from 'bn.js';
 import {
   ComputeBudgetProgram,
@@ -19,10 +18,14 @@ import {
 } from '@pump-fun/pump-swap-sdk';
 import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 import {
-  extractPumpSwapCandidatePools,
   getLivePilotPumpSwapCandidatePools,
   isPumpSwapSource,
 } from '@/lib/live-pilot/pump-swap-cache';
+import {
+  resolveWithinBudget,
+  uniqueBoundedCandidates,
+} from '@/lib/live-pilot/direct-route-resolution';
+import { sendLivePilotTransaction } from '@/lib/live-pilot/fast-sender';
 
 interface PumpSwapRoutePlan {
   inputMint: string;
@@ -197,18 +200,6 @@ function poolOrientation(poolState: any, tokenMint: string): 'token_base' | 'tok
   return null;
 }
 
-async function fetchLeaderTransactionForPoolCandidates(connection: Connection, signature: string) {
-  try {
-    return await connection.getParsedTransaction(signature, {
-      commitment: 'confirmed',
-      maxSupportedTransactionVersion: 0,
-    });
-  } catch (error) {
-    console.warn('[LIVE_PILOT_PUMPSWAP] Failed to fetch leader transaction for pool resolution:', error);
-    return null;
-  }
-}
-
 async function resolvePumpSwapPool(args: {
   connection: Connection;
   signature: string | null | undefined;
@@ -216,45 +207,32 @@ async function resolvePumpSwapPool(args: {
   baseMint: PublicKey;
 }) {
   const sdk = new OnlinePumpAmmSdk(args.connection);
-  const candidateSet = new Set(getLivePilotPumpSwapCandidatePools(args.signature));
-  const tried = new Set<string>();
+  const candidates = uniqueBoundedCandidates([
+    canonicalPumpPoolPda(args.baseMint).toBase58(),
+    poolV2Pda(args.baseMint).toBase58(),
+    ...getLivePilotPumpSwapCandidatePools(args.signature),
+  ]);
 
-  candidateSet.add(canonicalPumpPoolPda(args.baseMint).toBase58());
-  candidateSet.add(poolV2Pda(args.baseMint).toBase58());
-
-  const tryResolveCandidates = async () => {
-    for (const candidate of candidateSet) {
-      if (tried.has(candidate)) {
-        continue;
-      }
-      tried.add(candidate);
-
-      try {
-        const pool = new PublicKey(candidate);
-        const state = await sdk.swapSolanaState(pool, args.user);
-        if (poolMatchesPlan(state.pool, args.baseMint.toBase58())) {
-          return { pool, state };
-        }
-      } catch {
-        // PumpSwap instructions contain many non-pool accounts; skip anything that cannot decode as a pool.
-      }
-    }
+  if (!candidates.length) {
     return null;
-  };
-
-  const cachedResolved = await tryResolveCandidates();
-  if (cachedResolved) {
-    return cachedResolved;
   }
 
-  if (args.signature) {
-    const rawTx = await fetchLeaderTransactionForPoolCandidates(args.connection, args.signature);
-    for (const candidate of extractPumpSwapCandidatePools(rawTx)) {
-      candidateSet.add(candidate);
-    }
-  }
-
-  return tryResolveCandidates();
+  return resolveWithinBudget(
+    Promise.all(
+      candidates.map(async (candidate) => {
+        try {
+          const pool = new PublicKey(candidate);
+          const state = await sdk.swapSolanaState(pool, args.user);
+          if (poolMatchesPlan(state.pool, args.baseMint.toBase58())) {
+            return { pool, state };
+          }
+        } catch {
+          // PumpSwap instructions contain many non-pool accounts; skip anything that cannot decode as a pool.
+        }
+        return null;
+      }),
+    ).then((results) => results.find((result) => Boolean(result)) ?? null),
+  );
 }
 
 function computePriceImpactPct(args: {
@@ -408,6 +386,14 @@ export async function executePumpSwap(args: {
     );
   }
 
+  if (quotedOutputRaw === '0') {
+    throw createPumpSwapError(
+      'pumpswap_zero_output',
+      'PumpSwap quote returned zero output; falling back before submitting a zero-output swap',
+      plan.sourceClassification,
+    );
+  }
+
   if (plan.maxPriceImpactPct > 0 && Math.abs(priceImpactPct) > plan.maxPriceImpactPct) {
     throw createPumpSwapError(
       'price_impact_too_high',
@@ -431,20 +417,14 @@ export async function executePumpSwap(args: {
   }
 
   transaction.add(...instructions);
-  transaction.feePayer = keypair.publicKey;
-  transaction.recentBlockhash = (await connection.getLatestBlockhash('confirmed')).blockhash;
-  transaction.sign(keypair);
-
-  const txBuiltAt = new Date().toISOString();
-  const derivedSignature = transaction.signature ? bs58.encode(transaction.signature) : null;
-  const signedTransaction = transaction.serialize().toString('base64');
-
-  let signature: string;
+  let sent: Awaited<ReturnType<typeof sendLivePilotTransaction>>;
   try {
-    signature = await connection.sendRawTransaction(transaction.serialize(), {
-      maxRetries: 0,
+    sent = await sendLivePilotTransaction({
+      connection,
+      keypair,
+      transaction,
       skipPreflight: pumpSwapLivePilotConfig.skipPreflight,
-      preflightCommitment: 'processed',
+      label: 'pump_swap',
     });
   } catch (error) {
     throw createPumpSwapError(
@@ -454,24 +434,18 @@ export async function executePumpSwap(args: {
     );
   }
 
-  if (derivedSignature && signature !== derivedSignature) {
-    console.warn(
-      `[LIVE_PILOT_PUMPSWAP] RPC returned signature ${signature}, derived signature ${derivedSignature}`,
-    );
-  }
-
   return {
     pool: resolved.pool.toBase58(),
-    signature,
-    signedTransaction,
+    signature: sent.signature,
+    signedTransaction: sent.signedTransaction,
     quotedInputRaw: plan.inputAmountRaw,
     quotedOutputRaw,
     quotedInputAmount: rawToUi(plan.inputAmountRaw, plan.inputDecimals),
     quotedOutputAmount: quotedOutputRaw ? rawToUi(quotedOutputRaw, plan.outputDecimals) : null,
     priceImpactPct,
     quoteReceivedAt,
-    txBuiltAt,
-    txSubmittedAt: new Date().toISOString(),
+    txBuiltAt: sent.txBuiltAt,
+    txSubmittedAt: sent.txSubmittedAt,
     programId: PUMP_AMM_PROGRAM_ID.toBase58(),
   };
 }

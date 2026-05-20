@@ -14,7 +14,15 @@ const DEFAULT_429_RETRIES: Record<JupiterApiScope, number> = {
   token: 2,
 };
 
+const DEFAULT_REQUESTS_PER_MINUTE: Record<JupiterApiScope, number> = {
+  live: 60,
+  demo: 0,
+  price: 0,
+  token: 0,
+};
+
 const nextAllowedAtByScope = new Map<JupiterApiScope, number>();
+const requestTimestampsByScope = new Map<JupiterApiScope, number[]>();
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -55,6 +63,14 @@ function getMinIntervalMs(scope: JupiterApiScope) {
   return readNumberEnv(envName, DEFAULT_MIN_INTERVAL_MS[scope]);
 }
 
+function getRequestsPerMinute(scope: JupiterApiScope) {
+  const envName = `JUPITER_${scope.toUpperCase()}_REQUESTS_PER_MINUTE`;
+  const fallback = scope === 'live'
+    ? readNumberEnv('LIVE_PILOT_JUPITER_REQUESTS_PER_MINUTE', DEFAULT_REQUESTS_PER_MINUTE.live)
+    : DEFAULT_REQUESTS_PER_MINUTE[scope];
+  return readNumberEnv(envName, fallback);
+}
+
 function getMax429Retries(scope: JupiterApiScope, override?: number) {
   if (typeof override === 'number') {
     return Math.max(0, override);
@@ -79,14 +95,37 @@ function parseRetryAfterMs(response: Response) {
 
 async function throttle(scope: JupiterApiScope) {
   const minIntervalMs = getMinIntervalMs(scope);
-  if (minIntervalMs <= 0) return;
+  const requestsPerMinute = getRequestsPerMinute(scope);
 
-  const now = Date.now();
-  const nextAllowedAt = nextAllowedAtByScope.get(scope) || 0;
-  const waitMs = Math.max(0, nextAllowedAt - now);
-  nextAllowedAtByScope.set(scope, Math.max(now, nextAllowedAt) + minIntervalMs);
+  if (minIntervalMs > 0) {
+    const now = Date.now();
+    const nextAllowedAt = nextAllowedAtByScope.get(scope) || 0;
+    const waitMs = Math.max(0, nextAllowedAt - now);
+    nextAllowedAtByScope.set(scope, Math.max(now, nextAllowedAt) + minIntervalMs);
 
-  if (waitMs > 0) {
+    if (waitMs > 0) {
+      await wait(waitMs);
+    }
+  }
+
+  if (requestsPerMinute <= 0) {
+    return;
+  }
+
+  while (true) {
+    const now = Date.now();
+    const windowStart = now - 60_000;
+    const timestamps = (requestTimestampsByScope.get(scope) || [])
+      .filter((timestamp) => timestamp > windowStart);
+
+    if (timestamps.length < requestsPerMinute) {
+      timestamps.push(now);
+      requestTimestampsByScope.set(scope, timestamps);
+      return;
+    }
+
+    const waitMs = Math.max(1, timestamps[0]! + 60_000 - now + 25);
+    requestTimestampsByScope.set(scope, timestamps);
     await wait(waitMs);
   }
 }

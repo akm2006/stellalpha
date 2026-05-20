@@ -93,6 +93,19 @@ function redisAttemptFromCreateInput(attempt: CreatePilotTradeAttemptInput): Pil
 }
 
 export async function createPilotTradeAttempt(attempt: CreatePilotTradeAttemptInput) {
+  if (attempt.pilot_trade_id.startsWith('redis:')) {
+    const row = redisAttemptFromCreateInput(attempt);
+    await mirrorRedisTradeEvent({
+      source: 'redis_attempt_created',
+      pilotTradeId: attempt.pilot_trade_id,
+      attemptId: row.id,
+      attemptNumber: attempt.attempt_number,
+      executionMode: attempt.execution_mode,
+      status: attempt.status,
+    });
+    return row;
+  }
+
   if (hasPostgresConnection()) {
     try {
       return await pgOne<PilotTradeAttemptRow>(
