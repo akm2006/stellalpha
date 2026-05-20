@@ -97,9 +97,13 @@ function parseWalletBuyModel(
 ): { buyModelKey: LivePilotBuyModelKey; buyModelConfig: LivePilotBuyModelConfig } {
   const rawModelKey = process.env[`PILOT_WALLET_${slot}_BUY_MODEL_KEY`]?.trim() || 'current_ratio';
 
-  if (rawModelKey !== 'current_ratio' && rawModelKey !== 'fixed_available_pct') {
+  if (
+    rawModelKey !== 'current_ratio'
+    && rawModelKey !== 'fixed_available_pct'
+    && rawModelKey !== 'target_buy_pct_with_cap'
+  ) {
     errors.push(
-      `PILOT_WALLET_${slot}_BUY_MODEL_KEY must be one of: current_ratio, fixed_available_pct`
+      `PILOT_WALLET_${slot}_BUY_MODEL_KEY must be one of: current_ratio, fixed_available_pct, target_buy_pct_with_cap`
     );
     missingFields.push('buyModel');
     return {
@@ -115,11 +119,23 @@ function parseWalletBuyModel(
     };
   }
 
-  const buyPct = parseNumber(`PILOT_WALLET_${slot}_BUY_MODEL_PCT`, 5, errors);
+  if (rawModelKey === 'fixed_available_pct') {
+    const buyPct = parseNumber(`PILOT_WALLET_${slot}_BUY_MODEL_PCT`, 5, errors);
+    return {
+      buyModelKey: 'fixed_available_pct',
+      buyModelConfig: {
+        buyPct: Math.max(0.1, Math.min(100, buyPct)),
+      },
+    };
+  }
+
+  const targetBuyPct = parseNumber(`PILOT_WALLET_${slot}_TARGET_BUY_PCT`, 5, errors);
+  const maxBuyPct = parseNumber(`PILOT_WALLET_${slot}_MAX_BUY_PCT`, 5, errors);
   return {
-    buyModelKey: 'fixed_available_pct',
+    buyModelKey: 'target_buy_pct_with_cap',
     buyModelConfig: {
-      buyPct: Math.max(0.1, Math.min(100, buyPct)),
+      targetBuyPct: Math.max(0.1, Math.min(100, targetBuyPct)),
+      maxBuyPct: Math.max(0.1, Math.min(100, maxBuyPct)),
     },
   };
 }

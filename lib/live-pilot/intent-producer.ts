@@ -1,4 +1,7 @@
-import type { FixedAvailablePctCopyModelConfig } from '@/lib/copy-models/types';
+import type {
+  FixedAvailablePctCopyModelConfig,
+  TargetBuyPctWithCapCopyModelConfig,
+} from '@/lib/copy-models/types';
 import { RawTrade } from '@/lib/trade-parser';
 import {
   buildPilotControlSnapshot,
@@ -23,6 +26,11 @@ import {
 } from '@/lib/ingestion/copy-signal';
 import { classifyTradeSource, formatTradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 import { resolveLivePilotSellSizing } from '@/lib/live-pilot/sell-safety';
+import {
+  resolveFixedAvailableLiveBuySizing,
+  resolveTargetBuyPctWithCapLiveBuySizing,
+  type LiveBuySizingResult,
+} from '@/lib/live-pilot/buy-sizing';
 import { rememberLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
 import {
   extractMeteoraDammV2CandidatePools,
@@ -102,20 +110,18 @@ function resolveLiveBuyCopyRatio(args: {
   buyModelKey: 'current_ratio' | 'fixed_available_pct';
   buyModelConfig: Record<string, never> | FixedAvailablePctCopyModelConfig;
   signalFinalRatio: number;
-}) {
+}): LiveBuySizingResult {
   switch (args.buyModelKey) {
     case 'current_ratio':
       return {
         copyRatio: Math.min(Math.max(args.signalFinalRatio || 0, 0), 1),
         skipReason: null as string | null,
+        deployableSolAtIntent: null,
+        solPriceAtIntent: null,
+        leaderUsdValue: null,
       };
     case 'fixed_available_pct': {
-      const buyPct = Number((args.buyModelConfig as FixedAvailablePctCopyModelConfig).buyPct || 0);
-      const copyRatio = Math.min(Math.max(buyPct / 100, 0), 1);
-      return {
-        copyRatio,
-        skipReason: copyRatio > 0 ? null : 'zero_model_spend',
-      };
+      return resolveFixedAvailableLiveBuySizing(args.buyModelConfig as FixedAvailablePctCopyModelConfig);
     }
   }
 }
@@ -207,6 +213,7 @@ export async function maybeCreatePilotIntent(
     const walletControl = control.wallets[0];
     const tradeAgeMs = receivedAt - trade.timestamp * 1000;
     let signal: Awaited<ReturnType<typeof computeCopyTradeSignal>> | null = null;
+    let liveBuySizing: LiveBuySizingResult | null = null;
 
     let skipReason: string | null = null;
     let copyRatio = 0;
@@ -243,11 +250,20 @@ export async function maybeCreatePilotIntent(
         ? await computeCopyTradeSignal(trade, receivedAt, createPrivateRpcConnection())
         : null;
 
-      const liveBuySizing = resolveLiveBuyCopyRatio({
-        buyModelKey: pilotWallet.buyModelKey,
-        buyModelConfig: pilotWallet.buyModelConfig,
-        signalFinalRatio: signal?.finalRatio || 0,
-      });
+      if (pilotWallet.buyModelKey === 'target_buy_pct_with_cap') {
+        liveBuySizing = await resolveTargetBuyPctWithCapLiveBuySizing({
+          trade,
+          wallet: pilotWallet,
+          config: pilotWallet.buyModelConfig as TargetBuyPctWithCapCopyModelConfig,
+          connection: createPrivateRpcConnection(),
+        });
+      } else {
+        liveBuySizing = resolveLiveBuyCopyRatio({
+          buyModelKey: pilotWallet.buyModelKey,
+          buyModelConfig: pilotWallet.buyModelConfig as Record<string, never> | FixedAvailablePctCopyModelConfig,
+          signalFinalRatio: signal?.finalRatio || 0,
+        });
+      }
       copyRatio = liveBuySizing.copyRatio;
 
       if (liveBuySizing.skipReason) {
@@ -320,8 +336,8 @@ export async function maybeCreatePilotIntent(
       leader_block_timestamp: toBlockTimestampIso(trade.timestamp),
       received_at: toIso(receivedAt),
       intent_created_at: toIso(intentCreatedAt),
-      deployable_sol_at_intent: null,
-      sol_price_at_intent: signal?.solPrice ?? null,
+      deployable_sol_at_intent: liveBuySizing?.deployableSolAtIntent ?? null,
+      sol_price_at_intent: liveBuySizing?.solPriceAtIntent ?? signal?.solPrice ?? null,
       status,
       skip_reason: skipReason,
       error_message: skipReason

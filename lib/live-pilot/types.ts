@@ -1,4 +1,8 @@
-import type { CurrentRatioCopyModelConfig, FixedAvailablePctCopyModelConfig } from '@/lib/copy-models/types';
+import type {
+  CurrentRatioCopyModelConfig,
+  FixedAvailablePctCopyModelConfig,
+  TargetBuyPctWithCapCopyModelConfig,
+} from '@/lib/copy-models/types';
 
 export type PilotTradeTriggerKind = 'copy' | 'liquidation';
 export type PilotTradeStatus = 'queued' | 'skipped' | 'building' | 'submitted' | 'confirmed' | 'failed';
@@ -7,8 +11,11 @@ export type PilotControlScopeType = 'global' | 'wallet';
 export type PilotWalletMode = 'copy';
 export type PilotCashMode = 'sol';
 export type PilotMintQuarantineStatus = 'active' | 'cleared';
-export type LivePilotBuyModelKey = 'current_ratio' | 'fixed_available_pct';
-export type LivePilotBuyModelConfig = CurrentRatioCopyModelConfig | FixedAvailablePctCopyModelConfig;
+export type LivePilotBuyModelKey = 'current_ratio' | 'fixed_available_pct' | 'target_buy_pct_with_cap';
+export type LivePilotBuyModelConfig =
+  | CurrentRatioCopyModelConfig
+  | FixedAvailablePctCopyModelConfig
+  | TargetBuyPctWithCapCopyModelConfig;
 export type PilotControlAction =
   | 'global_pause'
   | 'global_resume'

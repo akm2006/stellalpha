@@ -1,5 +1,8 @@
-import type { FixedAvailablePctCopyModelConfig } from '@/lib/copy-models/types';
-import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
+import type {
+  FixedAvailablePctCopyModelConfig,
+  TargetBuyPctWithCapCopyModelConfig,
+} from '@/lib/copy-models/types';
+import { BUY_STALENESS_THRESHOLD_MS, createPrivateRpcConnection } from '@/lib/ingestion/copy-signal';
 import {
   classifyTradeSource,
   formatTradeSourceClassification,
@@ -28,6 +31,10 @@ import {
   recordRedisObservedLeaderSell,
 } from './state';
 import { resolveLivePilotSellSizing } from '@/lib/live-pilot/sell-safety';
+import {
+  resolveFixedAvailableLiveBuySizing,
+  resolveTargetBuyPctWithCapLiveBuySizing,
+} from '@/lib/live-pilot/buy-sizing';
 
 function toIso(ms: number) {
   return new Date(ms).toISOString();
@@ -41,19 +48,36 @@ function buildSyntheticTradeId(walletAlias: string, signature: string, leaderTyp
   return `redis:${walletAlias}:${signature}:${leaderType}`;
 }
 
-function resolveRedisLiveBuyCopyRatio(pilotWallet: PilotWalletConfigSummary) {
-  if (pilotWallet.buyModelKey !== 'fixed_available_pct') {
+async function resolveRedisLiveBuyCopyRatio(pilotWallet: PilotWalletConfigSummary, trade: RawTrade) {
+  if (pilotWallet.buyModelKey === 'fixed_available_pct') {
+    return resolveFixedAvailableLiveBuySizing(pilotWallet.buyModelConfig as FixedAvailablePctCopyModelConfig);
+  }
+
+  if (pilotWallet.buyModelKey === 'target_buy_pct_with_cap') {
+    return resolveTargetBuyPctWithCapLiveBuySizing({
+      trade,
+      wallet: pilotWallet,
+      config: pilotWallet.buyModelConfig as TargetBuyPctWithCapCopyModelConfig,
+      connection: createPrivateRpcConnection(),
+    });
+  }
+
+  if (pilotWallet.buyModelKey !== 'current_ratio') {
     return {
       copyRatio: 0,
-      skipReason: 'redis_current_ratio_unsupported',
+      skipReason: 'redis_buy_model_unsupported',
+      deployableSolAtIntent: null,
+      solPriceAtIntent: null,
+      leaderUsdValue: null,
     };
   }
 
-  const buyPct = Number((pilotWallet.buyModelConfig as FixedAvailablePctCopyModelConfig).buyPct || 0);
-  const copyRatio = Math.min(Math.max(buyPct / 100, 0), 1);
   return {
-    copyRatio,
-    skipReason: copyRatio > 0 ? null : 'zero_model_spend',
+    copyRatio: 0,
+    skipReason: 'redis_current_ratio_unsupported',
+    deployableSolAtIntent: null,
+    solPriceAtIntent: null,
+    leaderUsdValue: null,
   };
 }
 
@@ -238,7 +262,7 @@ export async function maybeCreateRedisPilotIntent(
     }
 
     if (!skipReason) {
-      const sizing = resolveRedisLiveBuyCopyRatio(pilotWallet);
+      const sizing = await resolveRedisLiveBuyCopyRatio(pilotWallet, trade);
       copyRatio = sizing.copyRatio;
       skipReason = sizing.skipReason;
       errorMessage = sizing.skipReason ? `Redis fallback cannot size ${pilotWallet.buyModelKey} buy model` : null;
