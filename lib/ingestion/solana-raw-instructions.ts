@@ -1,3 +1,37 @@
+import bs58 from 'bs58';
+
+function normalizeByteArray(value: unknown): string | null {
+  if (value instanceof Uint8Array) {
+    return bs58.encode(Buffer.from(value));
+  }
+
+  if (Array.isArray(value) && value.length === 32 && value.every((entry) => Number.isInteger(entry))) {
+    return bs58.encode(Uint8Array.from(value));
+  }
+
+  return null;
+}
+
+function normalizeSerializedBuffer(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const record = value as {
+    __type?: unknown;
+    encoding?: unknown;
+    data?: unknown;
+  };
+
+  if (
+    record.__type === 'buffer'
+    && record.encoding === 'base64'
+    && typeof record.data === 'string'
+  ) {
+    return bs58.encode(Buffer.from(record.data, 'base64'));
+  }
+
+  return normalizeByteArray(record.data);
+}
+
 export function normalizePublicKey(value: unknown): string | null {
   if (!value) return null;
 
@@ -5,11 +39,17 @@ export function normalizePublicKey(value: unknown): string | null {
     return value;
   }
 
+  const bytes = normalizeByteArray(value);
+  if (bytes) return bytes;
+
   if (typeof (value as { toBase58?: unknown })?.toBase58 === 'function') {
     return (value as { toBase58: () => string }).toBase58();
   }
 
   if (typeof value === 'object') {
+    const serialized = normalizeSerializedBuffer(value);
+    if (serialized) return serialized;
+
     const record = value as {
       pubkey?: unknown;
       publicKey?: unknown;

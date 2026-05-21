@@ -3,6 +3,7 @@ import { PUMPSWAP_PROGRAM_ID } from '@/lib/ingestion/trade-source-classifier';
 import {
   collectSolanaAccountKeys,
   collectSolanaInstructions,
+  normalizePublicKey,
   resolveSolanaInstructionAccounts,
   resolveSolanaInstructionProgramId,
 } from '@/lib/ingestion/solana-raw-instructions';
@@ -12,8 +13,27 @@ export const PUMPSWAP_PROGRAM_ID_STRING = PUMPSWAP_PROGRAM_ID;
 const MAX_ENTRIES = 500;
 const candidatePoolsBySignature = new Map<string, string[]>();
 
+function addCandidate(candidates: Set<string>, account: unknown) {
+  const pubkey = normalizePublicKey(account);
+  if (pubkey && pubkey.length >= 32 && pubkey.length <= 44) {
+    candidates.add(pubkey);
+  }
+}
+
+function addCandidateArray(candidates: Set<string>, accounts: unknown) {
+  if (!Array.isArray(accounts)) return;
+
+  for (const account of accounts) {
+    addCandidate(candidates, account);
+  }
+}
+
 export function extractPumpSwapCandidatePools(raw: any) {
   const candidates = new Set<string>();
+
+  // Carbon fast-path payloads carry compact source-proven pool candidates.
+  addCandidateArray(candidates, raw?.__pumpSwapCandidatePools);
+
   const accountKeys = collectSolanaAccountKeys(raw);
 
   for (const instruction of collectSolanaInstructions(raw)) {
@@ -21,11 +41,7 @@ export function extractPumpSwapCandidatePools(raw: any) {
       continue;
     }
 
-    for (const account of resolveSolanaInstructionAccounts(instruction, accountKeys)) {
-      if (account.length >= 32 && account.length <= 44) {
-        candidates.add(account);
-      }
-    }
+    addCandidateArray(candidates, resolveSolanaInstructionAccounts(instruction, accountKeys));
   }
 
   return [...candidates];

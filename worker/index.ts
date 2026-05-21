@@ -35,6 +35,8 @@ import {
   type CarbonParseResult,
 } from '../lib/ingestion/carbon-bridge';
 import { IngestedTransaction } from '../lib/ingestion/types';
+import { extractMeteoraDammV2CandidatePools } from '../lib/live-pilot/meteora-damm-v2-cache';
+import { extractPumpSwapCandidatePools } from '../lib/live-pilot/pump-swap-cache';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HTTP_RPC_URL = process.env.HELIUS_API_RPC_URL
@@ -397,6 +399,8 @@ function handleNewSignature(signature: string, wallet: string, transactionUpdate
     carbonCounters[result.status]++;
 
     if (result.status === 'trade' && result.trade) {
+      const meteoraDammV2CandidatePools = extractMeteoraDammV2CandidatePools(transactionUpdate);
+      const pumpSwapCandidatePools = extractPumpSwapCandidatePools(transactionUpdate);
       const tx: IngestedTransaction = {
         signature: result.trade.signature,
         timestamp: result.trade.timestamp,
@@ -406,6 +410,8 @@ function handleNewSignature(signature: string, wallet: string, transactionUpdate
           __carbonParsed: result.trade,
           __decoderCandidates: result.decoderCandidates,
           __programIds: result.programIds,
+          __meteoraDammV2CandidatePools: meteoraDammV2CandidatePools,
+          __pumpSwapCandidatePools: pumpSwapCandidatePools,
           feePayer: wallet,
         },
       };

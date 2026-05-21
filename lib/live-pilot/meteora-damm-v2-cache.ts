@@ -19,8 +19,22 @@ function addCandidate(candidates: Set<string>, account: string | null | undefine
   }
 }
 
+function addCandidateArray(candidates: Set<string>, accounts: unknown) {
+  if (!Array.isArray(accounts)) return;
+
+  for (const account of accounts) {
+    addCandidate(candidates, normalizePublicKey(account));
+  }
+}
+
 export function extractMeteoraDammV2CandidatePools(raw: any) {
   const candidates = new Set<string>();
+
+  // Carbon fast-path payloads carry compact source-proven pool candidates.
+  // Decoder candidate names are labels, not account addresses, and must not be
+  // treated as pool candidates.
+  addCandidateArray(candidates, raw?.__meteoraDammV2CandidatePools);
+
   const accountKeys = collectSolanaAccountKeys(raw);
 
   for (const instruction of collectSolanaInstructions(raw)) {
@@ -38,17 +52,6 @@ export function extractMeteoraDammV2CandidatePools(raw: any) {
       addCandidate(candidates, account);
     }
   }
-
-  // Support for Carbon parser custom payload from worker/index.ts
-  if (Array.isArray(raw?.__decoderCandidates)) {
-    for (const candidate of raw.__decoderCandidates) {
-      addCandidate(candidates, typeof candidate === 'string' ? candidate : null);
-    }
-  }
-
-  // If the program ID is present but no candidates were found in instructions,
-  // we might want to check all account keys as a last resort, but decoder_candidates
-  // from Carbon is usually more precise.
 
   return [...candidates];
 }

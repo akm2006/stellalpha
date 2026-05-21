@@ -60,6 +60,7 @@ const DEFAULT_METEORA_COMPUTE_UNIT_LIMIT = 350_000;
 const DEFAULT_METEORA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS = 25_000;
 const DEFAULT_METEORA_POOL_DISCOVERY_TIMEOUT_MS = 650;
 const POOL_CACHE_TTL_MS = 10 * 60 * 1000;
+const POOL_CACHE_MAX_ENTRIES = 500;
 
 const poolByPairKey = new Map<string, {
   pool: string;
@@ -100,6 +101,7 @@ export const meteoraDammV2LivePilotConfig = {
     'LIVE_PILOT_METEORA_POOL_DISCOVERY_TIMEOUT_MS',
     DEFAULT_METEORA_POOL_DISCOVERY_TIMEOUT_MS,
   ),
+  tokenMintDiscoveryEnabled: readBooleanEnv('LIVE_PILOT_METEORA_TOKEN_MINT_DISCOVERY_ENABLED', false),
 };
 
 function createMeteoraError(
@@ -161,6 +163,12 @@ function rememberPairPool(inputMint: string, outputMint: string, pool: PublicKey
     pool: pool.toBase58(),
     expiresAt: Date.now() + POOL_CACHE_TTL_MS,
   });
+
+  while (poolByPairKey.size > POOL_CACHE_MAX_ENTRIES) {
+    const oldestKey = poolByPairKey.keys().next().value;
+    if (!oldestKey) break;
+    poolByPairKey.delete(oldestKey);
+  }
 }
 
 async function fetchCachedPairPool(args: {
@@ -195,27 +203,20 @@ async function fetchCandidatePool(args: {
   outputMint: string;
   candidates: string[];
 }) {
-  const results = await Promise.all(
-    args.candidates.map(async (candidate) => {
-      try {
-        const pool = new PublicKey(candidate);
-        const poolState = await args.cpAmm.fetchPoolState(pool);
-        if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
-          return { pool, poolState, source: 'leader_candidates' as const };
-        }
-      } catch {
-        // Candidate account lists contain mints, vaults, programs, and users too.
+  for (const candidate of args.candidates) {
+    try {
+      const pool = new PublicKey(candidate);
+      const poolState = await args.cpAmm.fetchPoolState(pool);
+      if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
+        rememberPairPool(args.inputMint, args.outputMint, pool);
+        return { pool, poolState, source: 'leader_candidates' as const };
       }
-      return null;
-    }),
-  );
-
-  const match = results.find((result) => Boolean(result)) ?? null;
-  if (match) {
-    rememberPairPool(args.inputMint, args.outputMint, match.pool);
+    } catch {
+      // Candidate account lists contain mints, vaults, programs, and users too.
+    }
   }
 
-  return match;
+  return null;
 }
 
 async function fetchPoolByTokenMint(args: {
@@ -264,7 +265,11 @@ async function resolveMeteoraDammV2Pool(args: {
       });
       if (candidatePool) return candidatePool;
 
-      return fetchPoolByTokenMint(args);
+      if (meteoraDammV2LivePilotConfig.tokenMintDiscoveryEnabled) {
+        return fetchPoolByTokenMint(args);
+      }
+
+      return null;
     })(),
     meteoraDammV2LivePilotConfig.poolDiscoveryTimeoutMs,
   );
