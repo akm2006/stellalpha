@@ -32,6 +32,40 @@ function normalizeSerializedBuffer(value: unknown): string | null {
   return normalizeByteArray(record.data);
 }
 
+function decodeSerializedBuffer(value: unknown): Uint8Array | null {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+
+  if (Array.isArray(value) && value.every((entry) => Number.isInteger(entry))) {
+    return Uint8Array.from(value);
+  }
+
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as {
+    __type?: unknown;
+    encoding?: unknown;
+    data?: unknown;
+  };
+
+  if (
+    record.__type === 'buffer'
+    && record.encoding === 'base64'
+    && typeof record.data === 'string'
+  ) {
+    return Uint8Array.from(Buffer.from(record.data, 'base64'));
+  }
+
+  if (Array.isArray(record.data) && record.data.every((entry) => Number.isInteger(entry))) {
+    return Uint8Array.from(record.data);
+  }
+
+  return null;
+}
+
 export function normalizePublicKey(value: unknown): string | null {
   if (!value) return null;
 
@@ -85,8 +119,10 @@ export function collectSolanaAccountKeys(raw: any): string[] {
   const keys: string[] = [];
   const messages = [
     raw?.transaction?.message,
+    raw?.transaction?.transaction?.message,
     raw?.message,
     raw?.raw?.transaction?.message,
+    raw?.raw?.transaction?.transaction?.message,
     raw?.parsed?.transaction?.message,
   ];
 
@@ -99,7 +135,16 @@ export function collectSolanaAccountKeys(raw: any): string[] {
   pushAccountKeys(keys, raw?.raw?.accountKeys);
   pushLoadedAddresses(keys, raw?.meta?.loadedAddresses);
   pushLoadedAddresses(keys, raw?.transaction?.meta?.loadedAddresses);
+  pushAccountKeys(keys, raw?.meta?.loadedWritableAddresses);
+  pushAccountKeys(keys, raw?.meta?.loadedReadonlyAddresses);
+  pushAccountKeys(keys, raw?.transaction?.meta?.loadedWritableAddresses);
+  pushAccountKeys(keys, raw?.transaction?.meta?.loadedReadonlyAddresses);
   pushLoadedAddresses(keys, raw?.raw?.meta?.loadedAddresses);
+  pushLoadedAddresses(keys, raw?.raw?.transaction?.meta?.loadedAddresses);
+  pushAccountKeys(keys, raw?.raw?.meta?.loadedWritableAddresses);
+  pushAccountKeys(keys, raw?.raw?.meta?.loadedReadonlyAddresses);
+  pushAccountKeys(keys, raw?.raw?.transaction?.meta?.loadedWritableAddresses);
+  pushAccountKeys(keys, raw?.raw?.transaction?.meta?.loadedReadonlyAddresses);
 
   return keys;
 }
@@ -122,8 +167,10 @@ export function collectSolanaInstructions(raw: any): any[] {
   const instructions: any[] = [];
   const messages = [
     raw?.transaction?.message,
+    raw?.transaction?.transaction?.message,
     raw?.message,
     raw?.raw?.transaction?.message,
+    raw?.raw?.transaction?.transaction?.message,
     raw?.parsed?.transaction?.message,
   ];
 
@@ -140,6 +187,7 @@ export function collectSolanaInstructions(raw: any): any[] {
   pushInnerInstructions(instructions, raw?.transaction?.meta?.innerInstructions);
   pushInnerInstructions(instructions, raw?.raw?.innerInstructions);
   pushInnerInstructions(instructions, raw?.raw?.meta?.innerInstructions);
+  pushInnerInstructions(instructions, raw?.raw?.transaction?.meta?.innerInstructions);
 
   return instructions;
 }
@@ -165,11 +213,21 @@ export function resolveSolanaInstructionAccounts(
   instruction: any,
   accountKeys: string[],
 ): string[] {
-  const accounts = Array.isArray(instruction?.accounts)
-    ? instruction.accounts
-    : Array.isArray(instruction?.accountKeyIndexes)
-      ? instruction.accountKeyIndexes
-      : [];
+  const decodedAccounts = !Array.isArray(instruction?.accounts)
+    ? decodeSerializedBuffer(instruction?.accounts)
+    : null;
+  const decodedAccountKeyIndexes = !Array.isArray(instruction?.accountKeyIndexes)
+    ? decodeSerializedBuffer(instruction?.accountKeyIndexes)
+    : null;
+  const accounts = decodedAccounts
+    ? Array.from(decodedAccounts)
+    : Array.isArray(instruction?.accounts)
+      ? instruction.accounts
+      : decodedAccountKeyIndexes
+        ? Array.from(decodedAccountKeyIndexes)
+        : Array.isArray(instruction?.accountKeyIndexes)
+          ? instruction.accountKeyIndexes
+          : [];
 
   const resolved: string[] = [];
   for (const account of accounts) {
