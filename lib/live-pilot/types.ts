@@ -1,6 +1,7 @@
 import type {
   CurrentRatioCopyModelConfig,
   FixedAvailablePctCopyModelConfig,
+  GuardedHybridCopyModelConfig,
   TargetBuyPctWithCapCopyModelConfig,
 } from '@/lib/copy-models/types';
 
@@ -11,11 +12,12 @@ export type PilotControlScopeType = 'global' | 'wallet';
 export type PilotWalletMode = 'copy';
 export type PilotCashMode = 'sol';
 export type PilotMintQuarantineStatus = 'active' | 'cleared';
-export type LivePilotBuyModelKey = 'current_ratio' | 'fixed_available_pct' | 'target_buy_pct_with_cap';
+export type LivePilotBuyModelKey = 'current_ratio' | 'fixed_available_pct' | 'target_buy_pct_with_cap' | 'guarded_hybrid';
 export type LivePilotBuyModelConfig =
   | CurrentRatioCopyModelConfig
   | FixedAvailablePctCopyModelConfig
-  | TargetBuyPctWithCapCopyModelConfig;
+  | TargetBuyPctWithCapCopyModelConfig
+  | GuardedHybridCopyModelConfig;
 export type PilotControlAction =
   | 'global_pause'
   | 'global_resume'

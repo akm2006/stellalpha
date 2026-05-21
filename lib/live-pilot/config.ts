@@ -101,9 +101,10 @@ function parseWalletBuyModel(
     rawModelKey !== 'current_ratio'
     && rawModelKey !== 'fixed_available_pct'
     && rawModelKey !== 'target_buy_pct_with_cap'
+    && rawModelKey !== 'guarded_hybrid'
   ) {
     errors.push(
-      `PILOT_WALLET_${slot}_BUY_MODEL_KEY must be one of: current_ratio, fixed_available_pct, target_buy_pct_with_cap`
+      `PILOT_WALLET_${slot}_BUY_MODEL_KEY must be one of: current_ratio, fixed_available_pct, target_buy_pct_with_cap, guarded_hybrid`
     );
     missingFields.push('buyModel');
     return {
@@ -129,8 +130,30 @@ function parseWalletBuyModel(
     };
   }
 
-  const targetBuyPct = parseNumber(`PILOT_WALLET_${slot}_TARGET_BUY_PCT`, 5, errors);
+  if (rawModelKey === 'guarded_hybrid') {
+    const baseBuyPct = parseNumber(`PILOT_WALLET_${slot}_BASE_BUY_PCT`, 1, errors);
+    const maxBuyPct = parseNumber(`PILOT_WALLET_${slot}_MAX_BUY_PCT`, 1.5, errors);
+    const maxMintExposurePct = parseNumber(`PILOT_WALLET_${slot}_MAX_MINT_EXPOSURE_PCT`, 7.5, errors);
+    const maxDcaBuysPerMint = parseInteger(`PILOT_WALLET_${slot}_MAX_DCA_BUYS_PER_MINT`, 3, errors);
+    const dcaSecondBuyPct = parseNumber(`PILOT_WALLET_${slot}_DCA_SECOND_BUY_PCT`, 60, errors);
+    const dcaThirdBuyPct = parseNumber(`PILOT_WALLET_${slot}_DCA_THIRD_BUY_PCT`, 30, errors);
+    const newPositionMaxAgeMs = parseInteger(`PILOT_WALLET_${slot}_NEW_POSITION_MAX_AGE_MS`, 3000, errors);
+    return {
+      buyModelKey: 'guarded_hybrid',
+      buyModelConfig: {
+        baseBuyPct: Math.max(0.1, Math.min(100, baseBuyPct)),
+        maxBuyPct: Math.max(0.1, Math.min(100, maxBuyPct)),
+        maxMintExposurePct: Math.max(0.1, Math.min(100, maxMintExposurePct)),
+        maxDcaBuysPerMint: Math.max(1, Math.min(20, maxDcaBuysPerMint)),
+        dcaSecondBuyPct: Math.max(0.1, Math.min(100, dcaSecondBuyPct)),
+        dcaThirdBuyPct: Math.max(0.1, Math.min(100, dcaThirdBuyPct)),
+        newPositionMaxAgeMs: Math.max(500, Math.min(10_000, newPositionMaxAgeMs)),
+      },
+    };
+  }
+
   const maxBuyPct = parseNumber(`PILOT_WALLET_${slot}_MAX_BUY_PCT`, 5, errors);
+  const targetBuyPct = parseNumber(`PILOT_WALLET_${slot}_TARGET_BUY_PCT`, 5, errors);
   return {
     buyModelKey: 'target_buy_pct_with_cap',
     buyModelConfig: {

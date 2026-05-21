@@ -1,5 +1,6 @@
 import type {
   FixedAvailablePctCopyModelConfig,
+  GuardedHybridCopyModelConfig,
   TargetBuyPctWithCapCopyModelConfig,
 } from '@/lib/copy-models/types';
 import { RawTrade } from '@/lib/trade-parser';
@@ -28,6 +29,7 @@ import { classifyTradeSource, formatTradeSourceClassification } from '@/lib/inge
 import { resolveLivePilotSellSizing } from '@/lib/live-pilot/sell-safety';
 import {
   resolveFixedAvailableLiveBuySizing,
+  resolveGuardedHybridLiveBuySizing,
   resolveTargetBuyPctWithCapLiveBuySizing,
   type LiveBuySizingResult,
 } from '@/lib/live-pilot/buy-sizing';
@@ -222,6 +224,7 @@ export async function maybeCreatePilotIntent(
     let copiedPositionBefore: number | null = null;
     let sellFraction: number | null = null;
     let sellSizingFallbackReason: string | null = null;
+    let buyLifecycleRecorded = false;
 
     if (control.global.kill_switch_active) {
       skipReason = 'kill_switch_active';
@@ -250,7 +253,37 @@ export async function maybeCreatePilotIntent(
         ? await computeCopyTradeSignal(trade, receivedAt, createPrivateRpcConnection())
         : null;
 
-      if (pilotWallet.buyModelKey === 'target_buy_pct_with_cap') {
+      if (pilotWallet.buyModelKey === 'guarded_hybrid') {
+        const leaderBuy = await recordObservedLeaderBuy({
+          scopeType: 'pilot',
+          scopeKey: pilotWallet.alias,
+          starTrader: trade.wallet,
+          mint: trade.tokenOutMint || '',
+          tokenSymbol: trade.tokenOutMint ? getTokenSymbol(trade.tokenOutMint) : null,
+          tradeSignature: trade.signature,
+          tradeTimestampIso: toBlockTimestampIso(trade.timestamp),
+          leaderBuyAmount: trade.tokenOutAmount,
+        });
+
+        buyLifecycleRecorded = true;
+        leaderPositionBefore = leaderBuy.leaderPositionBefore;
+        leaderPositionAfter = leaderBuy.leaderPositionAfter;
+        copiedPositionBefore = leaderBuy.copiedPositionBefore;
+
+        liveBuySizing = await resolveGuardedHybridLiveBuySizing({
+          trade,
+          wallet: pilotWallet,
+          config: pilotWallet.buyModelConfig as GuardedHybridCopyModelConfig,
+          connection: createPrivateRpcConnection(),
+          tradeAgeMs,
+          copyState: leaderBuy.row ? {
+            leaderOpenAmount: Number(leaderBuy.row.leader_open_amount || 0),
+            copiedOpenAmount: Number(leaderBuy.row.copied_open_amount || 0),
+            copiedCostUsd: Number(leaderBuy.row.copied_cost_usd || 0),
+            activeLeaderBuyCount: leaderBuy.leaderPositionBefore <= 0.000000001 ? 1 : 2,
+          } : null,
+        });
+      } else if (pilotWallet.buyModelKey === 'target_buy_pct_with_cap') {
         liveBuySizing = await resolveTargetBuyPctWithCapLiveBuySizing({
           trade,
           wallet: pilotWallet,
@@ -271,7 +304,7 @@ export async function maybeCreatePilotIntent(
       }
     }
 
-    if (!skipReason && trade.type === 'buy') {
+    if (!skipReason && trade.type === 'buy' && !buyLifecycleRecorded) {
       const leaderBuy = await recordObservedLeaderBuy({
         scopeType: 'pilot',
         scopeKey: pilotWallet.alias,

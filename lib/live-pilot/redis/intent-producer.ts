@@ -1,5 +1,6 @@
 import type {
   FixedAvailablePctCopyModelConfig,
+  GuardedHybridCopyModelConfig,
   TargetBuyPctWithCapCopyModelConfig,
 } from '@/lib/copy-models/types';
 import { BUY_STALENESS_THRESHOLD_MS, createPrivateRpcConnection } from '@/lib/ingestion/copy-signal';
@@ -33,6 +34,7 @@ import {
 import { resolveLivePilotSellSizing } from '@/lib/live-pilot/sell-safety';
 import {
   resolveFixedAvailableLiveBuySizing,
+  resolveGuardedHybridLiveBuySizing,
   resolveTargetBuyPctWithCapLiveBuySizing,
 } from '@/lib/live-pilot/buy-sizing';
 
@@ -60,6 +62,16 @@ async function resolveRedisLiveBuyCopyRatio(pilotWallet: PilotWalletConfigSummar
       config: pilotWallet.buyModelConfig as TargetBuyPctWithCapCopyModelConfig,
       connection: createPrivateRpcConnection(),
     });
+  }
+
+  if (pilotWallet.buyModelKey === 'guarded_hybrid') {
+    return {
+      copyRatio: 0,
+      skipReason: 'redis_guarded_hybrid_requires_lifecycle_state',
+      deployableSolAtIntent: null,
+      solPriceAtIntent: null,
+      leaderUsdValue: null,
+    };
   }
 
   if (pilotWallet.buyModelKey !== 'current_ratio') {
@@ -102,6 +114,8 @@ function baseTradeRow(args: {
   leaderPositionAfter?: number | null;
   copiedPositionBefore?: number | null;
   sellFraction?: number | null;
+  deployableSolAtIntent?: number | null;
+  solPriceAtIntent?: number | null;
 }): PilotTradeRow {
   const now = new Date().toISOString();
   return {
@@ -136,8 +150,8 @@ function baseTradeRow(args: {
     actual_input_amount: null,
     actual_output_amount: null,
     price_impact_pct: null,
-    deployable_sol_at_intent: null,
-    sol_price_at_intent: null,
+    deployable_sol_at_intent: args.deployableSolAtIntent ?? null,
+    sol_price_at_intent: args.solPriceAtIntent ?? null,
     next_retry_at: null,
     attempt_count: 0,
     winning_attempt_id: null,
@@ -203,8 +217,11 @@ export async function maybeCreateRedisPilotIntent(
   let copiedPositionBefore: number | null = null;
   let sellFraction: number | null = null;
   let dedupeReserved = false;
+  let keepDedupeForSkip = false;
   let sellSizingSource: string | null = null;
   let sellFallbackReason: string | null = null;
+  let deployableSolAtIntent: number | null = null;
+  let solPriceAtIntent: number | null = null;
 
   const reserveIntentDedupe = async () => {
     const reservationRow = baseTradeRow({
@@ -217,6 +234,8 @@ export async function maybeCreateRedisPilotIntent(
       leaderPositionAfter,
       copiedPositionBefore,
       sellFraction,
+      deployableSolAtIntent,
+      solPriceAtIntent,
     });
     const reservationPayload = pilotTradeToRedisIntent(reservationRow, 'redis_primary', {
       sourceClassification,
@@ -261,14 +280,54 @@ export async function maybeCreateRedisPilotIntent(
       errorMessage = `${getTokenSymbol(outputMint)} is quarantined for live-pilot buys`;
     }
 
-    if (!skipReason) {
+    if (!skipReason && pilotWallet.buyModelKey === 'guarded_hybrid') {
+      const reservation = await reserveIntentDedupe();
+      if (reservation.duplicate) {
+        return {
+          considered: true,
+          created: false,
+          duplicate: true,
+          status: undefined,
+        };
+      }
+
+      const leaderBuy = await recordRedisObservedLeaderBuy({
+        walletAlias: pilotWallet.alias,
+        starTrader: trade.wallet,
+        mint: outputMint,
+        tokenSymbol: outputMint ? getTokenSymbol(outputMint) : null,
+        tradeSignature: trade.signature,
+        tradeTimestampIso: toBlockTimestampIso(trade.timestamp),
+        leaderBuyAmount: trade.tokenOutAmount,
+      });
+      leaderPositionBefore = leaderBuy?.leaderPositionBefore ?? null;
+      leaderPositionAfter = leaderBuy?.leaderPositionAfter ?? null;
+      copiedPositionBefore = leaderBuy?.copiedPositionBefore ?? null;
+
+      const sizing = await resolveGuardedHybridLiveBuySizing({
+        trade,
+        wallet: pilotWallet,
+        config: pilotWallet.buyModelConfig as GuardedHybridCopyModelConfig,
+        connection: createPrivateRpcConnection(),
+        tradeAgeMs,
+        copyState: leaderBuy?.row || null,
+      });
+      copyRatio = sizing.copyRatio;
+      deployableSolAtIntent = sizing.deployableSolAtIntent;
+      solPriceAtIntent = sizing.solPriceAtIntent;
+      skipReason = sizing.skipReason;
+      errorMessage = sizing.skipReason ? `Redis guarded hybrid buy skipped: ${sizing.skipReason}` : null;
+      keepDedupeForSkip = Boolean(sizing.skipReason);
+    } else if (!skipReason) {
       const sizing = await resolveRedisLiveBuyCopyRatio(pilotWallet, trade);
       copyRatio = sizing.copyRatio;
+      deployableSolAtIntent = sizing.deployableSolAtIntent;
+      solPriceAtIntent = sizing.solPriceAtIntent;
       skipReason = sizing.skipReason;
       errorMessage = sizing.skipReason ? `Redis fallback cannot size ${pilotWallet.buyModelKey} buy model` : null;
     }
 
-    if (!skipReason) {
+    if (!skipReason && !dedupeReserved) {
       const reservation = await reserveIntentDedupe();
       if (reservation.duplicate) {
         return {
@@ -352,6 +411,8 @@ export async function maybeCreateRedisPilotIntent(
     leaderPositionAfter,
     copiedPositionBefore,
     sellFraction,
+    deployableSolAtIntent,
+    solPriceAtIntent,
   });
 
   if (row.status !== 'queued') {
@@ -360,7 +421,7 @@ export async function maybeCreateRedisPilotIntent(
       meteoraDammV2CandidatePools,
       pumpSwapCandidatePools,
     });
-    if (dedupeReserved) {
+    if (dedupeReserved && !keepDedupeForSkip) {
       await clearLivePilotRedisIntentDedupe(payload).catch(() => undefined);
     }
     await publishLivePilotRedisAudit({

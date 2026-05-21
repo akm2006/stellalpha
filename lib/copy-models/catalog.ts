@@ -5,6 +5,7 @@ import {
   CopyBuyModelKey,
   FixedAvailablePctCopyModelConfig,
   FixedStartingPctCopyModelConfig,
+  GuardedHybridCopyModelConfig,
   HybridEnvelopeLeaderRatioCopyModelConfig,
   TargetBuyPctWithCapCopyModelConfig,
 } from '@/lib/copy-models/types';
@@ -82,12 +83,74 @@ export const COPY_BUY_MODEL_DEFINITIONS: CopyBuyModelDefinition[] = [
       },
     ],
   },
+  {
+    key: 'guarded_hybrid',
+    label: 'Guarded Hybrid',
+    shortDescription: 'Copies high-velocity signals with small sizing, DCA throttles, and per-token exposure caps.',
+    fields: [
+      {
+        key: 'baseBuyPct',
+        label: 'Copy this % of each trader buy',
+        min: BUY_PERCENT_MIN,
+        max: BUY_PERCENT_MAX,
+        step: 0.25,
+      },
+      {
+        key: 'maxBuyPct',
+        label: 'Never use more than this % of free cash',
+        min: BUY_PERCENT_MIN,
+        max: BUY_PERCENT_MAX,
+        step: 0.25,
+      },
+      {
+        key: 'maxMintExposurePct',
+        label: 'Maximum exposure per token',
+        min: BUY_PERCENT_MIN,
+        max: BUY_PERCENT_MAX,
+        step: 0.5,
+      },
+      {
+        key: 'maxDcaBuysPerMint',
+        label: 'Maximum buys per token sequence',
+        min: 1,
+        max: 20,
+        step: 1,
+      },
+      {
+        key: 'dcaSecondBuyPct',
+        label: 'Second buy size multiplier',
+        min: BUY_PERCENT_MIN,
+        max: BUY_PERCENT_MAX,
+        step: 5,
+      },
+      {
+        key: 'dcaThirdBuyPct',
+        label: 'Third buy size multiplier',
+        min: BUY_PERCENT_MIN,
+        max: BUY_PERCENT_MAX,
+        step: 5,
+      },
+      {
+        key: 'newPositionMaxAgeMs',
+        label: 'Fresh-entry cutoff in milliseconds',
+        min: 500,
+        max: 10_000,
+        step: 100,
+      },
+    ],
+  },
 ];
 
 function clampPercent(rawValue: unknown, fallback: number) {
   const value = Number(rawValue);
   if (!Number.isFinite(value)) return fallback;
   return Math.max(BUY_PERCENT_MIN, Math.min(BUY_PERCENT_MAX, value));
+}
+
+function clampInteger(rawValue: unknown, fallback: number, min: number, max: number) {
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(value)));
 }
 
 export function isCopyBuyModelKey(value: unknown): value is CopyBuyModelKey {
@@ -110,6 +173,16 @@ export function getDefaultCopyBuyModelConfig(modelKey: CopyBuyModelKey): CopyBuy
       return { targetBuyPct: 5, maxBuyPct: 5 } satisfies TargetBuyPctWithCapCopyModelConfig;
     case 'hybrid_envelope_leader_ratio':
       return { envelopePct: 5 } satisfies HybridEnvelopeLeaderRatioCopyModelConfig;
+    case 'guarded_hybrid':
+      return {
+        baseBuyPct: 1,
+        maxBuyPct: 1.5,
+        maxMintExposurePct: 7.5,
+        maxDcaBuysPerMint: 3,
+        dcaSecondBuyPct: 60,
+        dcaThirdBuyPct: 30,
+        newPositionMaxAgeMs: 3_000,
+      } satisfies GuardedHybridCopyModelConfig;
   }
 }
 
@@ -141,6 +214,16 @@ export function normalizeCopyBuyModelConfig(
       return {
         envelopePct: clampPercent(config.envelopePct, 5),
       } satisfies HybridEnvelopeLeaderRatioCopyModelConfig;
+    case 'guarded_hybrid':
+      return {
+        baseBuyPct: clampPercent(config.baseBuyPct, 1),
+        maxBuyPct: clampPercent(config.maxBuyPct, 1.5),
+        maxMintExposurePct: clampPercent(config.maxMintExposurePct, 7.5),
+        maxDcaBuysPerMint: clampInteger(config.maxDcaBuysPerMint, 3, 1, 20),
+        dcaSecondBuyPct: clampPercent(config.dcaSecondBuyPct, 60),
+        dcaThirdBuyPct: clampPercent(config.dcaThirdBuyPct, 30),
+        newPositionMaxAgeMs: clampInteger(config.newPositionMaxAgeMs, 3_000, 500, 10_000),
+      } satisfies GuardedHybridCopyModelConfig;
   }
 }
 

@@ -22,6 +22,8 @@ export type RedisCopyState = CopyPositionLifecycleSnapshot & {
   tokenSymbol: string | null;
   lastLeaderTradeSignature: string | null;
   lastLeaderTradeAt: string | null;
+  activeLeaderBuyCount: number;
+  activeCopiedBuyCount: number;
   updatedAt: string;
 };
 
@@ -51,6 +53,8 @@ function emptyRedisCopyState(): RedisCopyState {
     tokenSymbol: null,
     lastLeaderTradeSignature: null,
     lastLeaderTradeAt: null,
+    activeLeaderBuyCount: 0,
+    activeCopiedBuyCount: 0,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -67,6 +71,8 @@ function normalizeCopyState(raw: string | null): RedisCopyState {
       tokenSymbol: parsed.tokenSymbol || null,
       lastLeaderTradeSignature: parsed.lastLeaderTradeSignature || null,
       lastLeaderTradeAt: parsed.lastLeaderTradeAt || null,
+      activeLeaderBuyCount: numberOrZero(parsed.activeLeaderBuyCount),
+      activeCopiedBuyCount: numberOrZero(parsed.activeCopiedBuyCount),
       updatedAt: parsed.updatedAt || new Date().toISOString(),
     };
   } catch {
@@ -135,12 +141,16 @@ export async function recordRedisObservedLeaderBuy(args: {
   if (!isLivePilotRedisAvailable()) return null;
   const current = await getRedisCopyState(args) || emptyRedisCopyState();
   const transition = applyObservedLeaderBuy(current, args.leaderBuyAmount);
+  const nextLeaderBuyCount = transition.leaderPositionBefore <= 0.000000001
+    ? 1
+    : Math.max(1, numberOrZero(current.activeLeaderBuyCount) + 1);
   const next: RedisCopyState = {
     ...current,
     ...transition.next,
     tokenSymbol: args.tokenSymbol || current.tokenSymbol,
     lastLeaderTradeSignature: args.tradeSignature || current.lastLeaderTradeSignature,
     lastLeaderTradeAt: args.tradeTimestampIso || current.lastLeaderTradeAt,
+    activeLeaderBuyCount: nextLeaderBuyCount,
     updatedAt: new Date().toISOString(),
   };
   await setRedisCopyState({ ...args, state: next });
@@ -166,6 +176,9 @@ export async function recordRedisObservedLeaderSell(args: {
       tokenSymbol: args.tokenSymbol || current.tokenSymbol,
       lastLeaderTradeSignature: args.tradeSignature || current.lastLeaderTradeSignature,
       lastLeaderTradeAt: args.tradeTimestampIso || current.lastLeaderTradeAt,
+      activeLeaderBuyCount: transition.next.leaderOpenAmount <= 0.000000001
+        ? 0
+        : numberOrZero(current.activeLeaderBuyCount),
       updatedAt: new Date().toISOString(),
     };
     await setRedisCopyState({ ...args, state: next });
@@ -186,12 +199,16 @@ export async function recordRedisSuccessfulCopiedBuy(args: {
   if (!isLivePilotRedisAvailable()) return null;
   const current = await getRedisCopyState(args) || emptyRedisCopyState();
   const transition = applySuccessfulCopiedBuy(current, args.copiedBuyAmount, args.copiedCostUsd);
+  const nextCopiedBuyCount = transition.copiedPositionBefore <= 0.000000001
+    ? 1
+    : Math.max(1, numberOrZero(current.activeCopiedBuyCount) + 1);
   const next: RedisCopyState = {
     ...current,
     ...transition.next,
     tokenSymbol: args.tokenSymbol || current.tokenSymbol,
     lastLeaderTradeSignature: args.tradeSignature || current.lastLeaderTradeSignature,
     lastLeaderTradeAt: args.tradeTimestampIso || current.lastLeaderTradeAt,
+    activeCopiedBuyCount: nextCopiedBuyCount,
     updatedAt: new Date().toISOString(),
   };
   await setRedisCopyState({ ...args, state: next });
@@ -216,6 +233,9 @@ export async function recordRedisSuccessfulCopiedSell(args: {
     tokenSymbol: args.tokenSymbol || current.tokenSymbol,
     lastLeaderTradeSignature: args.tradeSignature || current.lastLeaderTradeSignature,
     lastLeaderTradeAt: args.tradeTimestampIso || current.lastLeaderTradeAt,
+    activeCopiedBuyCount: transition.next.copiedOpenAmount <= 0.000000001
+      ? 0
+      : numberOrZero(current.activeCopiedBuyCount),
     updatedAt: new Date().toISOString(),
   };
   await setRedisCopyState({ ...args, state: next });

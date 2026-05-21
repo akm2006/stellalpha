@@ -61,4 +61,28 @@ describe('resolveDemoBuySpend', () => {
     expect(result.buyAmount).toBe(5);
     expect(result.reason).toBeNull();
   });
+
+  it('resolves guarded hybrid demo buys with small leader-spend sizing and cash cap', () => {
+    const result = resolveDemoBuySpend({
+      modelKey: 'guarded_hybrid',
+      modelConfig: {
+        baseBuyPct: 1,
+        maxBuyPct: 1.5,
+        maxMintExposurePct: 7.5,
+        maxDcaBuysPerMint: 3,
+        dcaSecondBuyPct: 60,
+        dcaThirdBuyPct: 30,
+        newPositionMaxAgeMs: 3000,
+      },
+      availableCashUsd: 100,
+      startingCapitalUsd: 100,
+      leaderContext: {
+        ...leaderContext,
+        leaderBuyUsdValue: 200,
+      },
+    });
+
+    expect(result.buyAmount).toBe(1.5);
+    expect(result.limitedByAvailableCash).toBe(true);
+  });
 });

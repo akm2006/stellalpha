@@ -539,6 +539,10 @@ export async function reconcileCopiedPositionAmount(args: TransitionMetadata & {
       tokenSymbol: args.tokenSymbol || redisCurrent?.tokenSymbol || null,
       lastLeaderTradeSignature: args.tradeSignature || redisCurrent?.lastLeaderTradeSignature || null,
       lastLeaderTradeAt: args.tradeTimestampIso || redisCurrent?.lastLeaderTradeAt || null,
+      activeLeaderBuyCount: redisCurrent?.activeLeaderBuyCount || 0,
+      activeCopiedBuyCount: nextSnapshot.copiedOpenAmount > 0
+        ? Math.max(redisCurrent?.activeCopiedBuyCount || 0, 1)
+        : 0,
       updatedAt: new Date().toISOString(),
     };
     const client = await getLivePilotRedisClient();

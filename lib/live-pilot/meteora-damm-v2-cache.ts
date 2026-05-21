@@ -8,9 +8,16 @@ import {
 } from '@/lib/ingestion/solana-raw-instructions';
 
 export const METEORA_DAMM_V2_PROGRAM_ID = 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG';
+export const METEORA_DAMM_V2_POOL_AUTHORITY = 'HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC';
 
 const MAX_ENTRIES = 500;
 const candidatePoolsBySignature = new Map<string, string[]>();
+
+function addCandidate(candidates: Set<string>, account: string | null | undefined) {
+  if (account && account.length >= 32 && account.length <= 44) {
+    candidates.add(account);
+  }
+}
 
 export function extractMeteoraDammV2CandidatePools(raw: any) {
   const candidates = new Set<string>();
@@ -21,19 +28,21 @@ export function extractMeteoraDammV2CandidatePools(raw: any) {
       continue;
     }
 
-    for (const account of resolveSolanaInstructionAccounts(instruction, accountKeys)) {
-      if (account.length >= 32 && account.length <= 44) {
-        candidates.add(account);
-      }
+    const accounts = resolveSolanaInstructionAccounts(instruction, accountKeys);
+    if (accounts[0] === METEORA_DAMM_V2_POOL_AUTHORITY) {
+      // Official DAMM v2 swap/swap2 layout puts poolAuthority first and pool second.
+      addCandidate(candidates, accounts[1]);
+    }
+
+    for (const account of accounts) {
+      addCandidate(candidates, account);
     }
   }
 
   // Support for Carbon parser custom payload from worker/index.ts
   if (Array.isArray(raw?.__decoderCandidates)) {
     for (const candidate of raw.__decoderCandidates) {
-      if (typeof candidate === 'string' && candidate.length >= 32 && candidate.length <= 44) {
-        candidates.add(candidate);
-      }
+      addCandidate(candidates, typeof candidate === 'string' ? candidate : null);
     }
   }
 

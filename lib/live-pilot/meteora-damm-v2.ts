@@ -58,6 +58,13 @@ type MeteoraError = Error & {
 const DEFAULT_METEORA_SLIPPAGE_BPS = 1000;
 const DEFAULT_METEORA_COMPUTE_UNIT_LIMIT = 350_000;
 const DEFAULT_METEORA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS = 25_000;
+const DEFAULT_METEORA_POOL_DISCOVERY_TIMEOUT_MS = 650;
+const POOL_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const poolByPairKey = new Map<string, {
+  pool: string;
+  expiresAt: number;
+}>();
 
 function readBooleanEnv(name: string, fallback: boolean) {
   const raw = process.env[name];
@@ -88,6 +95,10 @@ export const meteoraDammV2LivePilotConfig = {
   computeUnitPriceMicroLamports: readNonNegativeIntEnv(
     'LIVE_PILOT_METEORA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS',
     DEFAULT_METEORA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS,
+  ),
+  poolDiscoveryTimeoutMs: readPositiveIntEnv(
+    'LIVE_PILOT_METEORA_POOL_DISCOVERY_TIMEOUT_MS',
+    DEFAULT_METEORA_POOL_DISCOVERY_TIMEOUT_MS,
   ),
 };
 
@@ -141,6 +152,99 @@ function poolMatchesPair(poolState: PoolState, inputMint: string, outputMint: st
   );
 }
 
+function pairKey(inputMint: string, outputMint: string) {
+  return [inputMint, outputMint].sort().join(':');
+}
+
+function rememberPairPool(inputMint: string, outputMint: string, pool: PublicKey) {
+  poolByPairKey.set(pairKey(inputMint, outputMint), {
+    pool: pool.toBase58(),
+    expiresAt: Date.now() + POOL_CACHE_TTL_MS,
+  });
+}
+
+async function fetchCachedPairPool(args: {
+  cpAmm: CpAmm;
+  inputMint: string;
+  outputMint: string;
+}) {
+  const cached = poolByPairKey.get(pairKey(args.inputMint, args.outputMint));
+  if (!cached) return null;
+
+  if (cached.expiresAt <= Date.now()) {
+    poolByPairKey.delete(pairKey(args.inputMint, args.outputMint));
+    return null;
+  }
+
+  try {
+    const pool = new PublicKey(cached.pool);
+    const poolState = await args.cpAmm.fetchPoolState(pool);
+    if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
+      return { pool, poolState, source: 'pair_cache' as const };
+    }
+  } catch {
+    poolByPairKey.delete(pairKey(args.inputMint, args.outputMint));
+  }
+
+  return null;
+}
+
+async function fetchCandidatePool(args: {
+  cpAmm: CpAmm;
+  inputMint: string;
+  outputMint: string;
+  candidates: string[];
+}) {
+  const results = await Promise.all(
+    args.candidates.map(async (candidate) => {
+      try {
+        const pool = new PublicKey(candidate);
+        const poolState = await args.cpAmm.fetchPoolState(pool);
+        if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
+          return { pool, poolState, source: 'leader_candidates' as const };
+        }
+      } catch {
+        // Candidate account lists contain mints, vaults, programs, and users too.
+      }
+      return null;
+    }),
+  );
+
+  const match = results.find((result) => Boolean(result)) ?? null;
+  if (match) {
+    rememberPairPool(args.inputMint, args.outputMint, match.pool);
+  }
+
+  return match;
+}
+
+async function fetchPoolByTokenMint(args: {
+  cpAmm: CpAmm;
+  inputMint: string;
+  outputMint: string;
+}) {
+  const tokenMints = Array.from(new Set([args.inputMint, args.outputMint]));
+
+  for (const tokenMint of tokenMints) {
+    try {
+      const pools = await args.cpAmm.fetchPoolStatesByTokenAMint(new PublicKey(tokenMint));
+      const match = pools.find((entry) => poolMatchesPair(entry.account, args.inputMint, args.outputMint));
+      if (match) {
+        rememberPairPool(args.inputMint, args.outputMint, match.publicKey);
+        return {
+          pool: match.publicKey,
+          poolState: match.account,
+          source: 'token_a_lookup' as const,
+        };
+      }
+    } catch {
+      // Some tokens are tokenB, not tokenA, or RPC may reject under load; try the next mint.
+    }
+  }
+
+  return null;
+}
+
 async function resolveMeteoraDammV2Pool(args: {
   cpAmm: CpAmm;
   signature: string | null | undefined;
@@ -148,25 +252,21 @@ async function resolveMeteoraDammV2Pool(args: {
   outputMint: string;
 }) {
   const candidates = uniqueBoundedCandidates(getLivePilotMeteoraDammV2CandidatePools(args.signature));
-  if (!candidates.length) {
-    return null;
-  }
 
   return resolveWithinBudget(
-    Promise.all(
-      candidates.map(async (candidate) => {
-        try {
-          const pool = new PublicKey(candidate);
-          const poolState = await args.cpAmm.fetchPoolState(pool);
-          if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
-            return { pool, poolState };
-          }
-        } catch {
-          // Candidate account lists contain mints, vaults, programs, and users too.
-        }
-        return null;
-      }),
-    ).then((results) => results.find((result) => Boolean(result)) ?? null),
+    (async () => {
+      const cached = await fetchCachedPairPool(args);
+      if (cached) return cached;
+
+      const candidatePool = await fetchCandidatePool({
+        ...args,
+        candidates,
+      });
+      if (candidatePool) return candidatePool;
+
+      return fetchPoolByTokenMint(args);
+    })(),
+    meteoraDammV2LivePilotConfig.poolDiscoveryTimeoutMs,
   );
 }
 

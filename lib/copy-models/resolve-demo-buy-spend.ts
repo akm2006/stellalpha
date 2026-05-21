@@ -78,5 +78,17 @@ export function resolveDemoBuySpend(args: {
         reason: proposedAmount > 0 ? null : 'zero_copy_ratio',
       };
     }
+    case 'guarded_hybrid': {
+      const baseBuyPct = Number((args.modelConfig as { baseBuyPct?: number }).baseBuyPct || 0) / 100;
+      const maxBuyPct = Number((args.modelConfig as { maxBuyPct?: number }).maxBuyPct || 0) / 100;
+      const leaderCopyAmount = leaderBuyUsdValue * baseBuyPct;
+      const followerCap = availableCashUsd * maxBuyPct;
+      proposedAmount = Math.min(leaderCopyAmount, followerCap);
+      return {
+        buyAmount: clampAmount(proposedAmount, availableCashUsd),
+        limitedByAvailableCash: leaderCopyAmount > followerCap,
+        reason: proposedAmount > 0 ? null : 'zero_model_spend',
+      };
+    }
   }
 }

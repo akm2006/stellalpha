@@ -4,6 +4,7 @@ export const COPY_BUY_MODEL_KEYS = [
   'fixed_starting_pct',
   'target_buy_pct_with_cap',
   'hybrid_envelope_leader_ratio',
+  'guarded_hybrid',
 ] as const;
 
 export type CopyBuyModelKey = (typeof COPY_BUY_MODEL_KEYS)[number];
@@ -27,12 +28,23 @@ export interface HybridEnvelopeLeaderRatioCopyModelConfig {
   envelopePct: number;
 }
 
+export interface GuardedHybridCopyModelConfig {
+  baseBuyPct: number;
+  maxBuyPct: number;
+  maxMintExposurePct: number;
+  maxDcaBuysPerMint: number;
+  dcaSecondBuyPct: number;
+  dcaThirdBuyPct: number;
+  newPositionMaxAgeMs: number;
+}
+
 export type CopyBuyModelConfig =
   | CurrentRatioCopyModelConfig
   | FixedAvailablePctCopyModelConfig
   | FixedStartingPctCopyModelConfig
   | TargetBuyPctWithCapCopyModelConfig
-  | HybridEnvelopeLeaderRatioCopyModelConfig;
+  | HybridEnvelopeLeaderRatioCopyModelConfig
+  | GuardedHybridCopyModelConfig;
 
 export interface CopyBuyModelFieldDefinition {
   key: string;

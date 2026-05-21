@@ -22,6 +22,8 @@ export function formatCopyBuyModelConfigSummary(modelKey: CopyBuyModelKey, confi
       return `Copy ${formatPercent((config as { targetBuyPct?: number }).targetBuyPct)} of each trader buy, capped at ${formatPercent((config as { maxBuyPct?: number }).maxBuyPct)} of free cash`;
     case 'hybrid_envelope_leader_ratio':
       return `Use up to ${formatPercent((config as { envelopePct?: number }).envelopePct)} of free cash, scaled by trader sizing`;
+    case 'guarded_hybrid':
+      return `Copy ${formatPercent((config as { baseBuyPct?: number }).baseBuyPct)} of trader buys, capped at ${formatPercent((config as { maxBuyPct?: number }).maxBuyPct)} per buy and ${formatPercent((config as { maxMintExposurePct?: number }).maxMintExposurePct)} per token`;
   }
 }
 
@@ -37,5 +39,7 @@ export function formatCopyBuyModelConfigBadge(modelKey: CopyBuyModelKey, config:
       return `${formatPercent((config as { targetBuyPct?: number }).targetBuyPct)}/${formatPercent((config as { maxBuyPct?: number }).maxBuyPct)} cap`;
     case 'hybrid_envelope_leader_ratio':
       return `${formatPercent((config as { envelopePct?: number }).envelopePct)} max`;
+    case 'guarded_hybrid':
+      return `${formatPercent((config as { baseBuyPct?: number }).baseBuyPct)}/${formatPercent((config as { maxBuyPct?: number }).maxBuyPct)} · ${formatPercent((config as { maxMintExposurePct?: number }).maxMintExposurePct)} token cap`;
   }
 }
