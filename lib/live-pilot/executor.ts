@@ -66,7 +66,8 @@ const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HELIUS_GATEKEEPER_ENABLED = ['1', 'true', 'yes', 'on']
   .includes((process.env.HELIUS_GATEKEEPER_ENABLED || '').trim().toLowerCase());
 const HELIUS_RPC_URL =
-  process.env.HELIUS_GATEKEEPER_RPC_URL
+  process.env.LIVE_PILOT_RPC_URL
+  || process.env.HELIUS_GATEKEEPER_RPC_URL
   || process.env.HELIUS_API_RPC_URL
   || (HELIUS_API_KEY
     ? `${HELIUS_GATEKEEPER_ENABLED ? 'https://beta.helius-rpc.com' : 'https://mainnet.helius-rpc.com'}/?api-key=${HELIUS_API_KEY}`
@@ -916,7 +917,7 @@ async function buildExecutionPlan(
 
 export function createLivePilotConnection() {
   if (!HELIUS_RPC_URL) {
-    throw new Error('Missing HELIUS_API_RPC_URL / HELIUS_API_KEY for live-pilot execution');
+    throw new Error('Missing LIVE_PILOT_RPC_URL / HELIUS_API_RPC_URL / HELIUS_API_KEY for live-pilot execution');
   }
 
   return new Connection(HELIUS_RPC_URL, {

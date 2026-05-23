@@ -58,12 +58,15 @@ type MeteoraError = Error & {
 const DEFAULT_METEORA_SLIPPAGE_BPS = 1000;
 const DEFAULT_METEORA_COMPUTE_UNIT_LIMIT = 350_000;
 const DEFAULT_METEORA_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS = 25_000;
-const DEFAULT_METEORA_POOL_DISCOVERY_TIMEOUT_MS = 650;
+const DEFAULT_METEORA_POOL_DISCOVERY_TIMEOUT_MS = 1200;
+const DEFAULT_METEORA_POOL_STATE_CACHE_TTL_MS = 2500;
 const POOL_CACHE_TTL_MS = 10 * 60 * 1000;
 const POOL_CACHE_MAX_ENTRIES = 500;
 
 const poolByPairKey = new Map<string, {
   pool: string;
+  poolState?: PoolState;
+  poolStateCachedAt?: number;
   expiresAt: number;
 }>();
 
@@ -100,6 +103,10 @@ export const meteoraDammV2LivePilotConfig = {
   poolDiscoveryTimeoutMs: readPositiveIntEnv(
     'LIVE_PILOT_METEORA_POOL_DISCOVERY_TIMEOUT_MS',
     DEFAULT_METEORA_POOL_DISCOVERY_TIMEOUT_MS,
+  ),
+  poolStateCacheTtlMs: readPositiveIntEnv(
+    'LIVE_PILOT_METEORA_POOL_STATE_CACHE_TTL_MS',
+    DEFAULT_METEORA_POOL_STATE_CACHE_TTL_MS,
   ),
   tokenMintDiscoveryEnabled: readBooleanEnv('LIVE_PILOT_METEORA_TOKEN_MINT_DISCOVERY_ENABLED', false),
 };
@@ -158,10 +165,17 @@ function pairKey(inputMint: string, outputMint: string) {
   return [inputMint, outputMint].sort().join(':');
 }
 
-function rememberPairPool(inputMint: string, outputMint: string, pool: PublicKey) {
+function rememberPairPool(
+  inputMint: string,
+  outputMint: string,
+  pool: PublicKey,
+  poolState?: PoolState,
+) {
+  const now = Date.now();
   poolByPairKey.set(pairKey(inputMint, outputMint), {
     pool: pool.toBase58(),
-    expiresAt: Date.now() + POOL_CACHE_TTL_MS,
+    ...(poolState ? { poolState, poolStateCachedAt: now } : {}),
+    expiresAt: now + POOL_CACHE_TTL_MS,
   });
 
   while (poolByPairKey.size > POOL_CACHE_MAX_ENTRIES) {
@@ -169,6 +183,17 @@ function rememberPairPool(inputMint: string, outputMint: string, pool: PublicKey
     if (!oldestKey) break;
     poolByPairKey.delete(oldestKey);
   }
+}
+
+function getFreshCachedPoolState(cached: {
+  poolState?: PoolState;
+  poolStateCachedAt?: number;
+}) {
+  if (!cached.poolState || !cached.poolStateCachedAt) return null;
+  if (Date.now() - cached.poolStateCachedAt > meteoraDammV2LivePilotConfig.poolStateCacheTtlMs) {
+    return null;
+  }
+  return cached.poolState;
 }
 
 async function fetchCachedPairPool(args: {
@@ -186,8 +211,12 @@ async function fetchCachedPairPool(args: {
 
   try {
     const pool = new PublicKey(cached.pool);
-    const poolState = await args.cpAmm.fetchPoolState(pool);
+    const cachedPoolState = getFreshCachedPoolState(cached);
+    const poolState = cachedPoolState || await args.cpAmm.fetchPoolState(pool);
     if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
+      if (!cachedPoolState) {
+        rememberPairPool(args.inputMint, args.outputMint, pool, poolState);
+      }
       return { pool, poolState, source: 'pair_cache' as const };
     }
   } catch {
@@ -208,7 +237,7 @@ async function fetchCandidatePool(args: {
       const pool = new PublicKey(candidate);
       const poolState = await args.cpAmm.fetchPoolState(pool);
       if (poolMatchesPair(poolState, args.inputMint, args.outputMint)) {
-        rememberPairPool(args.inputMint, args.outputMint, pool);
+        rememberPairPool(args.inputMint, args.outputMint, pool, poolState);
         return { pool, poolState, source: 'leader_candidates' as const };
       }
     } catch {
@@ -231,7 +260,7 @@ async function fetchPoolByTokenMint(args: {
       const pools = await args.cpAmm.fetchPoolStatesByTokenAMint(new PublicKey(tokenMint));
       const match = pools.find((entry) => poolMatchesPair(entry.account, args.inputMint, args.outputMint));
       if (match) {
-        rememberPairPool(args.inputMint, args.outputMint, match.publicKey);
+        rememberPairPool(args.inputMint, args.outputMint, match.publicKey, match.account);
         return {
           pool: match.publicKey,
           poolState: match.account,
