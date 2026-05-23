@@ -61,6 +61,10 @@ import {
   shouldUsePumpSwapForSwap,
 } from '@/lib/live-pilot/pump-swap';
 import { logLivePilotTrace } from '@/lib/live-pilot/trace';
+import {
+  describeLivePilotRpcUrl,
+  withLivePilotRpcRateLimit,
+} from '@/lib/live-pilot/rpc-rate-limit';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HELIUS_GATEKEEPER_ENABLED = ['1', 'true', 'yes', 'on']
@@ -920,9 +924,15 @@ export function createLivePilotConnection() {
     throw new Error('Missing LIVE_PILOT_RPC_URL / HELIUS_API_RPC_URL / HELIUS_API_KEY for live-pilot execution');
   }
 
-  return new Connection(HELIUS_RPC_URL, {
+  const connection = new Connection(HELIUS_RPC_URL, {
     commitment: 'confirmed',
   });
+  console.log(
+    `[LIVE_PILOT_RPC] provider=${describeLivePilotRpcUrl(HELIUS_RPC_URL)} `
+    + `minIntervalMs=${process.env.LIVE_PILOT_RPC_MIN_INTERVAL_MS || '40'} `
+    + `maxConcurrency=${process.env.LIVE_PILOT_RPC_MAX_CONCURRENCY || '2'}`,
+  );
+  return withLivePilotRpcRateLimit(connection);
 }
 
 export async function waitForPilotConfirmation(

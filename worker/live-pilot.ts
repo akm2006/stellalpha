@@ -70,20 +70,27 @@ const LOCK_WAIT_INTERVAL_MS = 250;
 const QUEUE_BATCH_SIZE = 10;
 const WALLET_BUSY_RETRY_DELAY_MS = 2_500;
 const CONTROL_CACHE_TTL_MS = 1_000;
-const TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const MAINTENANCE_SWEEP_INTERVAL_MS = readPositiveIntEnv('LIVE_PILOT_MAINTENANCE_SWEEP_INTERVAL_MS', 30_000);
+const MAINTENANCE_SWEEP_INITIAL_DELAY_MS = readPositiveIntEnv('LIVE_PILOT_MAINTENANCE_SWEEP_INITIAL_DELAY_MS', 30_000);
+const MAINTENANCE_SWEEP_ERROR_BACKOFF_MS = readPositiveIntEnv('LIVE_PILOT_MAINTENANCE_SWEEP_ERROR_BACKOFF_MS', 5 * 60 * 1000);
+const RESIDUAL_EXIT_SWEEP_INTERVAL_MS = readPositiveIntEnv('LIVE_PILOT_RESIDUAL_EXIT_SWEEP_INTERVAL_MS', 5 * 60 * 1000);
+const TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS = readPositiveIntEnv('LIVE_PILOT_TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS', 5 * 60 * 1000);
 const TOKEN_ACCOUNT_RENT_SWEEP_MAX_ACCOUNTS = 32;
 const REDIS_CONTROL_HYDRATE_INTERVAL_MS = 5_000;
 
 let isShuttingDown = false;
 let isProcessingQueue = false;
 let isRunningRecovery = false;
+let isRunningMaintenance = false;
 let isQueueDrainScheduled = false;
 let queueWakeChannel: RealtimeChannel | null = null;
+const residualExitSweepNextAt = new Map<string, number>();
 const tokenAccountRentSweepNextAt = new Map<string, number>();
 let queueBackoffUntil = 0;
 let queueBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
 let recoveryBackoffUntil = 0;
 let recoveryBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
+let maintenanceBackoffUntil = 0;
 let isHydratingRedisControl = false;
 
 type PilotControlSnapshot = ReturnType<typeof buildPilotControlSnapshot>;
@@ -97,6 +104,11 @@ let controlSnapshotCache: {
 const lockOwner = `${os.hostname()}:${process.pid}:live-pilot`;
 const redisConsumerName = `${os.hostname()}:${process.pid}:live-pilot-redis`;
 const connection = createLivePilotConnection();
+
+function readPositiveIntEnv(name: string, fallback: number) {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
 
 function hydrateRedisIntentExecutionMetadata(message: LivePilotRedisStreamMessage) {
   const signature = message.payload.starTradeSignature;
@@ -338,7 +350,14 @@ async function runResidualExitSweep(
   config: ReturnType<typeof getLivePilotConfig>,
   controlSnapshot: ReturnType<typeof buildPilotControlSnapshot>,
 ) {
+  const now = Date.now();
+
   for (const wallet of config.wallets.filter((entry) => entry.isEnabled && entry.isComplete && entry.hasSecret)) {
+    const nextSweepAt = residualExitSweepNextAt.get(wallet.alias) || 0;
+    if (nextSweepAt > now) {
+      continue;
+    }
+
     const walletControl = controlSnapshot.wallets.find((row) => row.scope_key === wallet.alias);
     const liquidationRequested =
       controlSnapshot.global.liquidation_requested
@@ -365,6 +384,8 @@ async function runResidualExitSweep(
       }
     } catch (error) {
       console.error(`[LIVE_PILOT] Failed residual exit sweep for ${wallet.alias}:`, error);
+    } finally {
+      residualExitSweepNextAt.set(wallet.alias, Date.now() + RESIDUAL_EXIT_SWEEP_INTERVAL_MS);
     }
   }
 }
@@ -563,7 +584,6 @@ async function processQueuedPilotTrades() {
   try {
     if (isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled) {
       const processedRedis = await processRedisPilotIntents();
-      await processRedisMaintenanceSweeps();
       if (processedRedis) {
         scheduleQueueDrain();
       }
@@ -604,10 +624,6 @@ async function processQueuedPilotTrades() {
       return;
     }
 
-    await runLiquidationSweep(config, controlSnapshot);
-    await runTokenAccountRentSweep(config, controlSnapshot);
-    await runResidualExitSweep(config, controlSnapshot);
-
     const queuedTrades = await listQueuedPilotTrades(QUEUE_BATCH_SIZE);
     if (queuedTrades.length > 0) {
       await processQueuedTradeBatch(config, controlSnapshot, walletControlMap, queuedTrades);
@@ -620,28 +636,48 @@ async function processQueuedPilotTrades() {
   }
 }
 
-async function processRedisMaintenanceSweeps() {
-  const config = getLivePilotConfig();
-  if (config.errors.length > 0) {
-    throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
-  }
-
-  const enabledWallets = config.wallets.filter((wallet) => wallet.isEnabled);
-  const walletAliases = enabledWallets.map((wallet) => wallet.alias);
-  const controlSnapshot = await getRedisPilotControlSnapshot(walletAliases);
-  if (!controlSnapshot) {
-    await publishLivePilotRedisAudit({
-      source: 'redis_maintenance_skipped',
-      reason: 'redis_control_unavailable',
-      walletAliases: walletAliases.join(','),
-      message: 'Redis maintenance sweeps are disabled until Redis control state is available',
-    });
+async function processMaintenanceSweeps(reason: string) {
+  if (isRunningMaintenance || isShuttingDown || Date.now() < maintenanceBackoffUntil) {
     return;
   }
 
-  await runLiquidationSweep(config, controlSnapshot);
-  await runTokenAccountRentSweep(config, controlSnapshot);
-  await runResidualExitSweep(config, controlSnapshot);
+  isRunningMaintenance = true;
+
+  try {
+    const config = getLivePilotConfig();
+    if (config.errors.length > 0) {
+      throw new Error(`Live-pilot config errors: ${config.errors.join(' | ')}`);
+    }
+
+    const enabledWallets = config.wallets.filter((wallet) => wallet.isEnabled);
+    const walletAliases = enabledWallets.map((wallet) => wallet.alias);
+    const controlSnapshot =
+      isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled
+        ? await getRedisPilotControlSnapshot(walletAliases)
+        : await getPilotControlSnapshot(walletAliases);
+
+    if (!controlSnapshot) {
+      await publishLivePilotRedisAudit({
+        source: 'redis_maintenance_skipped',
+        reason: 'redis_control_unavailable',
+        walletAliases: walletAliases.join(','),
+        message: 'Redis maintenance sweeps are disabled until Redis control state is available',
+      });
+      return;
+    }
+
+    await runLiquidationSweep(config, controlSnapshot);
+    await runTokenAccountRentSweep(config, controlSnapshot);
+    await runResidualExitSweep(config, controlSnapshot);
+  } catch (error) {
+    maintenanceBackoffUntil = Date.now() + MAINTENANCE_SWEEP_ERROR_BACKOFF_MS;
+    console.error(
+      `[LIVE_PILOT] Maintenance sweep failed (${reason}); backing off ${MAINTENANCE_SWEEP_ERROR_BACKOFF_MS}ms:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  } finally {
+    isRunningMaintenance = false;
+  }
 }
 
 async function processRedisIntentMessage(
@@ -1004,11 +1040,19 @@ async function startWorker() {
     recordLoopFailure('queue', error);
   });
 
+  setTimeout(() => {
+    processMaintenanceSweeps('startup-delayed').catch(() => undefined);
+  }, MAINTENANCE_SWEEP_INITIAL_DELAY_MS);
+
   setInterval(() => {
     processQueuedPilotTrades().catch((error) => {
       recordLoopFailure('queue', error);
     });
   }, QUEUE_POLL_INTERVAL_MS);
+
+  setInterval(() => {
+    processMaintenanceSweeps('interval').catch(() => undefined);
+  }, MAINTENANCE_SWEEP_INTERVAL_MS);
 
   setInterval(() => {
     runRecoveryLoop().catch((error) => {
