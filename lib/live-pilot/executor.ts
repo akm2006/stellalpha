@@ -65,6 +65,10 @@ import {
   describeLivePilotRpcUrl,
   withLivePilotRpcRateLimit,
 } from '@/lib/live-pilot/rpc-rate-limit';
+import {
+  waitForSignatureConfirmation,
+  type SignatureConfirmationResult,
+} from '@/lib/live-pilot/signature-confirmation';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HELIUS_GATEKEEPER_ENABLED = ['1', 'true', 'yes', 'on']
@@ -170,10 +174,7 @@ type ExecutionPlan =
       sourceClassification?: TradeSourceClassification;
     };
 
-type ConfirmationResult =
-  | { state: 'confirmed'; slot: number | null }
-  | { state: 'failed'; message: string }
-  | { state: 'pending' };
+type ConfirmationResult = SignatureConfirmationResult;
 
 type ExecutionOutcome =
   | { outcome: 'skipped'; reason: string; message: string }
@@ -940,105 +941,9 @@ export async function waitForPilotConfirmation(
   signature: string,
   timeoutMs: number = CONFIRM_TIMEOUT_MS,
 ): Promise<ConfirmationResult> {
-  const deadline = Date.now() + timeoutMs;
-  let settled = false;
-  let timeoutHandle: NodeJS.Timeout | null = null;
-  let pollHandle: NodeJS.Timeout | null = null;
-  let subscriptionId: number | null = null;
-
-  return new Promise<ConfirmationResult>((resolve) => {
-    const cleanup = () => {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-        timeoutHandle = null;
-      }
-
-      if (pollHandle) {
-        clearTimeout(pollHandle);
-        pollHandle = null;
-      }
-
-      if (subscriptionId !== null) {
-        void connection.removeSignatureListener(subscriptionId).catch(() => undefined);
-        subscriptionId = null;
-      }
-    };
-
-    const settle = (result: ConfirmationResult) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      cleanup();
-      resolve(result);
-    };
-
-    const pollOnce = async () => {
-      if (settled) {
-        return;
-      }
-
-      try {
-        const statuses = await connection.getSignatureStatuses([signature], {
-          searchTransactionHistory: true,
-        });
-        const status = statuses.value[0];
-
-        if (status?.err) {
-          settle({
-            state: 'failed',
-            message: JSON.stringify(status.err),
-          });
-          return;
-        }
-
-        if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
-          settle({
-            state: 'confirmed',
-            slot: status.slot ?? null,
-          });
-          return;
-        }
-      } catch {
-        // Keep the websocket listener active and retry via polling until timeout.
-      }
-
-      if (!settled && Date.now() < deadline) {
-        pollHandle = setTimeout(() => {
-          void pollOnce();
-        }, CONFIRM_POLL_INTERVAL_MS);
-      }
-    };
-
-    timeoutHandle = setTimeout(() => {
-      settle({ state: 'pending' });
-    }, timeoutMs);
-
-    try {
-      subscriptionId = connection.onSignature(
-        signature,
-        (result, context) => {
-          if (result.err) {
-            settle({
-              state: 'failed',
-              message: JSON.stringify(result.err),
-            });
-            return;
-          }
-
-          settle({
-            state: 'confirmed',
-            slot: context.slot ?? null,
-          });
-        },
-        'confirmed',
-      );
-    } catch {
-      subscriptionId = null;
-    }
-
-    void pollOnce();
+  return waitForSignatureConfirmation(connection, signature, {
+    timeoutMs,
+    pollIntervalMs: CONFIRM_POLL_INTERVAL_MS,
   });
 }
 

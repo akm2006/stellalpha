@@ -12,6 +12,7 @@ import {
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import { formatSolscanTxUrl, sendLivePilotAlert } from '@/lib/live-pilot/alerts';
+import { waitForSignatureConfirmation } from '@/lib/live-pilot/signature-confirmation';
 
 const DEFAULT_CLOSE_CHUNK_SIZE = 8;
 
@@ -21,9 +22,18 @@ function readBooleanEnv(name: string, fallback: boolean) {
   return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
 }
 
+function readPositiveIntEnv(name: string, fallback: number) {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
 const TOKEN_ACCOUNT_RENT_SWEEP_SKIP_PREFLIGHT = readBooleanEnv(
   'LIVE_PILOT_ATA_SWEEP_SKIP_PREFLIGHT',
   true,
+);
+const TOKEN_ACCOUNT_RENT_SWEEP_CONFIRM_TIMEOUT_MS = readPositiveIntEnv(
+  'LIVE_PILOT_ATA_SWEEP_CONFIRM_TIMEOUT_MS',
+  12_000,
 );
 
 export interface TokenAccountCloseTarget {
@@ -114,16 +124,17 @@ async function submitCloseTargets(args: {
     skipPreflight: TOKEN_ACCOUNT_RENT_SWEEP_SKIP_PREFLIGHT,
     preflightCommitment: 'confirmed',
   });
-  const confirmation = await connection.confirmTransaction({
-    signature,
-    blockhash: latestBlockhash.blockhash,
-    lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-  }, 'confirmed');
+  const confirmation = await waitForSignatureConfirmation(connection, signature, {
+    timeoutMs: TOKEN_ACCOUNT_RENT_SWEEP_CONFIRM_TIMEOUT_MS,
+  });
 
-  if (confirmation.value.err) {
+  if (confirmation.state === 'failed') {
     throw new Error(
-      `Close token account transaction failed: ${signature} err=${JSON.stringify(confirmation.value.err)}`,
+      `Close token account transaction failed: ${signature} err=${confirmation.message}`,
     );
+  }
+  if (confirmation.state === 'pending') {
+    throw new Error(`Close token account confirmation pending: ${signature}`);
   }
 
   return signature;
