@@ -346,7 +346,13 @@ export function isRetryableBuyExecutionFailure(
   const lower = message.toLowerCase();
   return (
     code === '6001'
+    || code === '6002'
     || lower.includes('6001')
+    || lower.includes('6002')
+    || lower.includes('"custom":6002')
+    || lower.includes('custom program error: 0x1772')
+    || lower.includes('exceeded slippage')
+    || lower.includes('exceededslippage')
     || lower.includes('slippage tolerance exceeded')
     || lower.includes('slippage limit exceeded')
     || lower.includes('slippagelimitexceeded')
@@ -1264,16 +1270,19 @@ export async function quarantineFailedMint(args: {
   trade: PilotTradeRow;
   walletAlias: string;
   message: string;
+  reason?: string;
 }) {
-  const { trade, walletAlias, message } = args;
-  const mint = trade.token_in_mint;
+  const { trade, walletAlias, message, reason = 'trapped_unquotable' } = args;
+  const mint = trade.leader_type === 'buy'
+    ? trade.token_out_mint
+    : trade.token_in_mint;
   if (!mint) {
     return null;
   }
 
   const quarantine = await quarantinePilotMint({
     mint,
-    reason: 'trapped_unquotable',
+    reason,
     firstWalletAlias: walletAlias,
     firstStarTrader: trade.star_trader,
     firstPilotTradeId: trade.id,

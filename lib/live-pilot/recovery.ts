@@ -71,11 +71,22 @@ function emptyRecoverySummary(scanned = 0) {
 
 function classifyOnchainFailureCode(serializedErr: string) {
   const lower = serializedErr.toLowerCase();
+  if (
+    lower.includes('"custom":17')
+    || lower.includes('"custom": 17')
+    || lower.includes('custom program error: 0x11')
+    || lower.includes('account is frozen')
+    || lower.includes('accountfrozen')
+  ) return 'account_frozen';
   if (lower.includes('"custom":6002') || lower.includes('6002')) return '6002';
   if (lower.includes('15001')) return '15001';
   if (lower.includes('6001')) return '6001';
   if (lower.includes('6017')) return '6017';
   return 'chain_failure';
+}
+
+function isTerminalMintQuarantineFailure(code: string) {
+  return code === 'account_frozen';
 }
 
 async function ensureRecoveryLock(walletAlias: string, lockOwner: string) {
@@ -554,6 +565,26 @@ export async function recoverRedisSubmittedPilotTrades(args: {
           continue;
         }
 
+        if (isTerminalMintQuarantineFailure(code)) {
+          await quarantineFailedMint({
+            trade,
+            walletAlias: wallet.alias,
+            message,
+            reason: code,
+          }).catch(() => undefined);
+          await mirrorRedisTradeEvent({
+            source: 'redis_submitted_recovery_terminal_quarantine',
+            tradeId: trade.id,
+            walletAlias: wallet.alias,
+            txSignature: signature,
+            errorCode: code,
+            errorMessage: message,
+          });
+          await deleteRedisSubmittedTrade(record.key);
+          summary.failed += 1;
+          continue;
+        }
+
         await deleteRedisSubmittedTrade(record.key);
         summary.failed += 1;
         continue;
@@ -706,6 +737,21 @@ export async function recoverSubmittedPilotTrades(args: {
               tradeId: trade.id,
             });
             outcome = 'requeued';
+          } else if (isTerminalMintQuarantineFailure(code)) {
+            await quarantineFailedMint({
+              trade,
+              walletAlias: wallet.alias,
+              message,
+              reason: code,
+            }).catch(() => undefined);
+            await failSubmittedAttempt(
+              wallet.alias,
+              trade.id,
+              attempt.id,
+              message,
+              code,
+            );
+            outcome = 'failed';
           } else {
             await failSubmittedAttempt(
               wallet.alias,
