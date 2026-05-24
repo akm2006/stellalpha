@@ -283,13 +283,15 @@ export async function executePumpFunSwap(args: {
         isBuy: true,
         sourceClassification: plan.sourceClassification,
       });
-      const tokenAmount = getBuyTokenAmountFromSolAmount({
+      const buyQuoteArgs = {
         global: state.global,
         feeConfig: state.feeConfig,
         mintSupply: state.bondingCurve.tokenTotalSupply,
         bondingCurve: state.bondingCurve,
         amount: new BN(plan.inputAmountRaw),
-      });
+        quoteMint: state.bondingCurve.quoteMint,
+      };
+      const tokenAmount = getBuyTokenAmountFromSolAmount(buyQuoteArgs);
       quotedOutputRaw = tokenAmount.toString();
       
       instructions = await PUMP_SDK.buyInstructions({
@@ -314,13 +316,15 @@ export async function executePumpFunSwap(args: {
         isBuy: false,
         sourceClassification: plan.sourceClassification,
       });
-      const solAmount = getSellSolAmountFromTokenAmount({
+      const sellQuoteArgs = {
         global: state.global,
         feeConfig: state.feeConfig,
         mintSupply: state.bondingCurve.tokenTotalSupply,
         bondingCurve: state.bondingCurve,
         amount: new BN(plan.inputAmountRaw),
-      });
+        quoteMint: state.bondingCurve.quoteMint,
+      };
+      const solAmount = getSellSolAmountFromTokenAmount(sellQuoteArgs);
       quotedOutputRaw = solAmount.toString();
       
       instructions = await PUMP_SDK.sellInstructions({
