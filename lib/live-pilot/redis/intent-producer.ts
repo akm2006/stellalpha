@@ -3,7 +3,7 @@ import type {
   GuardedHybridCopyModelConfig,
   TargetBuyPctWithCapCopyModelConfig,
 } from '@/lib/copy-models/types';
-import { BUY_STALENESS_THRESHOLD_MS, createPrivateRpcConnection } from '@/lib/ingestion/copy-signal';
+import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 import {
   classifyTradeSource,
   formatTradeSourceClassification,
@@ -34,8 +34,9 @@ import {
 import { resolveLivePilotSellSizing } from '@/lib/live-pilot/sell-safety';
 import {
   resolveFixedAvailableLiveBuySizing,
-  resolveGuardedHybridLiveBuySizing,
-  resolveTargetBuyPctWithCapLiveBuySizing,
+  resolveGuardedHybridIntentHint,
+  resolveGuardedHybridLiveBuyPreflight,
+  resolveTargetBuyPctWithCapIntentHint,
 } from '@/lib/live-pilot/buy-sizing';
 
 function toIso(ms: number) {
@@ -56,12 +57,9 @@ async function resolveRedisLiveBuyCopyRatio(pilotWallet: PilotWalletConfigSummar
   }
 
   if (pilotWallet.buyModelKey === 'target_buy_pct_with_cap') {
-    return resolveTargetBuyPctWithCapLiveBuySizing({
-      trade,
-      wallet: pilotWallet,
-      config: pilotWallet.buyModelConfig as TargetBuyPctWithCapCopyModelConfig,
-      connection: createPrivateRpcConnection(),
-    });
+    return resolveTargetBuyPctWithCapIntentHint(
+      pilotWallet.buyModelConfig as TargetBuyPctWithCapCopyModelConfig,
+    );
   }
 
   if (pilotWallet.buyModelKey === 'guarded_hybrid') {
@@ -113,6 +111,8 @@ function baseTradeRow(args: {
   leaderPositionBefore?: number | null;
   leaderPositionAfter?: number | null;
   copiedPositionBefore?: number | null;
+  copiedCostUsdAtIntent?: number | null;
+  activeLeaderBuyCountAtIntent?: number | null;
   sellFraction?: number | null;
   deployableSolAtIntent?: number | null;
   solPriceAtIntent?: number | null;
@@ -129,11 +129,15 @@ function baseTradeRow(args: {
     leader_type: args.trade.type,
     token_in_mint: args.trade.tokenInMint || null,
     token_out_mint: args.trade.tokenOutMint || null,
+    leader_token_in_amount: args.trade.tokenInAmount ?? null,
+    leader_token_out_amount: args.trade.tokenOutAmount ?? null,
     copy_ratio: args.copyRatio,
     leader_position_before: args.leaderPositionBefore ?? null,
     leader_position_after: args.leaderPositionAfter ?? null,
     copied_position_before: args.copiedPositionBefore ?? null,
     copied_position_after: null,
+    copied_cost_usd_at_intent: args.copiedCostUsdAtIntent ?? null,
+    active_leader_buy_count_at_intent: args.activeLeaderBuyCountAtIntent ?? null,
     sell_fraction: args.sellFraction ?? null,
     leader_block_timestamp: toBlockTimestampIso(args.trade.timestamp),
     received_at: toIso(args.receivedAt),
@@ -215,6 +219,8 @@ export async function maybeCreateRedisPilotIntent(
   let leaderPositionBefore: number | null = null;
   let leaderPositionAfter: number | null = null;
   let copiedPositionBefore: number | null = null;
+  let copiedCostUsdAtIntent: number | null = null;
+  let activeLeaderBuyCountAtIntent: number | null = null;
   let sellFraction: number | null = null;
   let dedupeReserved = false;
   let keepDedupeForSkip = false;
@@ -233,6 +239,8 @@ export async function maybeCreateRedisPilotIntent(
       leaderPositionBefore,
       leaderPositionAfter,
       copiedPositionBefore,
+      copiedCostUsdAtIntent,
+      activeLeaderBuyCountAtIntent,
       sellFraction,
       deployableSolAtIntent,
       solPriceAtIntent,
@@ -303,15 +311,22 @@ export async function maybeCreateRedisPilotIntent(
       leaderPositionBefore = leaderBuy?.leaderPositionBefore ?? null;
       leaderPositionAfter = leaderBuy?.leaderPositionAfter ?? null;
       copiedPositionBefore = leaderBuy?.copiedPositionBefore ?? null;
+      copiedCostUsdAtIntent = leaderBuy?.row?.copiedCostUsd ?? null;
+      activeLeaderBuyCountAtIntent = leaderBuy?.row?.activeLeaderBuyCount ?? null;
 
-      const sizing = await resolveGuardedHybridLiveBuySizing({
-        trade,
-        wallet: pilotWallet,
+      const preflight = resolveGuardedHybridLiveBuyPreflight({
         config: pilotWallet.buyModelConfig as GuardedHybridCopyModelConfig,
-        connection: createPrivateRpcConnection(),
         tradeAgeMs,
         copyState: leaderBuy?.row || null,
       });
+      const sizing = preflight.skipReason
+        ? {
+          copyRatio: 0,
+          deployableSolAtIntent: null,
+          solPriceAtIntent: null,
+          skipReason: preflight.skipReason,
+        }
+        : resolveGuardedHybridIntentHint(pilotWallet.buyModelConfig as GuardedHybridCopyModelConfig);
       copyRatio = sizing.copyRatio;
       deployableSolAtIntent = sizing.deployableSolAtIntent;
       solPriceAtIntent = sizing.solPriceAtIntent;
@@ -350,6 +365,8 @@ export async function maybeCreateRedisPilotIntent(
       leaderPositionBefore = leaderBuy?.leaderPositionBefore ?? null;
       leaderPositionAfter = leaderBuy?.leaderPositionAfter ?? null;
       copiedPositionBefore = leaderBuy?.copiedPositionBefore ?? null;
+      copiedCostUsdAtIntent = leaderBuy?.row?.copiedCostUsd ?? null;
+      activeLeaderBuyCountAtIntent = leaderBuy?.row?.activeLeaderBuyCount ?? null;
     }
   } else {
     const inputMint = trade.tokenInMint || '';
@@ -410,6 +427,8 @@ export async function maybeCreateRedisPilotIntent(
     leaderPositionBefore,
     leaderPositionAfter,
     copiedPositionBefore,
+    copiedCostUsdAtIntent,
+    activeLeaderBuyCountAtIntent,
     sellFraction,
     deployableSolAtIntent,
     solPriceAtIntent,

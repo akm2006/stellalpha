@@ -39,10 +39,18 @@ import {
   getCachedTokenBalance,
   recordSubmittedSwapInCache,
 } from '@/lib/live-pilot/execution-state-cache';
-import { getTokenDecimals, getTokenSymbol, WSOL } from '@/lib/services/token-service';
+import { getSolPrice, getTokenDecimals, getTokenSymbol, WSOL } from '@/lib/services/token-service';
 import { BUY_STALENESS_THRESHOLD_MS } from '@/lib/ingestion/copy-signal';
 import type { TradeSourceClassification } from '@/lib/ingestion/trade-source-classifier';
 import { getLivePilotSourceClassification } from '@/lib/live-pilot/source-classification-cache';
+import type {
+  GuardedHybridCopyModelConfig,
+  TargetBuyPctWithCapCopyModelConfig,
+} from '@/lib/copy-models/types';
+import {
+  resolveGuardedHybridExecutionInputSol,
+  resolveTargetBuyPctWithCapExecutionInputSol,
+} from '@/lib/live-pilot/buy-sizing';
 import {
   executeMeteoraDammV2Swap,
   shouldUseMeteoraDammV2First,
@@ -677,6 +685,53 @@ function buildStaleBuyMessage(trade: Pick<PilotTradeRow, 'leader_type' | 'leader
   return `Buy intent is ${Math.round(staleBuy.ageMs / 1000)}s old before ${stage}; hard cutoff is ${BUY_STALENESS_THRESHOLD_MS / 1000}s`;
 }
 
+function optionalPositiveNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isSolMint(mint: string | null | undefined) {
+  return !mint || mint === SOL_MINT;
+}
+
+async function resolveBuyInputSolAtExecution(args: {
+  trade: PilotTradeRow;
+  wallet: LivePilotWalletConfig;
+  deployableSol: number;
+  fallbackCopyRatio: number;
+}) {
+  const leaderInputSol = isSolMint(args.trade.token_in_mint)
+    ? optionalPositiveNumber(args.trade.leader_token_in_amount)
+    : null;
+
+  if (args.wallet.buyModelKey === 'target_buy_pct_with_cap') {
+    const inputSol = resolveTargetBuyPctWithCapExecutionInputSol({
+      leaderInputSol,
+      deployableSol: args.deployableSol,
+      config: args.wallet.buyModelConfig as TargetBuyPctWithCapCopyModelConfig,
+    });
+    if (inputSol !== null) return inputSol;
+  }
+
+  if (args.wallet.buyModelKey === 'guarded_hybrid') {
+    const copiedCostUsd = optionalPositiveNumber(args.trade.copied_cost_usd_at_intent);
+    const solPrice = copiedCostUsd
+      ? optionalPositiveNumber(args.trade.sol_price_at_intent) ?? await getSolPrice()
+      : null;
+    const inputSol = resolveGuardedHybridExecutionInputSol({
+      leaderInputSol,
+      deployableSol: args.deployableSol,
+      config: args.wallet.buyModelConfig as GuardedHybridCopyModelConfig,
+      copiedCostUsd,
+      activeLeaderBuyCount: optionalPositiveNumber(args.trade.active_leader_buy_count_at_intent),
+      solPrice,
+    });
+    if (inputSol !== null) return inputSol;
+  }
+
+  return args.deployableSol * args.fallbackCopyRatio;
+}
+
 export function hasBuyRetryBudget(
   trade: Pick<PilotTradeRow, 'leader_type' | 'leader_block_timestamp'>,
   retryDelayMs: number,
@@ -708,7 +763,7 @@ async function buildExecutionPlan(
   connection: Connection,
 ): Promise<ExecutionPlan> {
   const copyRatio = Math.min(Math.max(Number(trade.copy_ratio || 0), 0), 1);
-  if (copyRatio <= 0) {
+  if (trade.leader_type !== 'buy' && copyRatio <= 0) {
     return {
       kind: 'skip',
       reason: 'zero_copy_ratio',
@@ -757,7 +812,12 @@ async function buildExecutionPlan(
       wallet.minFeeReserveSol,
     );
     const deployableSol = Math.max(0, walletBalanceSol - reserveSol);
-    const desiredInputSol = deployableSol * copyRatio;
+    const desiredInputSol = await resolveBuyInputSolAtExecution({
+      trade,
+      wallet,
+      deployableSol,
+      fallbackCopyRatio: copyRatio,
+    });
 
     if (desiredInputSol <= 0) {
       return {

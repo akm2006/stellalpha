@@ -23,6 +23,12 @@ export interface GuardedHybridCopyStateInput {
   activeLeaderBuyCount?: number | null;
 }
 
+export interface GuardedHybridPreflightResult {
+  skipReason: string | null;
+  isNewPosition: boolean;
+  activeLeaderBuyCount: number;
+}
+
 function clampRatio(value: number) {
   if (!Number.isFinite(value) || value <= 0) return 0;
   return Math.max(0, Math.min(1, value));
@@ -95,6 +101,131 @@ export function resolveFixedAvailableLiveBuySizing(config: FixedAvailablePctCopy
   };
 }
 
+export function resolveTargetBuyPctWithCapIntentHint(
+  config: TargetBuyPctWithCapCopyModelConfig,
+): LiveBuySizingResult {
+  const copyRatio = clampRatio(clampPercent(config.maxBuyPct) / 100);
+  return {
+    copyRatio,
+    skipReason: copyRatio > 0 ? null : 'zero_model_spend',
+    deployableSolAtIntent: null,
+    solPriceAtIntent: null,
+    leaderUsdValue: null,
+  };
+}
+
+export function resolveGuardedHybridIntentHint(
+  config: GuardedHybridCopyModelConfig,
+): LiveBuySizingResult {
+  const copyRatio = clampRatio(clampPercent(config.maxBuyPct) / 100);
+  return {
+    copyRatio,
+    skipReason: copyRatio > 0 ? null : 'zero_model_spend',
+    deployableSolAtIntent: null,
+    solPriceAtIntent: null,
+    leaderUsdValue: null,
+  };
+}
+
+export function resolveTargetBuyPctWithCapExecutionInputSol(args: {
+  leaderInputSol: number | null;
+  deployableSol: number;
+  config: TargetBuyPctWithCapCopyModelConfig;
+}) {
+  if (!Number.isFinite(args.leaderInputSol) || !args.leaderInputSol || args.leaderInputSol <= 0) {
+    return null;
+  }
+
+  const targetPct = clampPercent(args.config.targetBuyPct) / 100;
+  const maxPct = clampPercent(args.config.maxBuyPct) / 100;
+  const targetInputSol = args.leaderInputSol * targetPct;
+  const maxInputSol = args.deployableSol * maxPct;
+  return Math.max(0, Math.min(targetInputSol, maxInputSol));
+}
+
+export function resolveGuardedHybridLiveBuyPreflight(args: {
+  config: GuardedHybridCopyModelConfig;
+  tradeAgeMs: number;
+  copyState?: GuardedHybridCopyStateInput | null;
+}): GuardedHybridPreflightResult {
+  const state = args.copyState || {};
+  const copiedOpenAmount = Math.max(0, Number(state.copiedOpenAmount || 0));
+  const copiedCostUsd = Math.max(0, Number(state.copiedCostUsd || 0));
+  const isNewPosition = copiedOpenAmount <= 0.000000001 && copiedCostUsd <= 0.000000001;
+  const newPositionMaxAgeMs = clampInteger(args.config.newPositionMaxAgeMs, 3_000, 500, 10_000);
+  const activeLeaderBuyCount = Math.max(
+    1,
+    clampInteger(
+      state.activeLeaderBuyCount,
+      Number(state.leaderOpenAmount || 0) > 0 ? 2 : 1,
+      1,
+      100,
+    ),
+  );
+
+  if (isNewPosition && activeLeaderBuyCount > 1) {
+    return { skipReason: 'missed_initial_entry', isNewPosition, activeLeaderBuyCount };
+  }
+
+  if (isNewPosition && args.tradeAgeMs > newPositionMaxAgeMs) {
+    return { skipReason: 'stale_new_position_buy', isNewPosition, activeLeaderBuyCount };
+  }
+
+  const maxDcaBuys = clampInteger(args.config.maxDcaBuysPerMint, 3, 1, 20);
+  if (activeLeaderBuyCount > maxDcaBuys) {
+    return { skipReason: 'max_dca_buys_reached', isNewPosition, activeLeaderBuyCount };
+  }
+
+  return { skipReason: null, isNewPosition, activeLeaderBuyCount };
+}
+
+export function resolveGuardedHybridExecutionInputSol(args: {
+  leaderInputSol: number | null;
+  deployableSol: number;
+  config: GuardedHybridCopyModelConfig;
+  copiedCostUsd?: number | null;
+  activeLeaderBuyCount?: number | null;
+  solPrice?: number | null;
+}) {
+  if (!Number.isFinite(args.leaderInputSol) || !args.leaderInputSol || args.leaderInputSol <= 0) {
+    return null;
+  }
+
+  const baseBuyPct = clampPercent(args.config.baseBuyPct) / 100;
+  const maxBuyPct = clampPercent(args.config.maxBuyPct) / 100;
+  const maxMintExposurePct = clampPercent(args.config.maxMintExposurePct) / 100;
+  const secondMultiplier = clampPercent(args.config.dcaSecondBuyPct) / 100;
+  const thirdMultiplier = clampPercent(args.config.dcaThirdBuyPct) / 100;
+  const activeLeaderBuyCount = Math.max(
+    1,
+    clampInteger(args.activeLeaderBuyCount, 1, 1, 100),
+  );
+
+  let proposedInputSol = Math.min(
+    args.leaderInputSol * baseBuyPct,
+    args.deployableSol * maxBuyPct,
+  );
+
+  if (activeLeaderBuyCount === 2) {
+    proposedInputSol *= secondMultiplier;
+  } else if (activeLeaderBuyCount >= 3) {
+    proposedInputSol *= thirdMultiplier;
+  }
+
+  const copiedCostUsd = Math.max(0, Number(args.copiedCostUsd || 0));
+  const solPrice = Number(args.solPrice || 0);
+  if (copiedCostUsd > 0 && Number.isFinite(solPrice) && solPrice > 0) {
+    const maxMintExposureSol = args.deployableSol * maxMintExposurePct;
+    const remainingMintExposureSol = maxMintExposureSol - copiedCostUsd / solPrice;
+    if (remainingMintExposureSol <= 0) {
+      return 0;
+    }
+    proposedInputSol = Math.min(proposedInputSol, remainingMintExposureSol);
+  }
+
+  return Math.max(0, proposedInputSol);
+}
+
 export async function resolveTargetBuyPctWithCapLiveBuySizing(args: {
   trade: RawTrade;
   wallet: PilotWalletConfigSummary;
@@ -150,46 +281,15 @@ export async function resolveGuardedHybridLiveBuySizing(args: {
   tradeAgeMs: number;
   copyState?: GuardedHybridCopyStateInput | null;
 }): Promise<LiveBuySizingResult> {
-  const state = args.copyState || {};
-  const copiedOpenAmount = Math.max(0, Number(state.copiedOpenAmount || 0));
-  const copiedCostUsd = Math.max(0, Number(state.copiedCostUsd || 0));
-  const isNewPosition = copiedOpenAmount <= 0.000000001 && copiedCostUsd <= 0.000000001;
-  const newPositionMaxAgeMs = clampInteger(args.config.newPositionMaxAgeMs, 3_000, 500, 10_000);
-  const activeLeaderBuyCount = Math.max(
-    1,
-    clampInteger(
-      state.activeLeaderBuyCount,
-      Number(state.leaderOpenAmount || 0) > 0 ? 2 : 1,
-      1,
-      100,
-    ),
-  );
-
-  if (isNewPosition && activeLeaderBuyCount > 1) {
+  const preflight = resolveGuardedHybridLiveBuyPreflight({
+    config: args.config,
+    tradeAgeMs: args.tradeAgeMs,
+    copyState: args.copyState,
+  });
+  if (preflight.skipReason) {
     return {
       copyRatio: 0,
-      skipReason: 'missed_initial_entry',
-      deployableSolAtIntent: null,
-      solPriceAtIntent: null,
-      leaderUsdValue: null,
-    };
-  }
-
-  if (isNewPosition && args.tradeAgeMs > newPositionMaxAgeMs) {
-    return {
-      copyRatio: 0,
-      skipReason: 'stale_new_position_buy',
-      deployableSolAtIntent: null,
-      solPriceAtIntent: null,
-      leaderUsdValue: null,
-    };
-  }
-
-  const maxDcaBuys = clampInteger(args.config.maxDcaBuysPerMint, 3, 1, 20);
-  if (activeLeaderBuyCount > maxDcaBuys) {
-    return {
-      copyRatio: 0,
-      skipReason: 'max_dca_buys_reached',
+      skipReason: preflight.skipReason,
       deployableSolAtIntent: null,
       solPriceAtIntent: null,
       leaderUsdValue: null,
@@ -222,6 +322,7 @@ export async function resolveGuardedHybridLiveBuySizing(args: {
     };
   }
 
+  const copiedCostUsd = Math.max(0, Number(args.copyState?.copiedCostUsd || 0));
   const baseBuyPct = clampPercent(args.config.baseBuyPct) / 100;
   const maxBuyPct = clampPercent(args.config.maxBuyPct) / 100;
   const maxMintExposurePct = clampPercent(args.config.maxMintExposurePct) / 100;
@@ -232,9 +333,9 @@ export async function resolveGuardedHybridLiveBuySizing(args: {
   const maxSpendUsd = deployable.deployableUsd! * maxBuyPct;
   let proposedSpendUsd = Math.min(targetSpendUsd, maxSpendUsd);
 
-  if (activeLeaderBuyCount === 2) {
+  if (preflight.activeLeaderBuyCount === 2) {
     proposedSpendUsd *= secondMultiplier;
-  } else if (activeLeaderBuyCount >= 3) {
+  } else if (preflight.activeLeaderBuyCount >= 3) {
     proposedSpendUsd *= thirdMultiplier;
   }
 

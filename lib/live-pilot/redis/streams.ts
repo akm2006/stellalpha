@@ -24,6 +24,8 @@ export type LivePilotRedisIntentPayload = {
   leaderType: string | null;
   tokenInMint: string | null;
   tokenOutMint: string | null;
+  leaderTokenInAmount: string | null;
+  leaderTokenOutAmount: string | null;
   copyRatio: string | null;
   sellFraction: string | null;
   leaderBlockTimestamp: string | null;
@@ -33,6 +35,8 @@ export type LivePilotRedisIntentPayload = {
   leaderPositionAfter: string | null;
   copiedPositionBefore: string | null;
   copiedPositionAfter: string | null;
+  copiedCostUsdAtIntent: string | null;
+  activeLeaderBuyCountAtIntent: string | null;
   attemptCount: string | null;
   sourceClassificationJson: string | null;
   meteoraDammV2CandidatePools: string | null;
@@ -90,6 +94,8 @@ export function pilotTradeToRedisIntent(
     leaderType: trade.leader_type,
     tokenInMint: trade.token_in_mint,
     tokenOutMint: trade.token_out_mint,
+    leaderTokenInAmount: stringifyNullable(trade.leader_token_in_amount) || null,
+    leaderTokenOutAmount: stringifyNullable(trade.leader_token_out_amount) || null,
     copyRatio: stringifyNullable(trade.copy_ratio) || null,
     sellFraction: stringifyNullable(trade.sell_fraction) || null,
     leaderBlockTimestamp: trade.leader_block_timestamp,
@@ -99,6 +105,8 @@ export function pilotTradeToRedisIntent(
     leaderPositionAfter: stringifyNullable(trade.leader_position_after) || null,
     copiedPositionBefore: stringifyNullable(trade.copied_position_before) || null,
     copiedPositionAfter: stringifyNullable(trade.copied_position_after) || null,
+    copiedCostUsdAtIntent: stringifyNullable(trade.copied_cost_usd_at_intent) || null,
+    activeLeaderBuyCountAtIntent: stringifyNullable(trade.active_leader_buy_count_at_intent) || null,
     attemptCount: stringifyNullable(trade.attempt_count) || null,
     sourceClassificationJson: metadata.sourceClassification
       ? JSON.stringify(metadata.sourceClassification)
@@ -127,11 +135,15 @@ export function redisIntentToPilotTrade(payload: LivePilotRedisIntentPayload): P
     leader_type: payload.leaderType,
     token_in_mint: payload.tokenInMint,
     token_out_mint: payload.tokenOutMint,
+    leader_token_in_amount: payload.leaderTokenInAmount === null ? null : Number(payload.leaderTokenInAmount),
+    leader_token_out_amount: payload.leaderTokenOutAmount === null ? null : Number(payload.leaderTokenOutAmount),
     copy_ratio: payload.copyRatio === null ? null : Number(payload.copyRatio),
     leader_position_before: payload.leaderPositionBefore === null ? null : Number(payload.leaderPositionBefore),
     leader_position_after: payload.leaderPositionAfter === null ? null : Number(payload.leaderPositionAfter),
     copied_position_before: payload.copiedPositionBefore === null ? null : Number(payload.copiedPositionBefore),
     copied_position_after: payload.copiedPositionAfter === null ? null : Number(payload.copiedPositionAfter),
+    copied_cost_usd_at_intent: payload.copiedCostUsdAtIntent === null ? null : Number(payload.copiedCostUsdAtIntent),
+    active_leader_buy_count_at_intent: payload.activeLeaderBuyCountAtIntent === null ? null : Number(payload.activeLeaderBuyCountAtIntent),
     sell_fraction: payload.sellFraction === null ? null : Number(payload.sellFraction),
     leader_block_timestamp: payload.leaderBlockTimestamp,
     received_at: payload.receivedAt,
@@ -185,6 +197,8 @@ function decodeIntent(streamId: string, message: Record<string, unknown>): LiveP
       leaderType: parseNullable(message.leaderType),
       tokenInMint: parseNullable(message.tokenInMint),
       tokenOutMint: parseNullable(message.tokenOutMint),
+      leaderTokenInAmount: parseNullable(message.leaderTokenInAmount),
+      leaderTokenOutAmount: parseNullable(message.leaderTokenOutAmount),
       copyRatio: parseNullable(message.copyRatio),
       sellFraction: parseNullable(message.sellFraction),
       leaderBlockTimestamp: parseNullable(message.leaderBlockTimestamp),
@@ -194,6 +208,8 @@ function decodeIntent(streamId: string, message: Record<string, unknown>): LiveP
       leaderPositionAfter: parseNullable(message.leaderPositionAfter),
       copiedPositionBefore: parseNullable(message.copiedPositionBefore),
       copiedPositionAfter: parseNullable(message.copiedPositionAfter),
+      copiedCostUsdAtIntent: parseNullable(message.copiedCostUsdAtIntent),
+      activeLeaderBuyCountAtIntent: parseNullable(message.activeLeaderBuyCountAtIntent),
       attemptCount: parseNullable(message.attemptCount),
       sourceClassificationJson: parseNullable(message.sourceClassificationJson),
       meteoraDammV2CandidatePools: parseNullable(message.meteoraDammV2CandidatePools),

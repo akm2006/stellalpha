@@ -124,11 +124,15 @@ export interface PilotTradeRow {
   leader_type: string | null;
   token_in_mint: string | null;
   token_out_mint: string | null;
+  leader_token_in_amount?: number | null;
+  leader_token_out_amount?: number | null;
   copy_ratio: number | null;
   leader_position_before: number | null;
   leader_position_after: number | null;
   copied_position_before: number | null;
   copied_position_after: number | null;
+  copied_cost_usd_at_intent?: number | null;
+  active_leader_buy_count_at_intent?: number | null;
   sell_fraction: number | null;
   leader_block_timestamp: string | null;
   received_at: string | null;
