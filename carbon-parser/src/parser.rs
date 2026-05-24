@@ -350,6 +350,41 @@ fn wallet_supports_trade_direction(
     }
 }
 
+fn wallet_token_delta_contradicts_trade(
+    envelope: &CanonicalEnvelope,
+    trade_type: &str,
+    token_mint: &str,
+) -> bool {
+    if is_base_mint(token_mint) {
+        return false;
+    }
+
+    let Some(delta) = wallet_mint_delta(envelope, token_mint) else {
+        return false;
+    };
+
+    match trade_type {
+        "buy" => delta <= DELTA_EPSILON,
+        "sell" => delta >= -DELTA_EPSILON,
+        _ => true,
+    }
+}
+
+fn wallet_native_supports_trade_direction(envelope: &CanonicalEnvelope, trade_type: &str) -> bool {
+    match trade_type {
+        "buy" => {
+            wallet_effective_native_spend(envelope).map_or(false, |spend| spend > NATIVE_EPSILON)
+                || wallet_mint_delta(envelope, WSOL).map_or(false, |delta| delta < -DELTA_EPSILON)
+        }
+        "sell" => {
+            wallet_positive_native_like_delta(envelope)
+                .map_or(false, |(_, amount)| amount > NATIVE_EPSILON)
+                || wallet_mint_delta(envelope, WSOL).map_or(false, |delta| delta > DELTA_EPSILON)
+        }
+        _ => false,
+    }
+}
+
 fn mint_matches_flow(mint: &str, flow_mint: &str) -> bool {
     mint == flow_mint || (is_sol_like_mint(mint) && is_sol_like_mint(flow_mint))
 }
@@ -378,6 +413,10 @@ fn trade_shape_supported(
     direct_sent: &[TokenDelta],
     direct_received: &[TokenDelta],
 ) -> bool {
+    if wallet_token_delta_contradicts_trade(envelope, trade_type, token_mint) {
+        return false;
+    }
+
     wallet_supports_trade_direction(envelope, trade_type, token_mint)
         || direct_instruction_flows_support_trade(
             direct_sent,
@@ -385,6 +424,7 @@ fn trade_shape_supported(
             token_in_mint,
             token_out_mint,
         )
+        || wallet_native_supports_trade_direction(envelope, trade_type)
 }
 
 fn protocol_trade_support_score(
@@ -397,6 +437,10 @@ fn protocol_trade_support_score(
 
     if wallet_supports_trade_direction(envelope, &trade.trade_type, &trade.token_mint) {
         score += 20;
+    }
+
+    if wallet_native_supports_trade_direction(envelope, &trade.trade_type) {
+        score += 10;
     }
 
     if direct_instruction_flows_support_trade(
@@ -1483,7 +1527,17 @@ impl TradeParser for CarbonYellowstoneParser {
         ) {
             if trade.trade_type == "buy" {
                 if let Some(candidate_trade) = candidate_trade.as_ref() {
-                    if candidate_trade.trade_type == "buy" {
+                    if candidate_trade.trade_type == "buy"
+                        && trade_shape_supported(
+                            envelope,
+                            &candidate_trade.trade_type,
+                            &candidate_trade.token_mint,
+                            &candidate_trade.token_in_mint,
+                            &candidate_trade.token_out_mint,
+                            &direct_instruction_flows.0,
+                            &direct_instruction_flows.1,
+                        )
+                    {
                         return ParseDecision::Trade(candidate_trade.clone());
                     }
                 }
@@ -1504,26 +1558,15 @@ impl TradeParser for CarbonYellowstoneParser {
         }
 
         if let Some(trade) = candidate_trade {
-            // Check whether the wallet's on-chain token balance supports the
-            // trade direction.  Three cases:
-            //   1. wallet_mint_delta returns Some(delta) that matches direction → accept
-            //   2. wallet_mint_delta returns Some(delta) near zero or wrong direction → reject
-            //      (routing intermediary: tokens pass through wallet via CPI, net = 0)
-            //   3. wallet_mint_delta returns None (wallet absent from token balances) → accept
-            //      (relayer/CPI pattern: another program owns the token account)
-            let dominated_by_balance = if !is_base_mint(&trade.token_mint) {
-                match wallet_mint_delta(envelope, &trade.token_mint) {
-                    Some(delta) => match trade.trade_type.as_str() {
-                        "buy" if delta < DELTA_EPSILON => true,
-                        "sell" if delta > -DELTA_EPSILON => true,
-                        _ => false,
-                    },
-                    None => false, // wallet not in balances — don't reject
-                }
-            } else {
-                false
-            };
-            if !dominated_by_balance {
+            if trade_shape_supported(
+                envelope,
+                &trade.trade_type,
+                &trade.token_mint,
+                &trade.token_in_mint,
+                &trade.token_out_mint,
+                &direct_instruction_flows.0,
+                &direct_instruction_flows.1,
+            ) {
                 return ParseDecision::Trade(trade);
             }
         }
@@ -1553,7 +1596,22 @@ impl TradeParser for CarbonYellowstoneParser {
             if trade.timestamp != timestamp {
                 return unknown(envelope, "cluster_net_fallback", "timestamp mismatch");
             }
-            return ParseDecision::Trade(trade);
+            if trade_shape_supported(
+                envelope,
+                &trade.trade_type,
+                &trade.token_mint,
+                &trade.token_in_mint,
+                &trade.token_out_mint,
+                &direct_instruction_flows.0,
+                &direct_instruction_flows.1,
+            ) {
+                return ParseDecision::Trade(trade);
+            }
+            return no_trade(
+                envelope,
+                "cluster_net_fallback",
+                "cluster deltas had no wallet-scoped token, native, or authority evidence",
+            );
         }
 
         no_trade(
@@ -1561,5 +1619,126 @@ impl TradeParser for CarbonYellowstoneParser {
             "carbon_cluster_parser",
             "cluster deltas did not resolve to a supported trade shape",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::TokenBalanceSnapshot;
+
+    const WATCHED_WALLET: &str = "515vh1DrPuwMATt9Zoq9kP4sJL9fyojA1dHJu4DQpNRp";
+    const REAL_SIGNER: &str = "AWZ4FFj15YDmhA1UfiqzDYdGJPrp9UpjPAchM5HFkd9B";
+    const POOL_OWNER: &str = "PoolOwner1111111111111111111111111111111111";
+    const PUMPSWAP_PROGRAM: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+    const TOKEN_MINT: &str = "AQmpmQEYhK48gQh1z5pRVSA7rGwX7hp7eto3QCGzpump";
+
+    fn token_balance(account_index: usize, owner: &str, amount: f64) -> TokenBalanceSnapshot {
+        TokenBalanceSnapshot {
+            mint: TOKEN_MINT.to_string(),
+            owner: Some(owner.to_string()),
+            account_index,
+            decimals: 6,
+            ui_amount: amount,
+        }
+    }
+
+    fn envelope(
+        wallet: &str,
+        fee_payer: &str,
+        account_keys: Vec<&str>,
+        pre_balances: Vec<u64>,
+        post_balances: Vec<u64>,
+        pre_token_balances: Vec<TokenBalanceSnapshot>,
+        post_token_balances: Vec<TokenBalanceSnapshot>,
+    ) -> CanonicalEnvelope {
+        CanonicalEnvelope {
+            signature: "synthetic-signature".to_string(),
+            wallet: wallet.to_string(),
+            slot: 42,
+            timestamp: Some(1_716_000_000),
+            source_received_at: "2026-05-25T00:00:00.000Z".to_string(),
+            yellowstone_created_at: None,
+            fee_payer: Some(fee_payer.to_string()),
+            fee_lamports: 5_000,
+            account_keys: account_keys.into_iter().map(String::from).collect(),
+            top_level_program_ids: vec![PUMPSWAP_PROGRAM.to_string()],
+            inner_program_ids: Vec::new(),
+            decoder_candidates: vec!["carbon-pump-swap-decoder".to_string()],
+            pre_balances,
+            post_balances,
+            pre_token_balances,
+            post_token_balances,
+            log_messages: vec!["Program log: Instruction: Buy".to_string()],
+            top_level_instructions: Vec::new(),
+            inner_instructions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rejects_fee_payer_swap_when_watched_wallet_is_only_referenced() {
+        let envelope = envelope(
+            WATCHED_WALLET,
+            REAL_SIGNER,
+            vec![
+                REAL_SIGNER,
+                "PoolSol11111111111111111111111111111111111",
+                WATCHED_WALLET,
+                "SignerTokenAccount1111111111111111111111111",
+                "PoolTokenAccount111111111111111111111111111",
+            ],
+            vec![5_000_000_000, 1_000_000_000, 2_000_000_000, 0, 0],
+            vec![1_850_000_000, 4_149_995_000, 2_000_000_000, 0, 0],
+            vec![
+                token_balance(3, REAL_SIGNER, 0.0),
+                token_balance(4, POOL_OWNER, 1_000_000.0),
+            ],
+            vec![
+                token_balance(3, REAL_SIGNER, 5_518.664027),
+                token_balance(4, POOL_OWNER, 994_481.335973),
+            ],
+        );
+
+        let decision = CarbonYellowstoneParser::default().parse(&envelope);
+
+        assert!(
+            matches!(decision, ParseDecision::NoTrade(_)),
+            "expected no_trade for referenced-wallet false positive, got {decision:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_swap_when_fee_payer_is_the_watched_wallet() {
+        let envelope = envelope(
+            REAL_SIGNER,
+            REAL_SIGNER,
+            vec![
+                REAL_SIGNER,
+                "PoolSol11111111111111111111111111111111111",
+                "SignerTokenAccount1111111111111111111111111",
+                "PoolTokenAccount111111111111111111111111111",
+            ],
+            vec![5_000_000_000, 1_000_000_000, 0, 0],
+            vec![1_850_000_000, 4_149_995_000, 0, 0],
+            vec![
+                token_balance(2, REAL_SIGNER, 0.0),
+                token_balance(3, POOL_OWNER, 1_000_000.0),
+            ],
+            vec![
+                token_balance(2, REAL_SIGNER, 5_518.664027),
+                token_balance(3, POOL_OWNER, 994_481.335973),
+            ],
+        );
+
+        let decision = CarbonYellowstoneParser::default().parse(&envelope);
+
+        match decision {
+            ParseDecision::Trade(trade) => {
+                assert_eq!(trade.trade_type, "buy");
+                assert_eq!(trade.wallet, REAL_SIGNER);
+                assert_eq!(trade.token_mint, TOKEN_MINT);
+            }
+            other => panic!("expected wallet-owned swap trade, got {other:?}"),
+        }
     }
 }
