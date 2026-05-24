@@ -83,6 +83,11 @@ function formatLiveBuyModel(config: PilotWalletConfigSummary) {
   )}`;
 }
 
+function formatLiveProfile(profileKey: PilotWalletConfigSummary['profileKey']) {
+  if (profileKey === 'micro_longevity_7d') return 'Micro longevity 7d';
+  return null;
+}
+
 function tradePair(trade: PilotTradeRow) {
   return `${truncate(trade.token_in_mint, 4, 4)} -> ${truncate(trade.token_out_mint, 4, 4)}`;
 }
@@ -245,6 +250,7 @@ function WalletCommandCard({
   runAction: (action: PilotControlAction, walletAlias?: string) => void;
 }) {
   const tone = getWalletTone(wallet);
+  const profileLabel = formatLiveProfile(wallet.config.profileKey);
 
   return (
     <article className={`cyber-panel-soft border p-4 ${tone === 'danger' ? 'border-red-400/25 bg-red-500/[0.04]' : tone === 'warn' ? 'border-amber-300/25 bg-amber-400/[0.04]' : 'border-[#00FF85]/18 bg-[#00FF85]/[0.025]'}`}>
@@ -287,6 +293,9 @@ function WalletCommandCard({
         <div className="cyber-panel-soft border border-white/8 px-3 py-3">
           <div className="cyber-command mb-1 text-[9px] text-white/35">Sizing</div>
           <div className="text-sm text-white/80">{formatLiveBuyModel(wallet.config)}</div>
+          {profileLabel ? (
+            <div className="mt-1 text-[11px] text-[#00E5D4]">Profile: {profileLabel}</div>
+          ) : null}
         </div>
         <div className="cyber-panel-soft border border-white/8 px-3 py-3">
           <div className="cyber-command mb-1 text-[9px] text-white/35">Protection</div>

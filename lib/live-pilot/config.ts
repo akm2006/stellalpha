@@ -3,6 +3,7 @@ import type {
   LivePilotBuyModelConfig,
   LivePilotBuyModelKey,
   LivePilotConfigSummary,
+  LivePilotWalletProfileKey,
   PilotWalletConfigSummary,
 } from '@/lib/live-pilot/types';
 
@@ -19,6 +20,34 @@ export interface LivePilotConfig extends LivePilotConfigSummary {
 }
 
 export type LivePilotWalletConfig = LivePilotConfig['wallets'][number];
+
+type WalletSlot = 'A' | 'B';
+
+interface LivePilotWalletProfile {
+  buyModelKey: LivePilotBuyModelKey;
+  buyModelConfig: LivePilotBuyModelConfig;
+  feeReservePct: number;
+  minFeeReserveSol: number;
+}
+
+const LIVE_PILOT_WALLET_PROFILES: Record<LivePilotWalletProfileKey, LivePilotWalletProfile> = {
+  micro_longevity_7d: {
+    buyModelKey: 'guarded_hybrid',
+    buyModelConfig: {
+      baseBuyPct: 0.35,
+      maxBuyPct: 0.75,
+      maxMintExposurePct: 2.5,
+      maxDcaBuysPerMint: 1,
+      dcaSecondBuyPct: 0.1,
+      dcaThirdBuyPct: 0.1,
+      newPositionMaxAgeMs: 2500,
+    },
+    feeReservePct: 0.08,
+    minFeeReserveSol: 0.02,
+  },
+};
+
+const LIVE_PILOT_WALLET_PROFILE_KEYS = Object.keys(LIVE_PILOT_WALLET_PROFILES) as LivePilotWalletProfileKey[];
 
 function parseCsv(value: string | undefined) {
   return (value || '')
@@ -59,7 +88,25 @@ function isValidPublicKey(value: string) {
   }
 }
 
-function parseWalletBase(slot: 'A' | 'B', errors: string[]) {
+function parseWalletProfile(slot: WalletSlot, errors: string[], missingFields: string[]) {
+  const rawProfileKey = process.env[`PILOT_WALLET_${slot}_PROFILE`]?.trim();
+  if (!rawProfileKey) {
+    return { profileKey: null, profile: null };
+  }
+
+  if (!LIVE_PILOT_WALLET_PROFILE_KEYS.includes(rawProfileKey as LivePilotWalletProfileKey)) {
+    errors.push(
+      `PILOT_WALLET_${slot}_PROFILE must be one of: ${LIVE_PILOT_WALLET_PROFILE_KEYS.join(', ')}`
+    );
+    missingFields.push('profile');
+    return { profileKey: null, profile: null };
+  }
+
+  const profileKey = rawProfileKey as LivePilotWalletProfileKey;
+  return { profileKey, profile: LIVE_PILOT_WALLET_PROFILES[profileKey] };
+}
+
+function parseWalletBase(slot: WalletSlot, errors: string[]) {
   const alias = process.env[`PILOT_WALLET_${slot}_ALIAS`]?.trim() || `wallet-${slot.toLowerCase()}`;
   const publicKey = process.env[`PILOT_WALLET_${slot}_PUBLIC_KEY`]?.trim() || '';
   const starTrader = process.env[`PILOT_WALLET_${slot}_STAR_TRADER`]?.trim() || '';
@@ -91,10 +138,18 @@ function parseWalletBase(slot: 'A' | 'B', errors: string[]) {
 }
 
 function parseWalletBuyModel(
-  slot: 'A' | 'B',
+  slot: WalletSlot,
   errors: string[],
   missingFields: string[],
+  profile: LivePilotWalletProfile | null,
 ): { buyModelKey: LivePilotBuyModelKey; buyModelConfig: LivePilotBuyModelConfig } {
+  if (profile) {
+    return {
+      buyModelKey: profile.buyModelKey,
+      buyModelConfig: profile.buyModelConfig,
+    };
+  }
+
   const rawModelKey = process.env[`PILOT_WALLET_${slot}_BUY_MODEL_KEY`]?.trim() || 'current_ratio';
 
   if (
@@ -163,7 +218,7 @@ function parseWalletBuyModel(
   };
 }
 
-function parseWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWalletConfigInternal | null {
+function parseWalletConfig(slot: WalletSlot, errors: string[]): PilotWalletConfigInternal | null {
   const base = parseWalletBase(slot, errors);
   if (!base) {
     return null;
@@ -171,7 +226,8 @@ function parseWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWalletConfig
 
   const secret = process.env[`PILOT_WALLET_${slot}_SECRET`]?.trim() || null;
   const missingFields = [...base.missingFields];
-  const { buyModelKey, buyModelConfig } = parseWalletBuyModel(slot, errors, missingFields);
+  const { profileKey, profile } = parseWalletProfile(slot, errors, missingFields);
+  const { buyModelKey, buyModelConfig } = parseWalletBuyModel(slot, errors, missingFields, profile);
 
   return {
     slot: base.slot,
@@ -180,13 +236,14 @@ function parseWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWalletConfig
     starTrader: base.starTrader,
     cashMode: 'sol',
     mode: 'copy',
+    profileKey,
     buyModelKey,
     buyModelConfig,
     isEnabled: parseBoolean(process.env[`PILOT_WALLET_${slot}_ENABLED`], true),
     hasSecret: Boolean(secret),
     secret,
-    feeReservePct: parseNumber('PILOT_FEE_RESERVE_PCT', 0.1, errors),
-    minFeeReserveSol: parseNumber('PILOT_MIN_FEE_RESERVE_SOL', 0.05, errors),
+    feeReservePct: profile?.feeReservePct ?? parseNumber('PILOT_FEE_RESERVE_PCT', 0.1, errors),
+    minFeeReserveSol: profile?.minFeeReserveSol ?? parseNumber('PILOT_MIN_FEE_RESERVE_SOL', 0.05, errors),
     minTradeSizeSol: parseNumber('PILOT_MIN_TRADE_SIZE_SOL', 0.02, errors),
     maxTradeBuypowerPct: parseNumber('PILOT_MAX_TRADE_BUYPOWER_PCT', 0.1, errors),
     buyMaxPriceImpactPct: parseNumber('PILOT_BUY_MAX_PRICE_IMPACT_PCT', 0, errors),
@@ -197,13 +254,14 @@ function parseWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWalletConfig
   };
 }
 
-function parsePublicWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWalletConfigSummary | null {
+function parsePublicWalletConfig(slot: WalletSlot, errors: string[]): PilotWalletConfigSummary | null {
   const base = parseWalletBase(slot, errors);
   if (!base) {
     return null;
   }
   const missingFields = [...base.missingFields];
-  const { buyModelKey, buyModelConfig } = parseWalletBuyModel(slot, errors, missingFields);
+  const { profileKey, profile } = parseWalletProfile(slot, errors, missingFields);
+  const { buyModelKey, buyModelConfig } = parseWalletBuyModel(slot, errors, missingFields, profile);
 
   return {
     slot: base.slot,
@@ -212,12 +270,13 @@ function parsePublicWalletConfig(slot: 'A' | 'B', errors: string[]): PilotWallet
     starTrader: base.starTrader,
     cashMode: 'sol',
     mode: 'copy',
+    profileKey,
     buyModelKey,
     buyModelConfig,
     isEnabled: parseBoolean(process.env[`PILOT_WALLET_${slot}_ENABLED`], true),
     hasSecret: false,
-    feeReservePct: parseNumber('PILOT_FEE_RESERVE_PCT', 0.1, errors),
-    minFeeReserveSol: parseNumber('PILOT_MIN_FEE_RESERVE_SOL', 0.05, errors),
+    feeReservePct: profile?.feeReservePct ?? parseNumber('PILOT_FEE_RESERVE_PCT', 0.1, errors),
+    minFeeReserveSol: profile?.minFeeReserveSol ?? parseNumber('PILOT_MIN_FEE_RESERVE_SOL', 0.05, errors),
     minTradeSizeSol: parseNumber('PILOT_MIN_TRADE_SIZE_SOL', 0.02, errors),
     maxTradeBuypowerPct: parseNumber('PILOT_MAX_TRADE_BUYPOWER_PCT', 0.1, errors),
     buyMaxPriceImpactPct: parseNumber('PILOT_BUY_MAX_PRICE_IMPACT_PCT', 0, errors),
