@@ -38,7 +38,10 @@ import {
   recoverRedisSubmittedPilotTrades,
   recoverSubmittedPilotTrades,
 } from '@/lib/live-pilot/recovery';
-import { closeZeroTokenAccounts } from '@/lib/live-pilot/token-account-rent';
+import {
+  cleanupNonZeroTokenAccountsToSol,
+  closeZeroTokenAccounts,
+} from '@/lib/live-pilot/token-account-rent';
 import { closeLivePilotRedisClient } from '@/lib/live-pilot/redis/client';
 import { isLivePilotRedisAvailable, livePilotRedisConfig } from '@/lib/live-pilot/redis/config';
 import {
@@ -60,6 +63,11 @@ import {
   hydrateRedisPilotControlState,
 } from '@/lib/live-pilot/redis/control';
 import { logLivePilotTrace } from '@/lib/live-pilot/trace';
+import { listActivePilotMintQuarantines } from '@/lib/live-pilot/repositories/pilot-mint-quarantines.repo';
+import {
+  listAllOpenPilotStatesForWallet,
+  listLeaderClosedCopiedOpenPilotStates,
+} from '@/lib/repositories/copy-position-states.repo';
 
 const QUEUE_POLL_INTERVAL_MS = 1_000;
 const RECOVERY_INTERVAL_MS = 5_000;
@@ -76,6 +84,10 @@ const MAINTENANCE_SWEEP_ERROR_BACKOFF_MS = readPositiveIntEnv('LIVE_PILOT_MAINTE
 const RESIDUAL_EXIT_SWEEP_INTERVAL_MS = readPositiveIntEnv('LIVE_PILOT_RESIDUAL_EXIT_SWEEP_INTERVAL_MS', 5 * 60 * 1000);
 const TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS = readPositiveIntEnv('LIVE_PILOT_TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS', 5 * 60 * 1000);
 const TOKEN_ACCOUNT_RENT_SWEEP_MAX_ACCOUNTS = 32;
+const TOKEN_ACCOUNT_DUST_CLEANUP_ENABLED = readBooleanEnv('LIVE_PILOT_TOKEN_ACCOUNT_DUST_CLEANUP_ENABLED', true);
+const TOKEN_ACCOUNT_DUST_CLEANUP_INTERVAL_MS = readPositiveIntEnv('LIVE_PILOT_TOKEN_ACCOUNT_DUST_CLEANUP_INTERVAL_MS', 24 * 60 * 60 * 1000);
+const TOKEN_ACCOUNT_DUST_CLEANUP_MAX_ACCOUNTS = readPositiveIntEnv('LIVE_PILOT_TOKEN_ACCOUNT_DUST_CLEANUP_MAX_ACCOUNTS', 16);
+const TOKEN_ACCOUNT_DUST_CLEANUP_UNTRACKED_ENABLED = readBooleanEnv('LIVE_PILOT_TOKEN_ACCOUNT_DUST_CLEANUP_UNTRACKED_ENABLED', false);
 const REDIS_CONTROL_HYDRATE_INTERVAL_MS = 5_000;
 
 let isShuttingDown = false;
@@ -86,6 +98,7 @@ let isQueueDrainScheduled = false;
 let queueWakeChannel: RealtimeChannel | null = null;
 const residualExitSweepNextAt = new Map<string, number>();
 const tokenAccountRentSweepNextAt = new Map<string, number>();
+const tokenAccountDustCleanupNextAt = new Map<string, number>();
 let queueBackoffUntil = 0;
 let queueBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
 let recoveryBackoffUntil = 0;
@@ -108,6 +121,12 @@ const connection = createLivePilotConnection();
 function readPositiveIntEnv(name: string, fallback: number) {
   const parsed = Number(process.env[name]);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function readBooleanEnv(name: string, fallback: boolean) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
 }
 
 function hydrateRedisIntentExecutionMetadata(message: LivePilotRedisStreamMessage) {
@@ -419,9 +438,24 @@ async function runTokenAccountRentSweep(
       continue;
     }
 
+    const redisMaintenanceLockOwner = isLivePilotRedisAvailable() && livePilotRedisConfig.executionEnabled
+      ? `${redisConsumerName}:maintenance:${wallet.alias}`
+      : null;
+    let redisLockAcquired = false;
+    if (redisMaintenanceLockOwner) {
+      redisLockAcquired = await acquireLivePilotRedisWalletLock(wallet.alias, redisMaintenanceLockOwner);
+      if (!redisLockAcquired) {
+        tokenAccountRentSweepNextAt.set(wallet.alias, now + WALLET_BUSY_RETRY_DELAY_MS);
+        continue;
+      }
+    }
+
     const lockAcquired = await acquireExecutionLock(wallet.alias);
     if (!lockAcquired) {
       tokenAccountRentSweepNextAt.set(wallet.alias, now + WALLET_BUSY_RETRY_DELAY_MS);
+      if (redisLockAcquired && redisMaintenanceLockOwner) {
+        await releaseLivePilotRedisWalletLock(wallet.alias, redisMaintenanceLockOwner).catch(() => undefined);
+      }
       continue;
     }
 
@@ -443,12 +477,107 @@ async function runTokenAccountRentSweep(
           + `reclaimed ${result.reclaimedSol.toFixed(6)} SOL`,
         );
       }
+
+      await maybeRunTokenAccountDustCleanup({
+        wallet,
+        keypair,
+      });
     } catch (error) {
       tokenAccountRentSweepNextAt.set(wallet.alias, Date.now() + TOKEN_ACCOUNT_RENT_SWEEP_INTERVAL_MS);
       console.error(`[LIVE_PILOT] Failed token-account rent sweep for ${wallet.alias}:`, error);
     } finally {
       await releasePilotRuntimeLock(wallet.alias, lockOwner).catch(() => undefined);
+      if (redisLockAcquired && redisMaintenanceLockOwner) {
+        await releaseLivePilotRedisWalletLock(wallet.alias, redisMaintenanceLockOwner).catch(() => undefined);
+      }
     }
+  }
+}
+
+async function getSafeTokenDustCleanupSets(wallet: ReturnType<typeof getLivePilotConfig>['wallets'][number]) {
+  const [quarantines, leaderClosedStates, openStates] = await Promise.all([
+    listActivePilotMintQuarantines(),
+    listLeaderClosedCopiedOpenPilotStates({
+      scopeKey: wallet.alias,
+      starTrader: wallet.starTrader,
+    }),
+    listAllOpenPilotStatesForWallet({
+      scopeKey: wallet.alias,
+      starTrader: wallet.starTrader,
+    }),
+  ]);
+
+  const cleanupMints = new Set<string>();
+  for (const quarantine of quarantines) {
+    cleanupMints.add(quarantine.mint);
+  }
+  for (const state of leaderClosedStates) {
+    cleanupMints.add(state.mint);
+  }
+
+  const protectedMints = new Set<string>();
+  for (const state of openStates) {
+    if (
+      Number(state.leader_open_amount || 0) > 0.000000001
+      && Number(state.copied_open_amount || 0) > 0.000000001
+    ) {
+      protectedMints.add(state.mint);
+    }
+  }
+
+  return {
+    cleanupMints: TOKEN_ACCOUNT_DUST_CLEANUP_UNTRACKED_ENABLED ? null : cleanupMints,
+    protectedMints,
+    cleanupMintCount: cleanupMints.size,
+    protectedMintCount: protectedMints.size,
+  };
+}
+
+async function maybeRunTokenAccountDustCleanup(args: {
+  wallet: ReturnType<typeof getLivePilotConfig>['wallets'][number];
+  keypair: ReturnType<typeof loadPilotWalletKeypair>;
+}) {
+  const { wallet, keypair } = args;
+  if (!TOKEN_ACCOUNT_DUST_CLEANUP_ENABLED) {
+    return;
+  }
+
+  const now = Date.now();
+  const nextCleanupAt = tokenAccountDustCleanupNextAt.get(wallet.alias) || 0;
+  if (nextCleanupAt > now) {
+    return;
+  }
+
+  tokenAccountDustCleanupNextAt.set(wallet.alias, now + TOKEN_ACCOUNT_DUST_CLEANUP_INTERVAL_MS);
+  const cleanupSets = await getSafeTokenDustCleanupSets(wallet);
+  if (
+    !TOKEN_ACCOUNT_DUST_CLEANUP_UNTRACKED_ENABLED
+    && cleanupSets.cleanupMintCount === 0
+  ) {
+    return;
+  }
+
+  const result = await cleanupNonZeroTokenAccountsToSol({
+    connection,
+    owner: keypair,
+    cleanupMints: cleanupSets.cleanupMints,
+    protectedMints: cleanupSets.protectedMints,
+    maxAccounts: TOKEN_ACCOUNT_DUST_CLEANUP_MAX_ACCOUNTS,
+    alertTitle: 'Live-pilot token dust cleaned to SOL',
+    alertContext: [
+      `walletAlias=${wallet.alias}`,
+      `safeCleanupMints=${cleanupSets.cleanupMintCount}`,
+      `protectedMints=${cleanupSets.protectedMintCount}`,
+      `untrackedEnabled=${TOKEN_ACCOUNT_DUST_CLEANUP_UNTRACKED_ENABLED}`,
+    ],
+  });
+
+  if (result.scanned > 0) {
+    console.log(
+      `[LIVE_PILOT] ${wallet.alias}: dust cleanup scanned ${result.scanned} account(s), `
+      + `sold=${result.sold}, burned=${result.burned}, closed=${result.closed}, `
+      + `reclaimed=${result.reclaimedSol.toFixed(6)} SOL`,
+    );
   }
 }
 

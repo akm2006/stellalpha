@@ -75,6 +75,33 @@ describe('live-pilot config', () => {
     });
   });
 
+  it('applies the micro growth profile with larger sizing but the same hard safety shape', () => {
+    configurePilotBEnv();
+    vi.stubEnv('PILOT_WALLET_B_PROFILE', 'micro_growth_7d');
+    vi.stubEnv('PILOT_WALLET_B_BUY_MODEL_KEY', 'fixed_available_pct');
+    vi.stubEnv('PILOT_WALLET_B_BUY_MODEL_PCT', '99');
+
+    const config = getLivePilotConfig();
+    const wallet = config.wallets.find((entry) => entry.alias === 'PilotB_CR');
+    expect(wallet).toBeDefined();
+    expect(config.errors).toEqual([]);
+    expect(wallet?.profileKey).toBe('micro_growth_7d');
+    expect(wallet?.buyModelKey).toBe('guarded_hybrid');
+    expect(wallet?.feeReservePct).toBe(0.08);
+    expect(wallet?.minFeeReserveSol).toBe(0.02);
+
+    const modelConfig = wallet?.buyModelConfig as GuardedHybridCopyModelConfig;
+    expect(modelConfig).toMatchObject({
+      baseBuyPct: 0.85,
+      maxBuyPct: 1.75,
+      maxMintExposurePct: 5,
+      maxDcaBuysPerMint: 1,
+      dcaSecondBuyPct: 0.1,
+      dcaThirdBuyPct: 0.1,
+      newPositionMaxAgeMs: 2500,
+    });
+  });
+
   it('marks an unknown wallet profile incomplete instead of silently trading', () => {
     configurePilotBEnv();
     vi.stubEnv('PILOT_WALLET_B_PROFILE', 'unknown_profile');
@@ -84,6 +111,6 @@ describe('live-pilot config', () => {
     const wallet = config.wallets.find((entry) => entry.alias === 'PilotB_CR');
     expect(wallet?.isComplete).toBe(false);
     expect(wallet?.missingFields).toContain('profile');
-    expect(config.errors).toContain('PILOT_WALLET_B_PROFILE must be one of: micro_longevity_7d');
+    expect(config.errors).toContain('PILOT_WALLET_B_PROFILE must be one of: micro_longevity_7d, micro_growth_7d');
   });
 });

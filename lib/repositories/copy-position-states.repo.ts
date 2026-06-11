@@ -230,6 +230,32 @@ async function listRedisLeaderClosedCopiedOpenPilotStates(args: {
     );
 }
 
+async function listRedisOpenPilotStatesForWallet(args: {
+  scopeKey: string;
+  starTrader: string;
+}) {
+  if (!canUseRedisPilotFallback({ scopeType: 'pilot' })) return [];
+  const redisStates = await listRedisCopyStates({
+    walletAlias: args.scopeKey,
+    starTrader: args.starTrader,
+  });
+
+  return redisStates
+    .map(({ mint, state }) =>
+      redisStateToRow({
+        scopeType: 'pilot',
+        scopeKey: args.scopeKey,
+        starTrader: args.starTrader,
+        mint,
+      }, state)
+    )
+    .filter((row): row is CopyPositionStateRow => Boolean(row))
+    .filter((row) =>
+      Number(row.copied_open_amount || 0) > 0.000000001
+      || Number(row.leader_open_amount || 0) > 0.000000001
+    );
+}
+
 export async function getCopyPositionState(key: CopyPositionStateKey) {
   if (canUseRedisPilotFallback(key)) {
     const redisState = await getRedisCopyState({
@@ -283,35 +309,46 @@ export async function listAllOpenPilotStatesForWallet(args: {
   scopeKey: string;
   starTrader: string;
 }) {
+  let dbRows: CopyPositionStateRow[] = [];
+
   if (hasPostgresConnection()) {
-    return pgQuery<CopyPositionStateRow>(
-      `
-        select *
-        from public.copy_position_states
-        where scope_type = 'pilot'
-          and scope_key = $1
-          and star_trader = $2
-          and (copied_open_amount > 0.000000001 or leader_open_amount > 0.000000001)
-        order by updated_at desc
-      `,
-      [args.scopeKey, args.starTrader],
-    );
+    try {
+      dbRows = await pgQuery<CopyPositionStateRow>(
+        `
+          select *
+          from public.copy_position_states
+          where scope_type = 'pilot'
+            and scope_key = $1
+            and star_trader = $2
+            and (copied_open_amount > 0.000000001 or leader_open_amount > 0.000000001)
+          order by updated_at desc
+        `,
+        [args.scopeKey, args.starTrader],
+      );
+    } catch (error) {
+      if (!canUseRedisPilotFallback({ scopeType: 'pilot' })) throw error;
+    }
+  } else {
+    const { data, error } = await supabase
+      .from('copy_position_states')
+      .select('*')
+      .eq('scope_type', 'pilot')
+      .eq('scope_key', args.scopeKey)
+      .eq('star_trader', args.starTrader)
+      .or('copied_open_amount.gt.0.000000001,leader_open_amount.gt.0.000000001')
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      if (!canUseRedisPilotFallback({ scopeType: 'pilot' })) {
+        throw new Error(`Failed to list open pilot states for ${args.scopeKey}: ${error.message}`);
+      }
+    } else {
+      dbRows = (data || []) as CopyPositionStateRow[];
+    }
   }
 
-  const { data, error } = await supabase
-    .from('copy_position_states')
-    .select('*')
-    .eq('scope_type', 'pilot')
-    .eq('scope_key', args.scopeKey)
-    .eq('star_trader', args.starTrader)
-    .or('copied_open_amount.gt.0.000000001,leader_open_amount.gt.0.000000001')
-    .order('updated_at', { ascending: false });
-
-  if (error) {
-    throw new Error(`Failed to list open pilot states for ${args.scopeKey}: ${error.message}`);
-  }
-
-  return (data || []) as CopyPositionStateRow[];
+  const redisRows = await listRedisOpenPilotStatesForWallet(args).catch(() => []);
+  return mergeCopyPositionRows(dbRows, redisRows);
 }
 
 export async function listLeaderClosedCopiedOpenPilotStates(args: {

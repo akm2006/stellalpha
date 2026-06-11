@@ -13,7 +13,7 @@ export type PilotWalletMode = 'copy';
 export type PilotCashMode = 'sol';
 export type PilotMintQuarantineStatus = 'active' | 'cleared';
 export type LivePilotBuyModelKey = 'current_ratio' | 'fixed_available_pct' | 'target_buy_pct_with_cap' | 'guarded_hybrid';
-export type LivePilotWalletProfileKey = 'micro_longevity_7d';
+export type LivePilotWalletProfileKey = 'micro_longevity_7d' | 'micro_growth_7d';
 export type LivePilotBuyModelConfig =
   | CurrentRatioCopyModelConfig
   | FixedAvailablePctCopyModelConfig

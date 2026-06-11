@@ -45,6 +45,20 @@ const LIVE_PILOT_WALLET_PROFILES: Record<LivePilotWalletProfileKey, LivePilotWal
     feeReservePct: 0.08,
     minFeeReserveSol: 0.02,
   },
+  micro_growth_7d: {
+    buyModelKey: 'guarded_hybrid',
+    buyModelConfig: {
+      baseBuyPct: 0.85,
+      maxBuyPct: 1.75,
+      maxMintExposurePct: 5,
+      maxDcaBuysPerMint: 1,
+      dcaSecondBuyPct: 0.1,
+      dcaThirdBuyPct: 0.1,
+      newPositionMaxAgeMs: 2500,
+    },
+    feeReservePct: 0.08,
+    minFeeReserveSol: 0.02,
+  },
 };
 
 const LIVE_PILOT_WALLET_PROFILE_KEYS = Object.keys(LIVE_PILOT_WALLET_PROFILES) as LivePilotWalletProfileKey[];

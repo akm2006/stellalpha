@@ -701,6 +701,38 @@ export async function listRecentCopyExitTradesForWallet(walletAlias: string, sin
   return (data || []) as PilotTradeRow[];
 }
 
+export async function listActiveCopyExitTradesForWallet(walletAlias: string) {
+  if (hasPostgresConnection()) {
+    return pgQuery<PilotTradeRow>(
+      `
+        select *
+        from public.pilot_trades
+        where wallet_alias = $1
+          and trigger_kind = 'copy'
+          and leader_type = 'sell'
+          and status = any($2::text[])
+        order by created_at desc
+      `,
+      [walletAlias, ['queued', 'building', 'submitted']],
+    );
+  }
+
+  const { data, error } = await supabase
+    .from('pilot_trades')
+    .select('*')
+    .eq('wallet_alias', walletAlias)
+    .eq('trigger_kind', 'copy')
+    .eq('leader_type', 'sell')
+    .in('status', ['queued', 'building', 'submitted'])
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to list active copy exit trades for ${walletAlias}: ${error.message}`);
+  }
+
+  return (data || []) as PilotTradeRow[];
+}
+
 export async function updatePilotTrade(tradeId: string, patch: PilotTradePatch) {
   if (tradeId.startsWith('redis:')) {
     await mirrorRedisTradeEvent({
