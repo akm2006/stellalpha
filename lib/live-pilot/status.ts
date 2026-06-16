@@ -2,6 +2,8 @@ import { toLivePilotConfigSummary } from '@/lib/live-pilot/config';
 import type { LivePilotPublicConfig } from '@/lib/live-pilot/config';
 import type {
   LivePilotDeadInventoryItem,
+  LivePilotDecisionAuditEvent,
+  LivePilotDecisionAuditSummary,
   LivePilotLatencyMetric,
   LivePilotLatencySummary,
   LivePilotStatusResponse,
@@ -20,6 +22,8 @@ import {
   listPilotRuntimeStates,
 } from '@/lib/live-pilot/repositories/pilot-runtime-state.repo';
 import { listRecentPilotTrades } from '@/lib/live-pilot/repositories/pilot-trades.repo';
+import { isLivePilotRedisAvailable } from '@/lib/live-pilot/redis/config';
+import { readLivePilotRedisAuditTail } from '@/lib/live-pilot/redis/streams';
 import { getTokenSymbol } from '@/lib/services/token-service';
 
 function toMs(value: string | null | undefined) {
@@ -79,6 +83,77 @@ export function summarizeLivePilotLatency(trades: PilotTradeRow[]): LivePilotLat
   };
 }
 
+function incrementCounter(target: Record<string, number>, key: string | null | undefined) {
+  const normalized = key?.trim() || 'unknown';
+  target[normalized] = (target[normalized] || 0) + 1;
+}
+
+function normalizeDecisionAuditEvent(payload: Record<string, string>): LivePilotDecisionAuditEvent | null {
+  if (payload.eventType !== 'pilot_decision') {
+    return null;
+  }
+
+  return {
+    createdAt: payload.createdAt || null,
+    decisionKind: payload.decisionKind || 'unknown',
+    source: payload.source || 'unknown',
+    intentSource: payload.intentSource || 'unknown',
+    walletAlias: payload.walletAlias || 'unknown',
+    leaderType: payload.leaderType || null,
+    starTradeSignature: payload.starTradeSignature || null,
+    tokenInMint: payload.tokenInMint || null,
+    tokenOutMint: payload.tokenOutMint || null,
+    reason: payload.reason || payload.skipReason || null,
+    outcome: payload.outcome || null,
+    signature: payload.signature || null,
+  };
+}
+
+async function summarizeLivePilotDecisionAudit(): Promise<LivePilotDecisionAuditSummary> {
+  const unavailable: LivePilotDecisionAuditSummary = {
+    available: false,
+    sampleSize: 0,
+    latestAt: null,
+    byDecisionKind: {},
+    byReason: {},
+    byIntentSource: {},
+    recent: [],
+  };
+
+  if (!isLivePilotRedisAvailable()) {
+    return unavailable;
+  }
+
+  try {
+    const rows = await readLivePilotRedisAuditTail(300);
+    const events = rows
+      .map((row) => normalizeDecisionAuditEvent(row.payload))
+      .filter((event): event is LivePilotDecisionAuditEvent => Boolean(event));
+
+    const byDecisionKind: Record<string, number> = {};
+    const byReason: Record<string, number> = {};
+    const byIntentSource: Record<string, number> = {};
+
+    for (const event of events) {
+      incrementCounter(byDecisionKind, event.decisionKind);
+      incrementCounter(byReason, event.reason || event.outcome || event.source);
+      incrementCounter(byIntentSource, event.intentSource);
+    }
+
+    return {
+      available: true,
+      sampleSize: events.length,
+      latestAt: events[0]?.createdAt || null,
+      byDecisionKind,
+      byReason,
+      byIntentSource,
+      recent: events.slice(0, 12),
+    };
+  } catch {
+    return unavailable;
+  }
+}
+
 export async function getLivePilotStatus(
   operatorWallet: string,
   config: LivePilotPublicConfig,
@@ -88,11 +163,12 @@ export async function getLivePilotStatus(
   await ensurePilotControlState(walletAliases);
   await ensurePilotRuntimeState(config.wallets);
 
-  const [controlRows, runtimeRows, recentTrades, quarantinedMints] = await Promise.all([
+  const [controlRows, runtimeRows, recentTrades, quarantinedMints, decisionAudit] = await Promise.all([
     listPilotControlStates(),
     listPilotRuntimeStates(walletAliases),
     listRecentPilotTrades(15),
     listActivePilotMintQuarantines(),
+    summarizeLivePilotDecisionAudit(),
   ]);
   const connection = createLivePilotConnection();
   const walletLiquidationStatuses = await Promise.all(
@@ -148,6 +224,7 @@ export async function getLivePilotStatus(
     walletStatuses,
     quarantinedMints,
     walletDeadInventory,
+    decisionAudit,
     recentTrades,
   };
 }

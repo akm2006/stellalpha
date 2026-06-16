@@ -7,6 +7,7 @@ import { InfoTooltip } from '@/components/cyber/tooltip';
 import { useAuth } from '@/contexts/auth-context';
 import { formatCopyBuyModelConfigSummary, formatCopyBuyModelLabel } from '@/lib/copy-models/format';
 import type {
+  LivePilotDecisionAuditEvent,
   LivePilotLatencyMetric,
   LivePilotStatusResponse,
   LivePilotWalletStatus,
@@ -98,6 +99,12 @@ function getSolscanTxUrl(signature: string) {
 
 function getGmgnWalletUrl(address: string) {
   return `https://gmgn.ai/sol/address/${address}`;
+}
+
+function topCounterEntries(counter: Record<string, number>, limit = 5) {
+  return Object.entries(counter)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit);
 }
 
 function toneClasses(tone: 'neutral' | 'good' | 'warn' | 'danger' | 'data') {
@@ -377,6 +384,105 @@ function LatencyPipeline({ status }: { status: LivePilotStatusResponse }) {
           <div className="mt-1 text-[11px] text-white/38">{formatLatencyDetail(status.latency.leaderToConfirm)}</div>
         </div>
       </div>
+    </section>
+  );
+}
+
+function decisionTone(decision: string): 'neutral' | 'good' | 'warn' | 'danger' | 'data' {
+  if (decision === 'executed' || decision === 'created') return 'good';
+  if (decision === 'deferred' || decision === 'paused') return 'data';
+  if (decision === 'skipped') return 'warn';
+  return 'neutral';
+}
+
+function DecisionAuditRow({ event }: { event: LivePilotDecisionAuditEvent }) {
+  const mint = event.leaderType === 'sell' ? event.tokenInMint : event.tokenOutMint;
+
+  return (
+    <tr className="cyber-row border-b border-white/[0.06] align-top">
+      <td className="px-3 py-3"><StatusPill tone={decisionTone(event.decisionKind)}>{event.decisionKind}</StatusPill></td>
+      <td className="px-3 py-3 font-mono text-xs text-white/65">{event.walletAlias}</td>
+      <td className="px-3 py-3">
+        <div className="font-mono text-xs text-white/70">{event.leaderType || '-'}</div>
+        <div className="mt-1 text-[11px] text-white/35">{truncate(mint, 5, 5)}</div>
+      </td>
+      <td className="max-w-[260px] px-3 py-3 text-xs leading-relaxed text-white/55">
+        <span className="line-clamp-2">{event.reason || event.outcome || event.source}</span>
+      </td>
+      <td className="px-3 py-3 text-xs"><SolscanLink signature={event.signature || event.starTradeSignature} /></td>
+      <td className="px-3 py-3 text-xs text-white/40">{formatRelativeTime(event.createdAt)}</td>
+    </tr>
+  );
+}
+
+function DecisionAuditPanel({ status }: { status: LivePilotStatusResponse }) {
+  const decisionEntries = topCounterEntries(status.decisionAudit.byDecisionKind);
+  const reasonEntries = topCounterEntries(status.decisionAudit.byReason);
+
+  return (
+    <section className="cyber-panel border border-white/10 p-4 sm:p-5">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="cyber-command text-[10px] text-[#00E5D4]">Redis Decision Audit</div>
+          <h2 className="mt-2 text-xl font-semibold text-white">Fresh copy decision stream</h2>
+          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-white/50">
+            Compact Redis audit events for created, executed, skipped, and deferred live-pilot intents. This is the source to use when DB rows do not represent Redis-primary execution.
+          </p>
+        </div>
+        <StatusPill tone={status.decisionAudit.available ? 'data' : 'warn'}>
+          {status.decisionAudit.available ? `${status.decisionAudit.sampleSize} sampled` : 'Redis unavailable'}
+        </StatusPill>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        <div className="cyber-panel-soft border border-white/10 p-3">
+          <div className="cyber-command mb-3 text-[9px] text-white/35">Decision Mix</div>
+          <div className="flex flex-wrap gap-2">
+            {decisionEntries.length === 0 ? (
+              <span className="text-xs text-white/35">No decision events in the sampled Redis tail.</span>
+            ) : decisionEntries.map(([key, value]) => (
+              <StatusPill key={key} tone={decisionTone(key)}>{key}: {value}</StatusPill>
+            ))}
+          </div>
+        </div>
+        <div className="cyber-panel-soft border border-white/10 p-3">
+          <div className="cyber-command mb-3 text-[9px] text-white/35">Top Reasons</div>
+          <div className="flex flex-wrap gap-2">
+            {reasonEntries.length === 0 ? (
+              <span className="text-xs text-white/35">No reasons captured yet.</span>
+            ) : reasonEntries.map(([key, value]) => (
+              <StatusPill key={key} tone={key.includes('failed') || key.includes('error') ? 'danger' : key.includes('skip') || key.includes('insufficient') ? 'warn' : 'neutral'}>
+                {key}: {value}
+              </StatusPill>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {status.decisionAudit.recent.length > 0 ? (
+        <div className="mt-4 max-h-[360px] overflow-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="sticky top-0 bg-black/95 text-white/45">
+              <tr className="cyber-table-header border-b border-white/10">
+                <th className="px-3 py-3 font-medium">Decision</th>
+                <th className="px-3 py-3 font-medium">Wallet</th>
+                <th className="px-3 py-3 font-medium">Trade</th>
+                <th className="px-3 py-3 font-medium">Reason</th>
+                <th className="px-3 py-3 font-medium">Tx / Leader</th>
+                <th className="px-3 py-3 font-medium">Age</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status.decisionAudit.recent.map((event, index) => (
+                <DecisionAuditRow
+                  key={`${event.createdAt || index}:${event.starTradeSignature || event.signature || index}:${event.decisionKind}`}
+                  event={event}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -819,6 +925,7 @@ export function LivePilotConsole() {
               </section>
 
               <LatencyPipeline status={status} />
+              <DecisionAuditPanel status={status} />
 
               {status.config.errors.length > 0 ? (
                 <section className="cyber-panel border border-amber-300/30 bg-amber-400/10 p-4 sm:p-5">

@@ -215,6 +215,68 @@ function logRedisIntentDecision(
   }
 }
 
+type RedisPilotDecisionKind = 'created' | 'skipped' | 'deferred' | 'executed' | 'paused';
+
+function buildRedisDecisionAudit(
+  message: LivePilotRedisStreamMessage,
+  payload: Record<string, unknown> & {
+    source: string;
+    decisionKind: RedisPilotDecisionKind;
+  },
+) {
+  return {
+    eventType: 'pilot_decision',
+    streamId: message.streamId,
+    intentId: message.payload.intentId,
+    dbTradeId: message.payload.dbTradeId || '',
+    intentSource: message.payload.source,
+    walletAlias: message.payload.walletAlias,
+    walletPublicKey: message.payload.walletPublicKey,
+    triggerKind: message.payload.triggerKind,
+    triggerReason: message.payload.triggerReason || '',
+    starTrader: message.payload.starTrader || '',
+    starTradeSignature: message.payload.starTradeSignature || '',
+    leaderType: message.payload.leaderType || '',
+    tokenInMint: message.payload.tokenInMint || '',
+    tokenOutMint: message.payload.tokenOutMint || '',
+    attemptCount: message.payload.attemptCount || '',
+    leaderBlockTimestamp: message.payload.leaderBlockTimestamp || '',
+    receivedAt: message.payload.receivedAt || '',
+    intentCreatedAt: message.payload.intentCreatedAt || '',
+    ...payload,
+  };
+}
+
+function getRedisIntentPriority(message: LivePilotRedisStreamMessage) {
+  if (message.payload.source === 'redis_primary' && message.payload.triggerKind === 'copy') {
+    return 0;
+  }
+
+  if (message.payload.source === 'liquidation') {
+    return 1;
+  }
+
+  if (message.payload.source === 'recovery') {
+    return 2;
+  }
+
+  if (message.payload.source === 'residual') {
+    return 3;
+  }
+
+  return 4;
+}
+
+function orderRedisIntentMessages(messages: LivePilotRedisStreamMessage[]) {
+  return messages
+    .map((message, index) => ({ message, index }))
+    .sort((left, right) => {
+      const priorityDelta = getRedisIntentPriority(left.message) - getRedisIntentPriority(right.message);
+      return priorityDelta || left.index - right.index;
+    })
+    .map(({ message }) => message);
+}
+
 function scheduleQueueDrain() {
   if (isShuttingDown || isQueueDrainScheduled || Date.now() < queueBackoffUntil) {
     return;
@@ -856,13 +918,12 @@ async function processRedisIntentMessage(
 
   if (!wallet || !wallet.isEnabled || !wallet.isComplete || !wallet.hasSecret) {
     logRedisIntentDecision('warn', 'wallet_not_ready', message);
-    await publishLivePilotRedisAudit({
+    await publishLivePilotRedisAudit(buildRedisDecisionAudit(message, {
       source: 'redis_intent_skipped',
+      decisionKind: 'skipped',
       reason: 'wallet_not_ready',
-      streamId: message.streamId,
-      intentId: message.payload.intentId,
       walletAlias: trade.wallet_alias,
-    });
+    }));
     await ackLivePilotRedisIntent(message.streamId);
     return;
   }
@@ -871,13 +932,12 @@ async function processRedisIntentMessage(
   const isLiquidationTrade = trade.trigger_kind === 'liquidation';
   if (!isLiquidationTrade && (controlSnapshot.global.kill_switch_active || walletControl?.kill_switch_active)) {
     logRedisIntentDecision('warn', 'kill_switch_active', message);
-    await publishLivePilotRedisAudit({
+    await publishLivePilotRedisAudit(buildRedisDecisionAudit(message, {
       source: 'redis_intent_skipped',
+      decisionKind: 'skipped',
       reason: 'kill_switch_active',
-      streamId: message.streamId,
-      intentId: message.payload.intentId,
       walletAlias: wallet.alias,
-    });
+    }));
     await ackLivePilotRedisIntent(message.streamId);
     return;
   }
@@ -888,13 +948,12 @@ async function processRedisIntentMessage(
       controlSnapshot.global.is_paused ? 'global_paused' : 'wallet_paused',
       message,
     );
-    await publishLivePilotRedisAudit({
+    await publishLivePilotRedisAudit(buildRedisDecisionAudit(message, {
       source: 'redis_intent_skipped',
+      decisionKind: 'skipped',
       reason: controlSnapshot.global.is_paused ? 'global_paused' : 'wallet_paused',
-      streamId: message.streamId,
-      intentId: message.payload.intentId,
       walletAlias: wallet.alias,
-    });
+    }));
     await ackLivePilotRedisIntent(message.streamId);
     return;
   }
@@ -902,14 +961,13 @@ async function processRedisIntentMessage(
   const staleBuy = shouldSkipStaleBuyAtExecution(trade);
   if (staleBuy.stale && message.payload.source !== 'db_mirror') {
     logRedisIntentDecision('warn', 'stale_buy', message, `ageMs=${Math.round(staleBuy.ageMs)}`);
-    await publishLivePilotRedisAudit({
+    await publishLivePilotRedisAudit(buildRedisDecisionAudit(message, {
       source: 'redis_intent_skipped',
+      decisionKind: 'skipped',
       reason: 'stale_buy',
-      streamId: message.streamId,
-      intentId: message.payload.intentId,
       walletAlias: trade.wallet_alias,
       ageMs: staleBuy.ageMs,
-    });
+    }));
     await ackLivePilotRedisIntent(message.streamId);
     return;
   }
@@ -917,29 +975,27 @@ async function processRedisIntentMessage(
   if (message.payload.source === 'db_mirror' && message.payload.dbTradeId) {
     const dbTrade = await getPilotTradeById(message.payload.dbTradeId);
     if (!dbTrade) {
-      await publishLivePilotRedisAudit({
+      await publishLivePilotRedisAudit(buildRedisDecisionAudit(message, {
         source: 'redis_intent_skipped',
+        decisionKind: 'skipped',
         reason: 'db_trade_missing',
-        streamId: message.streamId,
-        intentId: message.payload.intentId,
         dbTradeId: message.payload.dbTradeId,
         walletAlias: message.payload.walletAlias,
-      });
+      }));
       await ackLivePilotRedisIntent(message.streamId);
       return;
     }
 
     if (dbTrade.status !== 'queued') {
-      await publishLivePilotRedisAudit({
+      await publishLivePilotRedisAudit(buildRedisDecisionAudit(message, {
         source: 'redis_intent_skipped',
+        decisionKind: 'skipped',
         reason: 'db_trade_not_queued',
-        streamId: message.streamId,
-        intentId: message.payload.intentId,
         dbTradeId: dbTrade.id,
         walletAlias: dbTrade.wallet_alias,
         dbStatus: dbTrade.status,
         dbSkipReason: dbTrade.skip_reason || '',
-      });
+      }));
       await ackLivePilotRedisIntent(message.streamId);
       return;
     }
@@ -952,13 +1008,12 @@ async function processRedisIntentMessage(
   const lockAcquired = await acquireLivePilotRedisWalletLock(wallet.alias, redisLockOwner);
   if (!lockAcquired) {
     logRedisIntentDecision('warn', 'wallet_busy', message);
-    await publishLivePilotRedisAudit({
+    await publishLivePilotRedisAudit(buildRedisDecisionAudit(message, {
       source: 'redis_intent_deferred',
+      decisionKind: 'deferred',
       reason: 'wallet_busy',
-      streamId: message.streamId,
-      intentId: message.payload.intentId,
       walletAlias: wallet.alias,
-    });
+    }));
     return;
   }
   logLivePilotTrace('wallet_lock_acquired', trade, {
@@ -969,14 +1024,13 @@ async function processRedisIntentMessage(
   if (dbMirrorTradeIdToClaim) {
     const claimedTrade = await claimQueuedPilotTrade(dbMirrorTradeIdToClaim, dbMirrorNextAttemptCount);
     if (!claimedTrade) {
-      await publishLivePilotRedisAudit({
+      await publishLivePilotRedisAudit(buildRedisDecisionAudit(message, {
         source: 'redis_intent_deferred',
+        decisionKind: 'deferred',
         reason: 'db_trade_claim_failed',
-        streamId: message.streamId,
-        intentId: message.payload.intentId,
         dbTradeId: dbMirrorTradeIdToClaim,
         walletAlias: wallet.alias,
-      });
+      }));
       await ackLivePilotRedisIntent(message.streamId);
       await releaseLivePilotRedisWalletLock(wallet.alias, redisLockOwner).catch(() => undefined);
       return;
@@ -996,16 +1050,15 @@ async function processRedisIntentMessage(
       connection,
     );
 
-    await publishLivePilotRedisAudit({
+    await publishLivePilotRedisAudit(buildRedisDecisionAudit(message, {
       source: 'redis_intent_executed',
-      streamId: message.streamId,
-      intentId: message.payload.intentId,
+      decisionKind: 'executed',
       walletAlias: wallet.alias,
       outcome: outcome.outcome,
       signature: 'signature' in outcome ? outcome.signature || '' : '',
       message: 'message' in outcome ? outcome.message : '',
       reason: 'reason' in outcome ? outcome.reason : '',
-    });
+    }));
 
     await ackLivePilotRedisIntent(message.streamId);
   } catch (error) {
@@ -1029,7 +1082,9 @@ async function processRedisPilotIntents() {
   const controlSnapshot = await getRedisPilotControlSnapshot(walletAliases);
   if (!controlSnapshot) {
     await publishLivePilotRedisAudit({
+      eventType: 'pilot_decision',
       source: 'redis_execution_paused',
+      decisionKind: 'paused',
       reason: 'redis_control_unavailable',
       walletAliases: walletAliases.join(','),
       message: 'Redis execution is enabled but Redis control state is unavailable; failing closed without querying DB hot path',
@@ -1047,7 +1102,7 @@ async function processRedisPilotIntents() {
     return false;
   }
 
-  for (const message of messages) {
+  for (const message of orderRedisIntentMessages(messages)) {
     await processRedisIntentMessage(message, config, controlSnapshot);
   }
 

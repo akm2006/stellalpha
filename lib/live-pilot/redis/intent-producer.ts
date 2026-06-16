@@ -189,11 +189,18 @@ export async function maybeCreateRedisPilotIntent(
   const control = await getRedisPilotControlSnapshot([pilotWallet.alias]);
   if (!control) {
     await publishLivePilotRedisAudit({
+      eventType: 'pilot_decision',
       source: 'redis_intent_skip',
+      decisionKind: 'skipped',
+      intentSource: 'redis_primary',
       reason,
       walletAlias: pilotWallet.alias,
+      starTrader: trade.wallet,
       starTradeSignature: trade.signature,
       leaderType: trade.type,
+      tokenInMint: trade.tokenInMint || '',
+      tokenOutMint: trade.tokenOutMint || '',
+      triggerKind: 'copy',
       skipReason: 'redis_control_unavailable',
       errorMessage: 'Redis control state is unavailable; failing closed',
     });
@@ -444,12 +451,20 @@ export async function maybeCreateRedisPilotIntent(
       await clearLivePilotRedisIntentDedupe(payload).catch(() => undefined);
     }
     await publishLivePilotRedisAudit({
+      eventType: 'pilot_decision',
       source: 'redis_intent_skip',
+      decisionKind: 'skipped',
+      intentSource: 'redis_primary',
       reason,
       tradeId: row.id,
       walletAlias: row.wallet_alias,
+      starTrader: row.star_trader || '',
       starTradeSignature: row.star_trade_signature,
       leaderType: row.leader_type,
+      tokenInMint: row.token_in_mint || '',
+      tokenOutMint: row.token_out_mint || '',
+      triggerKind: row.trigger_kind,
+      triggerReason: row.trigger_reason || '',
       skipReason,
       errorMessage: `${errorMessage || ''}; source=${sourceSummary}`,
     });
@@ -482,12 +497,20 @@ export async function maybeCreateRedisPilotIntent(
   }
 
   await publishLivePilotRedisAudit({
+    eventType: 'pilot_decision',
     source: 'redis_intent_created',
+    decisionKind: 'created',
+    intentSource: 'redis_primary',
     reason,
     tradeId: row.id,
     walletAlias: row.wallet_alias,
+    starTrader: row.star_trader || '',
     starTradeSignature: row.star_trade_signature,
     leaderType: row.leader_type,
+    tokenInMint: row.token_in_mint || '',
+    tokenOutMint: row.token_out_mint || '',
+    triggerKind: row.trigger_kind,
+    triggerReason: row.trigger_reason || '',
     sourceSummary,
     sellSizingSource,
     sellFallbackReason,

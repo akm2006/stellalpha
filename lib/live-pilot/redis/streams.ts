@@ -394,6 +394,35 @@ export async function publishLivePilotRedisAudit(payload: Record<string, unknown
   });
 }
 
+export async function readLivePilotRedisAuditTail(
+  count = 250,
+): Promise<Array<{ streamId: string; payload: Record<string, string> }>> {
+  if (!isLivePilotRedisAvailable()) {
+    return [] as Array<{ streamId: string; payload: Record<string, string> }>;
+  }
+
+  const client = await getLivePilotRedisClient();
+  const limit = String(Math.max(1, Math.min(Math.floor(count), 1_000)));
+  const response = await client.sendCommand([
+    'XREVRANGE',
+    LIVE_PILOT_AUDIT_STREAM,
+    '+',
+    '-',
+    'COUNT',
+    limit,
+  ]) as Array<[string, string[]]>;
+
+  return (response || []).map(([streamId, entries]) => ({
+    streamId,
+    payload: Object.fromEntries(
+      Array.from({ length: Math.floor((entries || []).length / 2) }, (_, index) => {
+        const offset = index * 2;
+        return [String(entries[offset] || ''), String(entries[offset + 1] || '')];
+      }),
+    ),
+  }));
+}
+
 export async function deadletterLivePilotRedisIntent(
   message: LivePilotRedisStreamMessage,
   reason: string,

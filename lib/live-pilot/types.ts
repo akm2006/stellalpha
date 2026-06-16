@@ -223,6 +223,31 @@ export interface LivePilotDeadInventoryItem {
   quarantineReason: string | null;
 }
 
+export interface LivePilotDecisionAuditEvent {
+  createdAt: string | null;
+  decisionKind: string;
+  source: string;
+  intentSource: string;
+  walletAlias: string;
+  leaderType: string | null;
+  starTradeSignature: string | null;
+  tokenInMint: string | null;
+  tokenOutMint: string | null;
+  reason: string | null;
+  outcome: string | null;
+  signature: string | null;
+}
+
+export interface LivePilotDecisionAuditSummary {
+  available: boolean;
+  sampleSize: number;
+  latestAt: string | null;
+  byDecisionKind: Record<string, number>;
+  byReason: Record<string, number>;
+  byIntentSource: Record<string, number>;
+  recent: LivePilotDecisionAuditEvent[];
+}
+
 export interface LivePilotStatusResponse {
   generatedAt: string;
   operatorWallet: string;
@@ -244,5 +269,6 @@ export interface LivePilotStatusResponse {
   walletStatuses: LivePilotWalletStatus[];
   quarantinedMints: PilotMintQuarantineRow[];
   walletDeadInventory: LivePilotDeadInventoryItem[];
+  decisionAudit: LivePilotDecisionAuditSummary;
   recentTrades: PilotTradeRow[];
 }
