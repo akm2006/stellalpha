@@ -71,6 +71,7 @@ import {
 
 const QUEUE_POLL_INTERVAL_MS = 1_000;
 const RECOVERY_INTERVAL_MS = 5_000;
+const RECOVERY_SUMMARY_LOG_INTERVAL_MS = readPositiveIntEnv('LIVE_PILOT_RECOVERY_SUMMARY_LOG_INTERVAL_MS', 5 * 60 * 1000);
 const FAILURE_BACKOFF_INITIAL_MS = 5_000;
 const FAILURE_BACKOFF_MAX_MS = 60_000;
 const LOCK_WAIT_TIMEOUT_MS = 2_000;
@@ -105,6 +106,8 @@ let recoveryBackoffUntil = 0;
 let recoveryBackoffMs = FAILURE_BACKOFF_INITIAL_MS;
 let maintenanceBackoffUntil = 0;
 let isHydratingRedisControl = false;
+let lastRecoverySummaryKey = '';
+let lastRecoverySummaryLoggedAt = 0;
 
 type PilotControlSnapshot = ReturnType<typeof buildPilotControlSnapshot>;
 
@@ -127,6 +130,32 @@ function readBooleanEnv(name: string, fallback: boolean) {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
   return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
+}
+
+function maybeLogRecoverySummary(summary: {
+  scanned: number;
+  confirmed: number;
+  requeued: number;
+  failed: number;
+  pending: number;
+  busy: number;
+}) {
+  if (summary.scanned <= 0) {
+    return;
+  }
+
+  const now = Date.now();
+  const key = JSON.stringify(summary);
+  if (
+    key === lastRecoverySummaryKey
+    && now - lastRecoverySummaryLoggedAt < RECOVERY_SUMMARY_LOG_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  lastRecoverySummaryKey = key;
+  lastRecoverySummaryLoggedAt = now;
+  console.log('[LIVE_PILOT] Recovery summary:', key);
 }
 
 function hydrateRedisIntentExecutionMetadata(message: LivePilotRedisStreamMessage) {
@@ -1081,12 +1110,7 @@ async function runRecoveryLoop() {
       busy: summary.busy + (redisSummary?.busy || 0),
     };
 
-    if (combinedSummary.scanned > 0) {
-      console.log(
-        '[LIVE_PILOT] Recovery summary:',
-        JSON.stringify(combinedSummary),
-      );
-    }
+    maybeLogRecoverySummary(combinedSummary);
 
     if (combinedSummary.requeued > 0) {
       scheduleQueueDrain();
@@ -1151,7 +1175,11 @@ async function startWorker() {
   await sendLivePilotAlert('Worker startup', [
     `lockOwner=${lockOwner}`,
     `wallets=${walletAliases.join(', ')}`,
-  ]).catch(() => undefined);
+  ], {
+    severity: 'info',
+    dedupeKey: `worker-startup:${lockOwner}`,
+    dedupeTtlMs: 10 * 60 * 1000,
+  }).catch(() => undefined);
 
   try {
     queueWakeChannel = await subscribeToLivePilotQueueWake((payload) => {
@@ -1214,7 +1242,11 @@ async function shutdown() {
     await sendLivePilotAlert('Worker shutdown', [
       `lockOwner=${lockOwner}`,
       `wallets=${walletAliases.join(', ')}`,
-    ]).catch(() => undefined);
+    ], {
+      severity: 'info',
+      dedupeKey: `worker-shutdown:${lockOwner}`,
+      dedupeTtlMs: 10 * 60 * 1000,
+    }).catch(() => undefined);
   } finally {
     process.exit(0);
   }

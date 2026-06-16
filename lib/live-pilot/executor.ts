@@ -1018,13 +1018,25 @@ async function maybeAlertSkippedTrade(trade: PilotTradeRow, walletAlias: string,
     return;
   }
 
+  const mint = trade.leader_type === 'sell' ? trade.token_in_mint : trade.token_out_mint;
+  const severity =
+    trade.trigger_kind === 'liquidation'
+    || reason === 'trapped_unquotable'
+    || reason === 'mint_quarantined'
+      ? 'action'
+      : 'info';
+
   await sendLivePilotAlert('Trade skipped', [
     `wallet=${walletAlias}`,
     `trade=${trade.id}`,
     `trigger=${trade.trigger_kind}`,
     `reason=${reason}`,
     message,
-  ]).catch(() => undefined);
+  ], {
+    severity,
+    dedupeKey: `skip:${walletAlias}:${reason}:${mint || trade.star_trade_signature || trade.id}`,
+    dedupeTtlMs: severity === 'action' ? 30 * 60 * 1000 : 60 * 60 * 1000,
+  }).catch(() => undefined);
 }
 
 async function maybeAlertTradeFailure(trade: PilotTradeRow, walletAlias: string, message: string) {
@@ -1033,7 +1045,11 @@ async function maybeAlertTradeFailure(trade: PilotTradeRow, walletAlias: string,
     `trade=${trade.id}`,
     `trigger=${trade.trigger_kind}`,
     message,
-  ]).catch(() => undefined);
+  ], {
+    severity: trade.leader_type === 'sell' || trade.trigger_kind === 'liquidation' ? 'action' : 'info',
+    dedupeKey: `failure:${walletAlias}:${trade.leader_type || 'unknown'}:${trade.token_in_mint || trade.token_out_mint || trade.star_trade_signature || trade.id}:${message.slice(0, 120)}`,
+    dedupeTtlMs: 10 * 60 * 1000,
+  }).catch(() => undefined);
 }
 
 async function maybeAlertTradeSubmitted(trade: PilotTradeRow, walletAlias: string, signature: string) {
@@ -1043,7 +1059,11 @@ async function maybeAlertTradeSubmitted(trade: PilotTradeRow, walletAlias: strin
     `trigger=${trade.trigger_kind}`,
     `signature=${signature}`,
     formatSolscanTxUrl(signature),
-  ]).catch(() => undefined);
+  ], {
+    severity: 'info',
+    dedupeKey: `submitted:${walletAlias}:${signature}`,
+    dedupeTtlMs: 60 * 60 * 1000,
+  }).catch(() => undefined);
 }
 
 async function maybeAlertMintQuarantined(args: {
@@ -1059,7 +1079,11 @@ async function maybeAlertMintQuarantined(args: {
     `mint=${mint}`,
     `symbol=${getTokenSymbol(mint)}`,
     message,
-  ]).catch(() => undefined);
+  ], {
+    severity: 'action',
+    dedupeKey: `mint-quarantined:${walletAlias}:${mint}`,
+    dedupeTtlMs: 6 * 60 * 60 * 1000,
+  }).catch(() => undefined);
 }
 
 export async function recordConfirmedCopyPositionMutation(args: {
@@ -1847,7 +1871,11 @@ export async function executePilotTrade(
       `wallet=${wallet.alias}`,
       `trade=${trade.id}`,
       plan.positionDriftMessage,
-    ]).catch(() => undefined);
+    ], {
+      severity: 'info',
+      dedupeKey: `position-drift:${wallet.alias}:${trade.token_in_mint || trade.token_out_mint || trade.id}`,
+      dedupeTtlMs: 60 * 60 * 1000,
+    }).catch(() => undefined);
   }
 
   const attempt = await createPilotTradeAttempt({
@@ -2179,7 +2207,11 @@ export async function executePilotTrade(
         `requestId=${orderResponse.requestId}`,
         ambiguousMessage,
         'Recovery will re-submit the same signed transaction for up to 2 minutes.',
-      ]).catch(() => undefined);
+      ], {
+        severity: 'action',
+        dedupeKey: `execute-ambiguous:${wallet.alias}:${trade.id}`,
+        dedupeTtlMs: 10 * 60 * 1000,
+      }).catch(() => undefined);
       return { outcome: 'submitted', signature: null, recoveryPending: true };
     }
     console.log(
@@ -2430,7 +2462,11 @@ export async function executePilotTrade(
         `trade=${trade.id}`,
         `nextRetryAt=${nextRetryAt}`,
         message,
-      ]).catch(() => undefined);
+      ], {
+        severity: 'info',
+        dedupeKey: `trade-requeued:${wallet.alias}:${trade.id}:${trade.attempt_count}`,
+        dedupeTtlMs: 10 * 60 * 1000,
+      }).catch(() => undefined);
       return {
         outcome: 'requeued',
         message,

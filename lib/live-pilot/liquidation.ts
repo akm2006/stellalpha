@@ -289,7 +289,11 @@ export async function enqueueLiquidationIntentsForWallet(args: {
       `reason=${reason}`,
       `count=${created}`,
       `tokens=${candidates.map((holding) => getTokenSymbol(holding.mint)).join(', ')}`,
-    ]).catch(() => undefined);
+    ], {
+      severity: 'action',
+      dedupeKey: `liquidation-intents:${wallet.alias}:${reason}`,
+      dedupeTtlMs: 10 * 60 * 1000,
+    }).catch(() => undefined);
   }
 
     return {

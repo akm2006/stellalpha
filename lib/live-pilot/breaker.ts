@@ -37,7 +37,11 @@ export async function evaluateWalletCircuitBreaker(walletAlias: string) {
       `wallet=${walletAlias}`,
       `failed_attempts_last_${CIRCUIT_BREAKER_WINDOW_MINUTES}m=${failureCount}`,
       'The wallet was auto-paused after repeated live-pilot execution failures.',
-    ]).catch(() => undefined);
+    ], {
+      severity: 'critical',
+      dedupeKey: `wallet-circuit-breaker:${walletAlias}`,
+      dedupeTtlMs: 30 * 60 * 1000,
+    }).catch(() => undefined);
   }
 
   return { tripped: true, failureCount };
@@ -73,7 +77,11 @@ export async function evaluateSellExitProtection(walletAlias: string) {
       `wallet=${walletAlias}`,
       `failed_sell_attempts_last_${EXIT_PROTECTION_WINDOW_MINUTES}m=${failureCount}`,
       'New buys are blocked for this wallet and liquidation mode has been requested until the wallet is flat.',
-    ]).catch(() => undefined);
+    ], {
+      severity: 'critical',
+      dedupeKey: `sell-exit-protection:${walletAlias}`,
+      dedupeTtlMs: 30 * 60 * 1000,
+    }).catch(() => undefined);
   }
 
   return { activated: true, failureCount };

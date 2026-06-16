@@ -1,5 +1,6 @@
 import type { Connection } from '@solana/web3.js';
 import { findPilotWalletByAlias, type LivePilotConfig } from '@/lib/live-pilot/config';
+import type { PilotTradeRow } from '@/lib/live-pilot/types';
 import { formatSolscanTxUrl, sendLivePilotAlert } from '@/lib/live-pilot/alerts';
 import { evaluateSellExitProtection, evaluateWalletCircuitBreaker } from '@/lib/live-pilot/breaker';
 import {
@@ -55,8 +56,115 @@ import { getLivePilotPumpSwapCandidatePools } from '@/lib/live-pilot/pump-swap-c
 
 const BLOCK_EXPIRY_SAFETY_BUFFER = 10;
 const PENDING_EXECUTE_RETRY_MIN_INTERVAL_MS = 5_000;
+const DEFAULT_REDIS_SUBMITTED_STUCK_MS = 10 * 60 * 1000;
 
 type RecoveryAttemptOutcome = 'confirmed' | 'requeued' | 'failed' | 'pending' | 'busy';
+
+function readPositiveIntEnv(name: string, fallback: number) {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function getRedisSubmittedStuckMs() {
+  return readPositiveIntEnv('LIVE_PILOT_REDIS_SUBMITTED_STUCK_MS', DEFAULT_REDIS_SUBMITTED_STUCK_MS);
+}
+
+function getSubmittedRecordAgeMs(record: Awaited<ReturnType<typeof listRedisSubmittedTrades>>[number]) {
+  const candidate =
+    record.patch.tx_submitted_at
+    || record.trade.tx_submitted_at
+    || record.updatedAt;
+  const parsed = candidate ? new Date(candidate).getTime() : NaN;
+  return Number.isFinite(parsed) ? Date.now() - parsed : 0;
+}
+
+async function handleStuckRedisSubmittedTrade(args: {
+  record: Awaited<ReturnType<typeof listRedisSubmittedTrades>>[number];
+  trade: PilotTradeRow;
+  wallet: LivePilotConfig['wallets'][number];
+  signature: string;
+  ageMs: number;
+}) {
+  const { record, trade, wallet, signature, ageMs } = args;
+  const maxAttempts = getPilotTradeMaxAttempts(wallet, trade);
+  const canRequeueExit = trade.leader_type === 'sell' && trade.attempt_count < maxAttempts;
+  const message =
+    `Submitted Redis trade stayed pending/absent for ${Math.round(ageMs / 1000)}s; `
+    + `signature=${signature}`;
+
+  if (canRequeueExit) {
+    const nextTrade = {
+      ...trade,
+      status: 'queued' as const,
+      attempt_count: trade.attempt_count + 1,
+      tx_signature: null,
+      tx_submitted_at: null,
+      tx_confirmed_at: null,
+      confirmation_slot: null,
+      next_retry_at: new Date(Date.now() + getTradeRetryDelayMs(trade, trade.attempt_count, 'stuck_pending_confirmation', message)).toISOString(),
+      error_message: message,
+    };
+    const sourceClassification = getLivePilotSourceClassification(nextTrade.star_trade_signature);
+    const payload = pilotTradeToRedisIntent(nextTrade, 'recovery', {
+      sourceClassification,
+      meteoraDammV2CandidatePools: getLivePilotMeteoraDammV2CandidatePools(nextTrade.star_trade_signature),
+      pumpSwapCandidatePools: getLivePilotPumpSwapCandidatePools(nextTrade.star_trade_signature),
+    });
+    const publishResult = await publishLivePilotRedisIntent(payload, {
+      dedupeAlreadyReserved: true,
+    });
+    await mirrorRedisTradeEvent({
+      source: 'redis_submitted_recovery_stuck_requeued',
+      tradeId: trade.id,
+      walletAlias: wallet.alias,
+      txSignature: signature,
+      ageMs,
+      nextAttemptCount: nextTrade.attempt_count,
+      nextRetryAt: nextTrade.next_retry_at,
+      published: publishResult.published,
+      streamId: 'streamId' in publishResult ? publishResult.streamId : '',
+      reason: 'reason' in publishResult ? publishResult.reason : '',
+    });
+    await deleteRedisSubmittedTrade(record.key);
+    await sendLivePilotAlert('Stuck sell exit requeued', [
+      `wallet=${wallet.alias}`,
+      `trade=${trade.id}`,
+      `attempt=${nextTrade.attempt_count}`,
+      message,
+      formatSolscanTxUrl(signature),
+    ], {
+      severity: 'action',
+      dedupeKey: `redis-stuck-requeued:${wallet.alias}:${trade.id}`,
+      dedupeTtlMs: 30 * 60 * 1000,
+    }).catch(() => undefined);
+    return publishResult.published ? 'requeued' as const : 'failed' as const;
+  }
+
+  await mirrorRedisTradeEvent({
+    source: 'redis_submitted_recovery_stuck_dropped',
+    tradeId: trade.id,
+    walletAlias: wallet.alias,
+    txSignature: signature,
+    ageMs,
+    leaderType: trade.leader_type || '',
+    attemptCount: trade.attempt_count,
+    maxAttempts,
+    errorMessage: message,
+  });
+  await deleteRedisSubmittedTrade(record.key);
+  await sendLivePilotAlert('Stuck submitted trade dropped', [
+    `wallet=${wallet.alias}`,
+    `trade=${trade.id}`,
+    `leaderType=${trade.leader_type || 'unknown'}`,
+    message,
+    formatSolscanTxUrl(signature),
+  ], {
+    severity: trade.leader_type === 'sell' ? 'critical' : 'action',
+    dedupeKey: `redis-stuck-dropped:${wallet.alias}:${trade.id}`,
+    dedupeTtlMs: 30 * 60 * 1000,
+  }).catch(() => undefined);
+  return 'failed' as const;
+}
 
 function emptyRecoverySummary(scanned = 0) {
   return {
@@ -128,7 +236,11 @@ async function failSubmittedAttempt(
     `trade=${tradeId}`,
     `attempt=${attemptId}`,
     message,
-  ]).catch(() => undefined);
+  ], {
+    severity: 'action',
+    dedupeKey: `recovery-failed:${walletAlias}:${tradeId}:${code}`,
+    dedupeTtlMs: 10 * 60 * 1000,
+  }).catch(() => undefined);
 }
 
 async function maybeRequeueExpiredAttempt(args: {
@@ -187,7 +299,11 @@ async function maybeRequeueExpiredAttempt(args: {
     `wallet=${walletAlias}`,
     `trade=${tradeId}`,
     message,
-  ]).catch(() => undefined);
+  ], {
+    severity: 'action',
+    dedupeKey: `submitted-expired:${walletAlias}:${tradeId}`,
+    dedupeTtlMs: 10 * 60 * 1000,
+  }).catch(() => undefined);
 }
 
 async function maybeRecoverMissingExecuteSignature(args: {
@@ -243,7 +359,11 @@ async function maybeRecoverMissingExecuteSignature(args: {
         `trade=${trade.id}`,
         `nextRetryAt=${nextRetryAt}`,
         message,
-      ]).catch(() => undefined);
+      ], {
+        severity: 'action',
+        dedupeKey: `ambiguous-requeued:${walletAlias}:${trade.id}`,
+        dedupeTtlMs: 10 * 60 * 1000,
+      }).catch(() => undefined);
       return { outcome: 'requeued' as const, signature: null as string | null };
     }
 
@@ -367,7 +487,11 @@ async function maybeRecoverMissingExecuteSignature(args: {
       `trade=${trade.id}`,
       `signature=${signature}`,
       formatSolscanTxUrl(signature),
-    ]).catch(() => undefined);
+    ], {
+      severity: 'info',
+      dedupeKey: `execute-recovered:${walletAlias}:${trade.id}:${signature}`,
+      dedupeTtlMs: 60 * 60 * 1000,
+    }).catch(() => undefined);
     return { outcome: 'pending' as const, signature };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -498,6 +622,18 @@ export async function recoverRedisSubmittedPilotTrades(args: {
       const status = statuses.value[0];
 
       if (!status) {
+        const ageMs = getSubmittedRecordAgeMs(record);
+        if (ageMs >= getRedisSubmittedStuckMs()) {
+          const outcome = await handleStuckRedisSubmittedTrade({
+            record,
+            trade,
+            wallet,
+            signature,
+            ageMs,
+          });
+          summary[outcome] += 1;
+          continue;
+        }
         summary.pending += 1;
         continue;
       }
@@ -620,6 +756,19 @@ export async function recoverRedisSubmittedPilotTrades(args: {
         });
         await deleteRedisSubmittedTrade(record.key);
         summary.confirmed += 1;
+        continue;
+      }
+
+      const ageMs = getSubmittedRecordAgeMs(record);
+      if (ageMs >= getRedisSubmittedStuckMs()) {
+        const outcome = await handleStuckRedisSubmittedTrade({
+          record,
+          trade,
+          wallet,
+          signature,
+          ageMs,
+        });
+        summary[outcome] += 1;
         continue;
       }
 
@@ -807,7 +956,11 @@ export async function recoverSubmittedPilotTrades(args: {
               `trade=${trade.id}`,
               `signature=${signature}`,
               formatSolscanTxUrl(signature),
-            ]).catch(() => undefined);
+            ], {
+              severity: 'info',
+              dedupeKey: `recovery-confirmed:${wallet.alias}:${trade.id}:${signature}`,
+              dedupeTtlMs: 60 * 60 * 1000,
+            }).catch(() => undefined);
           }
           if (residualTrade) {
             await sendLivePilotAlert('Residual exit queued', [
@@ -815,7 +968,11 @@ export async function recoverSubmittedPilotTrades(args: {
               `sourceTrade=${trade.id}`,
               `residualTrade=${residualTrade.id}`,
               `mint=${trade.token_in_mint}`,
-            ]).catch(() => undefined);
+            ], {
+              severity: 'digest',
+              dedupeKey: `residual-exit-queued:${wallet.alias}:${trade.token_in_mint || trade.id}`,
+              dedupeTtlMs: 60 * 60 * 1000,
+            }).catch(() => undefined);
           }
           outcome = 'confirmed';
         } else if (attempt.last_valid_block_height) {

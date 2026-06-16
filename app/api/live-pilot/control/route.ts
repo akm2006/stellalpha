@@ -236,7 +236,11 @@ export async function POST(request: NextRequest) {
           `operator=${access.operatorWallet}`,
           `wallets=${access.config.wallets.map((wallet) => wallet.alias).join(', ')}`,
           'New automated copy trades are paused and liquidation intents will be generated for non-SOL balances.',
-        ]).catch(() => undefined);
+        ], {
+          severity: 'critical',
+          dedupeKey: 'control:kill-switch-activated',
+          dedupeTtlMs: 5 * 60 * 1000,
+        }).catch(() => undefined);
         break;
       case 'wallet_liquidate':
         await updateMirroredPilotControlState('wallet', walletAlias!, {
@@ -247,7 +251,11 @@ export async function POST(request: NextRequest) {
         await sendLivePilotAlert('Wallet liquidation requested', [
           `operator=${access.operatorWallet}`,
           `wallet=${walletAlias!}`,
-        ]).catch(() => undefined);
+        ], {
+          severity: 'critical',
+          dedupeKey: `control:wallet-liquidation:${walletAlias!}`,
+          dedupeTtlMs: 5 * 60 * 1000,
+        }).catch(() => undefined);
         break;
       case 'mint_quarantine_clear':
         if (!mint) {
@@ -262,7 +270,11 @@ export async function POST(request: NextRequest) {
           `operator=${access.operatorWallet}`,
           `mint=${mint}`,
           ...(note ? [`note=${note}`] : []),
-        ]).catch(() => undefined);
+        ], {
+          severity: 'action',
+          dedupeKey: `control:mint-quarantine-cleared:${mint}`,
+          dedupeTtlMs: 5 * 60 * 1000,
+        }).catch(() => undefined);
         break;
       default:
         return NextResponse.json({ error: 'Unsupported action' }, { status: 400 });

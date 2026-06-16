@@ -675,7 +675,11 @@ export async function closeZeroTokenAccounts(args: {
     `txCount=${signatures.length}`,
     ...signatures.slice(0, 5).map((signature) => formatSolscanTxUrl(signature)),
     signatures.length > 5 ? `moreTxs=${signatures.length - 5}` : '',
-  ].filter(Boolean)).catch(() => undefined);
+  ].filter(Boolean), {
+    severity: failures.length > 0 ? 'action' : 'digest',
+    dedupeKey: `token-account-rent:${ownerAddress}:${mintAddress || 'batch'}`,
+    dedupeTtlMs: failures.length > 0 ? 30 * 60 * 1000 : 6 * 60 * 60 * 1000,
+  }).catch(() => undefined);
 
   return {
     closed: closedAccounts,
@@ -811,7 +815,11 @@ export async function cleanupNonZeroTokenAccountsToSol(args: {
       ...signatures.slice(0, 5).map((signature) => formatSolscanTxUrl(signature)),
       signatures.length > 5 ? `moreTxs=${signatures.length - 5}` : '',
       failedMessages.length > 0 ? `firstFailure=${failedMessages[0]}` : '',
-    ].filter(Boolean)).catch(() => undefined);
+    ].filter(Boolean), {
+      severity: failed > 0 || frozen > 0 ? 'action' : 'digest',
+      dedupeKey: `token-dust-cleanup:${ownerAddress}`,
+      dedupeTtlMs: failed > 0 || frozen > 0 ? 30 * 60 * 1000 : 6 * 60 * 60 * 1000,
+    }).catch(() => undefined);
   }
 
   return {

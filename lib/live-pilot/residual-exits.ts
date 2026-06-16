@@ -170,7 +170,11 @@ export async function enqueueResidualExitIntentsForWallet(args: {
       `wallet=${wallet.alias}`,
       `count=${created}`,
       `tokens=${copyStates.map((state) => getTokenSymbol(state.mint)).slice(0, 12).join(', ')}`,
-    ]).catch(() => undefined);
+    ], {
+      severity: 'digest',
+      dedupeKey: `residual-copy-exits:${wallet.alias}`,
+      dedupeTtlMs: 60 * 60 * 1000,
+    }).catch(() => undefined);
   }
 
   return {
