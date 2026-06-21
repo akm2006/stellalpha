@@ -37,6 +37,11 @@ import {
 import { IngestedTransaction } from '../lib/ingestion/types';
 import { extractMeteoraDammV2CandidatePools } from '../lib/live-pilot/meteora-damm-v2-cache';
 import { extractPumpSwapCandidatePools } from '../lib/live-pilot/pump-swap-cache';
+import { getLivePilotPublicConfig } from '../lib/live-pilot/config';
+import {
+  buildTrackedWalletSyncPlan,
+  type TrackedWalletFetchResult,
+} from '../lib/ingestion/tracked-wallet-sync';
 
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const HTTP_RPC_URL = process.env.HELIUS_API_RPC_URL
@@ -69,15 +74,6 @@ function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function sameWalletSet(nextWallets: string[], currentWallets: string[]) {
-  if (nextWallets.length !== currentWallets.length) {
-    return false;
-  }
-
-  const currentSet = new Set(currentWallets);
-  return nextWallets.every((wallet) => currentSet.has(wallet));
-}
-
 function isAbortLikeError(message: string) {
   return (
     message.includes('Cancelled on client')
@@ -98,6 +94,7 @@ let lastYellowstoneMessageTime = Date.now();
 let isReconnecting = false;
 let isDrainingParsedQueue = false;
 let isShuttingDown = false;
+let isTrackedWalletDatabaseDegraded = false;
 let parsedQueueBackoffUntil = 0;
 let parsedQueueBackoffMs = 5_000;
 let backoffMs = 1000;
@@ -151,13 +148,32 @@ function pruneYellowstoneCaches() {
   }
 }
 
-async function fetchTrackedWallets() {
-  const { data, error } = await supabase.from('star_traders').select('address');
-  if (error || !data) {
-    console.error('[WORKER] Failed to fetch star traders:', error);
-    return [];
+function getRequiredLivePilotStarTraders() {
+  return getLivePilotPublicConfig().wallets
+    .filter((wallet) => wallet.isEnabled && wallet.isComplete && wallet.starTrader)
+    .map((wallet) => wallet.starTrader);
+}
+
+async function fetchTrackedWallets(): Promise<TrackedWalletFetchResult> {
+  try {
+    const { data, error } = await supabase.from('star_traders').select('address');
+    if (error || !data) {
+      return {
+        ok: false,
+        error: error || new Error('Supabase returned no tracked-wallet data'),
+      };
+    }
+
+    return {
+      ok: true,
+      wallets: data.map((row) => row.address),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error,
+    };
   }
-  return data.map((row) => row.address);
 }
 
 async function getClaimedSignatures(signatures: string[]): Promise<Set<string>> {
@@ -638,11 +654,34 @@ async function syncTrackedWallets() {
     return;
   }
 
-  const currentWallets = await fetchTrackedWallets();
-  const changed = !sameWalletSet(currentWallets, trackedWallets);
-  trackedWallets = currentWallets;
+  const fetchResult = await fetchTrackedWallets();
+  const syncPlan = buildTrackedWalletSyncPlan(
+    trackedWallets,
+    fetchResult,
+    getRequiredLivePilotStarTraders(),
+  );
 
-  if (changed) {
+  if (!fetchResult.ok) {
+    const message = fetchResult.error instanceof Error
+      ? fetchResult.error.message
+      : String(fetchResult.error);
+    if (!isTrackedWalletDatabaseDegraded) {
+      console.error(
+        `[WORKER] Star trader refresh unavailable; retaining ${syncPlan.wallets.length} tracked wallet(s):`,
+        message,
+      );
+      isTrackedWalletDatabaseDegraded = true;
+    }
+  } else if (isTrackedWalletDatabaseDegraded) {
+    console.log(
+      `[WORKER] Star trader refresh recovered with ${syncPlan.wallets.length} tracked wallet(s).`,
+    );
+    isTrackedWalletDatabaseDegraded = false;
+  }
+
+  trackedWallets = syncPlan.wallets;
+
+  if (syncPlan.changed) {
     console.log('[WORKER] Tracked wallet set changed. Restarting Yellowstone subscription...');
     try {
       await startYellowstoneSubscription('wallet sync');
@@ -717,8 +756,28 @@ async function startWorker() {
   console.log('[WORKER] Starting Yellowstone Ingestion Worker...');
   console.log(`[WORKER] Target Yellowstone: ${YELLOWSTONE_GRPC_URL}`);
 
-  trackedWallets = await fetchTrackedWallets();
-  console.log(`[WORKER] Loaded ${trackedWallets.length} tracked wallets from DB.`);
+  const initialFetchResult = await fetchTrackedWallets();
+  const initialSyncPlan = buildTrackedWalletSyncPlan(
+    [],
+    initialFetchResult,
+    getRequiredLivePilotStarTraders(),
+  );
+  trackedWallets = initialSyncPlan.wallets;
+
+  if (initialFetchResult.ok) {
+    console.log(
+      `[WORKER] Loaded ${trackedWallets.length} tracked wallet(s) from DB and live-pilot configuration.`,
+    );
+  } else {
+    const message = initialFetchResult.error instanceof Error
+      ? initialFetchResult.error.message
+      : String(initialFetchResult.error);
+    console.error(
+      `[WORKER] Initial star trader fetch failed; starting with ${trackedWallets.length} env-backed live-pilot wallet(s):`,
+      message,
+    );
+    isTrackedWalletDatabaseDegraded = true;
+  }
 
   // ── Carbon parser init ─────────────────────────────────────────────────────
   if (getCarbonParserEnabled()) {
